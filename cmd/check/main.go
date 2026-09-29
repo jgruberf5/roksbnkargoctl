@@ -287,10 +287,29 @@ func postInstall(fs *flag.FlagSet) func(context.Context, *checks.Env, *checks.Re
 	tmm := fs.Int("tmm-replicas", 0, "expected Ready TMM pods (0 = at least one)")
 	sel := fs.String("tmm-selector", "app=f5-tmm", "label selector of TMM pods")
 	tmmNS := fs.String("tmm-namespace", "", "namespace of TMM pods (default --bnk-namespace)")
+	timeout := fs.Duration("timeout", 10*time.Minute, "keep re-checking until everything passes or this expires")
+	interval := fs.Duration("interval", 15*time.Second, "time between attempts")
 	return func(ctx context.Context, env *checks.Env, res *checks.Result) (bool, error) {
-		return false, checks.PostInstall(ctx, env, checks.PostInstallConfig{
+		cfg := checks.PostInstallConfig{
 			BNKNamespace: *bnk, UtilsNamespace: *utils, TMMReplicas: *tmm, TMMSelector: *sel, TMMNamespace: *tmmNS,
-		}, res)
+		}
+		// PostSync runs the moment the license hook passes, while TMM may still
+		// be settling: retry quietly, then report the final attempt in full.
+		deadline := time.Now().Add(*timeout)
+		for attempt := 1; ; attempt++ {
+			try := checks.NewResult(res.Mode, io.Discard)
+			err := checks.PostInstall(ctx, env, cfg, try)
+			if (err == nil && !try.Failed()) || time.Now().Add(*interval).After(deadline) {
+				break
+			}
+			fmt.Fprintf(env.Log, "attempt %d not yet healthy: %s; retrying in %s\n", attempt, strings.Join(try.Failures(), "; "), *interval)
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(*interval):
+			}
+		}
+		return false, checks.PostInstall(ctx, env, cfg, res)
 	}
 }
 
