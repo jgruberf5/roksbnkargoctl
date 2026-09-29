@@ -47,7 +47,7 @@ License:         state=Active …
 | `Application` | Argo CD | Name, `sync=` (Synced, OutOfSync, Unknown) and `health=`; or `not created (run install)`; or the API error |
 | `Last operation` | Argo CD | Phase and message of the last sync or delete operation |
 | `Checks` | ROKS | Every check Job in `roksbnkargoctl-check` (label `roksbnkargoctl.io/component=check`): `Succeeded`, `Failed` or `Running`, plus the Job condition message if any |
-| `CNEInstance` | ROKS | `f5-bnk/f5-bnk-f5-cne-controller`: `state=` if present, then every condition as `Type=Status`; `absent`; or `no status yet` |
+| `CNEInstance` | ROKS | `<bnk.namespace>/<bnk.namespace>-f5-cne-controller` (`f5-bnk/f5-bnk-f5-cne-controller` by default): `state=` if present, then every condition as `Type=Status`; `absent`; or `no status yet` |
 | `License` | ROKS | `f5-utils/bnk-license`: `state=` (want `Active`) and conditions; `absent` before the license hook has run |
 
 `Checks` lists Jobs, so it shows the hook checks only. The node probe (a DaemonSet) and the

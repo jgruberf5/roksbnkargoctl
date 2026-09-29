@@ -128,7 +128,7 @@ finished. Names below use the default namespaces (`bnk.namespace: f5-bnk`,
 | −6 | Deployment | `roksbnkargoctl-check/check-gateway-api-sweep` | Removes OpenShift's Gateway API CRD admission policy until the F5 Gateway API CRDs exist |
 | −5 | FLO chart | every object of `f5-lifecycle-operator` (release `flo`, namespace `f5-bnk`), including its `k8s.f5.com` CRDs | The chart version is the one the BNK 2.4.0 manifest lists (`v2.30.0-0.5.2`) |
 | −4 | CNEManifest | `bnk-2.4.0` | Cluster-scoped. `SkipDryRunOnMissingResource=true` (its CRD arrives in wave −5 of the same sync) |
-| −2 | CNEInstance | `f5-bnk/f5-bnk-f5-cne-controller` | `deploymentSize: Tiny`, `tmmReplicas` from `bnk.tmm_replicas`. `SkipDryRunOnMissingResource=true` |
+| −2 | CNEInstance | `<bnk.namespace>/<bnk.namespace>-f5-cne-controller` (`f5-bnk/f5-bnk-f5-cne-controller` by default) | `deploymentSize: Tiny`, `tmmReplicas` from `bnk.tmm_replicas`. `SkipDryRunOnMissingResource=true` |
 | 0 | Job (Sync hook) | `roksbnkargoctl-check/check-license` | Builds the `License`, waits for `Active`, then for `CNEInstance` `Available` |
 | PostSync | Job (hook) | `roksbnkargoctl-check/check-post-install` | Verifies the finished install |
 | PreDelete | Job (hook) | `roksbnkargoctl-check/check-pre-uninstall` | Drains F5 resources while FLO still runs; CNEInstance last |
@@ -169,7 +169,7 @@ until the next sync creates the hook again, which is when you need them.
 |---|---|---|---|---|
 | `check-pre-install` | Sync | −18 | 15m | 20m |
 | `check-cert-manager-ready` | Sync | −11 | 10m | 12m |
-| `check-license` | Sync | 0 | 35m (License `Active`); 15m more for `CNEInstance` `Available` | 40m |
+| `check-license` | Sync | 0 | 10m License CRD, 5m apply retry, 35m License `Active`, 15m `CNEInstance` `Available` (all rendered) | 70m (the waits plus 5m) |
 | `check-post-install` | PostSync | — | 10m | 15m |
 | `check-pre-uninstall` | PreDelete | — | 15m | 20m |
 | `check-post-uninstall` | PostDelete | — | 15m | 20m |

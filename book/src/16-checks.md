@@ -357,7 +357,8 @@ which keeps sweeping — the right thing while FLO is late.
 ## license
 
 **When:** Sync hook `check-license`, wave 0 — after the CNEInstance (−2).
-`activeDeadlineSeconds` 2400. This is the gate that decides whether the sync
+`activeDeadlineSeconds` 4200 (70m): the sum of its four waits plus 5 minutes, so the
+check reports which wait ran out rather than dying of `DeadlineExceeded`. This is the gate that decides whether the sync
 succeeds: without custom health checks in your Argo CD, F5 custom resources look
 healthy the moment they are created, and this hook is what waits for BNK to
 actually come up.
@@ -427,10 +428,10 @@ Design notes:
 | `--flp-url` | `""` | the FLP URL (disconnected) | F5 License Proxy base URL; `/license-proxy/v1` is appended unless already present |
 | `--flp-ca-path` | `/etc/cm20/licenseserver-rootca/licenseserver-rootca.txt` | same | `licenseProxyServerRootCaPath` |
 | `--restart-cwc` | `true` | — | roll CWC once per CA so it trusts the FLP CA |
-| `--crd-timeout` | `10m` | — | wait for the License CRD (and, disconnected, the CA Secret and CWC Deployment) |
-| `--apply-retry` | `5m` | — | keep retrying a refused apply |
+| `--crd-timeout` | `10m` | `10m` | wait for the License CRD (and, disconnected, the CA Secret and CWC Deployment) |
+| `--apply-retry` | `5m` | `5m` | keep retrying a refused apply |
 | `--timeout` | `15m` | `35m` | wait for License Active |
-| `--cne-timeout` | `15m` | — | wait for CNEInstance Available |
+| `--cne-timeout` | `15m` | `15m` | wait for CNEInstance Available |
 
 ## post-install
 
@@ -446,7 +447,7 @@ in full.
 |---|---|---|
 | `deployment-size` | `CNEInstance.spec.deploymentSize` is `Tiny` | anything else (see below) |
 | `flo` | each FLO Deployment is `Available` with `availableReplicas` ≥ desired (and > 0) | not found, or not available |
-| `cneinstance` | `f5-bnk-f5-cne-controller` is `Available=True` | unreadable or not Available (status, reason and message quoted) |
+| `cneinstance` | `<bnk-namespace>-f5-cne-controller` is `Available=True` | unreadable or not Available (status, reason and message quoted) |
 | `license` | `bnk-license` is Active | unreadable, or its state is quoted |
 | `tmm` | Ready TMM pods (`--tmm-selector` in `--tmm-namespace`) equal `--tmm-replicas`, or at least one when that is 0 | a different count (non-Ready pods listed), or none |
 | `tmm-zones` | more than one Ready TMM pod spread over at least two zones | several Ready TMM pods all in one zone: "a zone outage takes the data plane down". A single replica is `[INFO]` |

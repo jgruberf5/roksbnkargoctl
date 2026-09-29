@@ -41,7 +41,7 @@ checks that the workspace was resolved by `init`, and loads the Git credentials 
 
 | # | Step | What can fail | On re-run |
 |---|---|---|---|
-| 1 | Argo CD version gate | Token missing or rejected; server older than 3.3 | Re-checked |
+| 1 | Argo CD version and token | Token missing or not accepted; server older than 3.3 | Re-checked |
 | 2 | Transit gateway attachment | Prefix overlap with a VPC already on the gateway; attach timeout (10 min) | Found attached, skipped |
 | 3 | IAM trusted profile | IAM permissions | Found by name; missing link or policies added |
 | 4 | Render | FAR or mirror unreachable or unauthorized; JWT or FAR key not found; check image missing from the mirror; a secret value in a Git object | Re-rendered; identical output for unchanged inputs |
@@ -50,14 +50,18 @@ checks that the workspace was resolved by `init`, and loads the Git credentials 
 | 7 | Publish to Git | Credentials, host key, branch protection | No commit when nothing changed |
 | 8 | Repository, Application, sync | Argo CD API errors; a check fails; timeout | Upsert, then a new sync |
 
-### 1. Argo CD 3.3 or later
+### 1. Argo CD 3.3 or later, and a token it accepts
 
-`install` calls `GET /api/version` with the token from `ARGOCD_AUTH_TOKEN` and requires
-version 3.3.0 or later, because the uninstall checks are PreDelete hooks, which Argo CD
-added in 3.3. An older server stops the install before anything changes:
+`install` calls `GET /api/version` and requires version 3.3.0 or later, because the
+uninstall checks are PreDelete hooks, which Argo CD added in 3.3. `/api/version` answers
+without authentication, so `install` then calls `GET /api/v1/session/userinfo` with the
+token from `ARGOCD_AUTH_TOKEN` and requires `loggedIn`. It needs no RBAC permission and
+accepts local-account, project-role and SSO tokens alike. Either failure stops the install
+before anything changes:
 
 ```text
 argocd: server version v3.2.4 is older than the required 3.3.0 (PreDelete hooks need Argo CD >= 3.3)
+argocd: the server at https://… did not accept the API token (session/userinfo: not logged in); check ARGOCD_AUTH_TOKEN
 ```
 
 On success it prints the version and server, for example `Argo CD v3.5.1+… at https://…`.

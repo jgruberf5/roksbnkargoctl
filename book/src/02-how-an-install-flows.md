@@ -109,7 +109,7 @@ byte for byte, and re-publishing it commits nothing.
 
 | Step | Talks to | What happens |
 |---|---|---|
-| 1. Argo CD | Argo CD | Reads the server version; refuses anything older than 3.3 (PreDelete hooks are needed for a clean uninstall), and proves the token works |
+| 1. Argo CD | Argo CD | Reads the server version; refuses anything older than 3.3 (PreDelete hooks are needed for a clean uninstall), and proves the token works (`GET /api/v1/session/userinfo` must report `loggedIn`) |
 | 2. Transit gateway | IBM Transit Gateway, VPC | If the cluster's VPC is not attached, checks its address prefixes do not overlap any VPC already on the gateway, then attaches it and waits (up to 10 minutes) |
 | 3. Trusted profile | IBM IAM | Creates `<cluster>-f5-cne-controller-<bnk namespace>`, links it to ServiceAccount `f5-cne-controller` in the BNK namespace of this cluster, and grants Viewer + Editor on VPC Infrastructure (`is`) scoped to the cluster's VPC and Viewer on `containers-kubernetes` scoped to the cluster |
 | 4. Render | FAR or mirror, ROKS | As `render` above |
@@ -173,7 +173,7 @@ previous wave is healthy and its hooks have finished.
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
 | −5 | FLO chart (its `k8s.f5.com` CRDs, `Delete=false`) |
 | −4 | `CNEManifest bnk-2.4.0` |
-| −2 | `CNEInstance f5-bnk-f5-cne-controller` |
+| −2 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
 | 0 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits for `status.state=Active`, then for `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
 | PreDelete | Hook `check pre-uninstall` (Argo CD 3.3 or later); `uninstall` also runs it itself, first |
