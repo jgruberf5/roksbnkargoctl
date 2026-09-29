@@ -207,6 +207,28 @@ effort; both checks are idempotent, so a hook that does run after the CLI's copy
 nothing left. `install` also keeps Argo CD's `pre-delete-finalizer…`/`post-delete-finalizer…`
 finalizers when it re-upserts the Application: Argo CD's upsert replaces the list.
 
+## The binary itself: `self install`, `self update`, install.sh, install.ps1
+
+A binary installs one BNK release (`config.BNKVersion`), and its release archive says which:
+`roksbnkargoctl_<version>_bnk-<BNK>_<os>_<arch>.tar.gz` (`.zip` on Windows), beside
+`roksbnkargoctl_<version>_checksums.txt`. Later BNK lines ship as sibling archives.
+
+- `self update` installs only the archive for its own BNK version. "Latest" is the highest
+  non-draft, non-prerelease `vX.Y.Z` that has that archive; a newer release cut for another
+  line is skipped. `--version` naming a release without it is refused, naming the BNK
+  versions the release does have. It never switches lines.
+- The archive's SHA256 must match the release's checksums file; a release without one, or
+  one that does not list the archive, is refused (goreleaser always publishes it).
+- Replace is a same-directory temp file and a rename. Windows cannot overwrite a running
+  .exe, so it moves the binary aside to `.old` first and rolls back on failure; if the
+  rollback also fails the error names the sidecar and the `Move-Item` that restores it, and
+  the exit code is 125. The `.old` is removed at the next start.
+- Everything is in-process Go (net/http, archive/tar, archive/zip, crypto/sha256).
+- `install.sh`/`install.ps1` resolve GitHub's latest release (or `VERSION`), download the
+  `BNK_VERSION` archive (default 2.4.0) and fail, naming the BNK versions present, when that
+  release lacks it. They verify the checksum (mandatory) and hand off to
+  `self install --force`.
+
 ## Not in scope
 
 Cluster or gateway creation, the gateway (Infra/GatewaySettings/Gateway) phase, traffic
