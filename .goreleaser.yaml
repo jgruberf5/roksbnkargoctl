@@ -51,9 +51,10 @@ archives:
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
 
-changelog:
-  # Release notes come from CHANGELOG.md (--release-notes in the workflow).
-  disable: true
+# Release notes come from CHANGELOG.md: the workflow passes --release-notes, which
+# replaces the generated changelog. Do NOT set changelog.disable: it skips the
+# whole changelog pipe, including loading --release-notes (goreleaser v2.18.2
+# internal/pipe/changelog Skip), and v0.5.0 was published with empty notes.
 
 release:
   github:
