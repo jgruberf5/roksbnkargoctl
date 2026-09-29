@@ -33,6 +33,7 @@ modes:
   pre-install        cluster prerequisites + node-probe verdicts (Sync hook, wave -18)
   node-probe         DNS/TCP/TLS from this node; publishes a pod annotation (DaemonSet)
   gateway-api-sweep  removes OpenShift's Gateway API CRD admission policy until the CRDs exist (Deployment)
+  cert-manager-ready waits until cert-manager's webhook admits a ClusterIssuer (Sync hook, wave -11)
   license            builds License from the JWT Secret; waits Active, then CNEInstance Available (Sync hook, wave 0)
   post-install       verifies FLO, CNEInstance, License, TMM, pod health (PostSync hook)
   pre-uninstall      drains F5 CRs while FLO runs; CNEInstance last (PreDelete hook)
@@ -116,13 +117,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 type modeFunc func(fs *flag.FlagSet) func(ctx context.Context, env *checks.Env, res *checks.Result) (idle bool, err error)
 
 var modes = map[string]modeFunc{
-	"pre-install":       preInstall,
-	"node-probe":        nodeProbe,
-	"gateway-api-sweep": gatewaySweep,
-	"license":           license,
-	"post-install":      postInstall,
-	"pre-uninstall":     preUninstall,
-	"post-uninstall":    postUninstall,
+	"pre-install":        preInstall,
+	"node-probe":         nodeProbe,
+	"gateway-api-sweep":  gatewaySweep,
+	"license":            license,
+	"cert-manager-ready": certManagerReady,
+	"post-install":       postInstall,
+	"pre-uninstall":      preUninstall,
+	"post-uninstall":     postUninstall,
 }
 
 // listFlag is a repeatable flag; each value may also be comma-separated.
@@ -279,6 +281,14 @@ func license(fs *flag.FlagSet) func(context.Context, *checks.Env, *checks.Result
 			Mode: *mode, FLPURL: *flp, FLPCAPath: *caPath, RestartCWC: *restart,
 			CRDTimeout: *crdTO, ApplyRetry: *applyTO, LicenseTimeout: *timeout, CNETimeout: *cneTO,
 		}, res)
+	}
+}
+
+func certManagerReady(fs *flag.FlagSet) func(context.Context, *checks.Env, *checks.Result) (bool, error) {
+	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for the webhook")
+	interval := fs.Duration("interval", 5*time.Second, "time between dry-run attempts")
+	return func(ctx context.Context, env *checks.Env, res *checks.Result) (bool, error) {
+		return false, checks.CertManagerReady(ctx, env, checks.CertManagerReadyConfig{Interval: *interval, Timeout: *timeout}, res)
 	}
 }
 

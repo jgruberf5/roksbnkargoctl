@@ -449,3 +449,33 @@ func TestWaitGoneForbiddenIsError(t *testing.T) {
 		t.Fatalf("want forbidden error, got %v", err)
 	}
 }
+
+// Found live on Argo CD 3.5.1: a body-less DELETE without a Content-Type is
+// rejected 415 "Invalid content type". This fake enforces the same rule for every
+// mutating call the tool makes, so a regression on any of them fails here.
+func TestMutatingCallsDeclareJSON(t *testing.T) {
+	c, _ := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if r.Method != http.MethodGet && r.Header.Get("Content-Type") != "application/json" {
+			writeJSON(w, 415, map[string]any{"error": "Invalid content type", "message": "Invalid content type"})
+			return
+		}
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/v1/clusters":
+			writeJSON(w, 200, map[string]any{"items": []any{map[string]any{"server": "https://k"}}})
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repositories":
+			writeJSON(w, 200, map[string]any{"items": []any{map[string]any{"repo": "https://g/r.git"}}})
+		default:
+			writeJSON(w, 200, map[string]any{})
+		}
+	})
+	ctx := context.Background()
+	if err := c.Delete(ctx, "app", true, "foreground"); err != nil {
+		t.Errorf("Delete application: %v", err)
+	}
+	if err := c.DeleteCluster(ctx, "https://k"); err != nil {
+		t.Errorf("DeleteCluster: %v", err)
+	}
+	if err := c.DeleteRepository(ctx, "https://g/r.git"); err != nil {
+		t.Errorf("DeleteRepository: %v", err)
+	}
+}

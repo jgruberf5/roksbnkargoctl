@@ -463,6 +463,11 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		return err
 	}
 	var errs []error
+	// The PreDelete/PostDelete checks ran in the check namespace, which is
+	// about to go: keep their logs, which are the uninstall's only record.
+	if dir, err := saveCheckLogs(ctx, s, k, "uninstall"); err == nil && dir != "" {
+		p.ok("uninstall check logs saved to %s", dir)
+	}
 	// Out-of-band objects, in reverse: Secrets, then RBAC, then the namespace.
 	p.step("removing out-of-band objects")
 	for _, obj := range directObjectsOnDisk(s) {

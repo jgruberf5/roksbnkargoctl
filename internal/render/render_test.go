@@ -174,6 +174,8 @@ func TestWaveOrder(t *testing.T) {
 	order := []int{
 		wave("Namespace", "f5-bnk"),
 		wave("Job", "check-pre-install"),
+		wave("Deployment", "cert-manager-op"),
+		wave("Job", "check-cert-manager-ready"),
 		wave("ClusterIssuer", ClusterIssuerSelfSigned),
 		wave("Certificate", CACertName),
 		wave("ClusterIssuer", ClusterIssuerCA),

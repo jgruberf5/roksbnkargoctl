@@ -140,7 +140,10 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 		return fmt.Errorf("argocd: %s: %w", op, err)
 	}
 	req.URL = u // keep RawPath so %2F in a cluster/repo URL segment survives
-	if body != nil {
+	// Argo CD's gateway answers a body-less DELETE without a Content-Type with
+	// 415 "Invalid content type" (found live on 3.5.1, deleting an Application),
+	// so every non-GET request declares JSON whether or not it has a body.
+	if body != nil || method != http.MethodGet {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
