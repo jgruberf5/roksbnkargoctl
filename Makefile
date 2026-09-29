@@ -6,7 +6,7 @@ LDFLAGS := -s -w -X github.com/jgruberf5/roksbnkargoctl/internal/cli.Version=$(V
 	-X github.com/jgruberf5/roksbnkargoctl/internal/cli.BuildDate=$(DATE)
 CHECK_IMAGE ?= ghcr.io/jgruberf5/roksbnkargoctl-check
 
-.PHONY: build check-binary check-image test vet fmt staticcheck verify far-test
+.PHONY: build check-binary check-image test vet fmt staticcheck verify far-test book book-pdf
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/roksbnkargoctl ./cmd/roksbnkargoctl
 
@@ -37,3 +37,11 @@ verify: fmt vet staticcheck test build check-binary
 far-test:
 	@test -n "$(ROKSBNKARGOCTL_FAR_TGZ)" || (echo "set ROKSBNKARGOCTL_FAR_TGZ to the FAR auth tarball" && exit 1)
 	go test -tags far ./internal/render/ -run Live -v
+
+# The book as HTML (what GitHub Pages publishes).
+book:
+	mdbook build book
+
+# The book as a PDF plus an HTML archive, into dist/ (needs Docker).
+book-pdf:
+	scripts/book-pdf.sh $(VERSION)

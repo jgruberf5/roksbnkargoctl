@@ -7,6 +7,21 @@ No Terraform. IBM Cloud, Kubernetes, Git and Argo CD are driven through their
 APIs by one Go binary that runs natively on Linux, macOS and Windows. It is the
 slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbnkctl).
 
+**The book:** https://jgruberf5.github.io/roksbnkargoctl/ (also a PDF on every release).
+
+## Install
+
+Download the archive for your platform from
+[Releases](https://github.com/jgruberf5/roksbnkargoctl/releases). Each binary installs
+one BNK release, and its name says which:
+`roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. Linux and macOS use `.tar.gz`,
+Windows uses `.zip`, each for amd64 and arm64. Check it against `…_checksums.txt`, put
+`roksbnkargoctl` on your `PATH`, and confirm with:
+
+```sh
+roksbnkargoctl version    # roksbnkargoctl v0.5.0 for BNK 2.4.0 (…)
+```
+
 ## What you need
 
 - A ROKS cluster (OpenShift 4.16+, workers in 3 zones) and a transit gateway, by name or ID.

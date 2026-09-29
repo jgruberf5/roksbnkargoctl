@@ -89,9 +89,9 @@ agent (troubleshooting with an agentic CLI).`,
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the version",
+		Short: "Print the version and the BNK release this binary installs",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "roksbnkargoctl %s (commit %s, built %s)\n", Version, Commit, BuildDate)
+			fmt.Fprintf(cmd.OutOrStdout(), "roksbnkargoctl %s for BNK %s (commit %s, built %s)\n", Version, config.BNKVersion, Commit, BuildDate)
 		},
 	}
 }
