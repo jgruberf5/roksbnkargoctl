@@ -107,5 +107,9 @@ the cluster registration.
   token, the FAR key, the JWT. `manifests/direct/` is already redacted — keep it so.
 - `install`, `uninstall`, `flp up/down`, `argocd up/down` and `registry replicate`
   change real infrastructure. Journal the operator's consent before running them.
-- BNK has no in-place upgrade. A version or mode change is uninstall + install.
+- roksbnkargoctl installs and uninstalls BNK; it does not upgrade it. BNK supports
+  in-place upgrades by changing the manifest version in its custom resources, as F5's
+  BNK documentation describes. That is done outside this tool, following F5's
+  procedure. Never attempt one through roksbnkargoctl, and never recommend uninstall +
+  install as an "upgrade". `roksbnkargoctl self update` updates this tool, not BNK.
 - Report faithfully: quote the check's own verdict line; say what you did not check.

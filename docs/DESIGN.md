@@ -209,5 +209,8 @@ finalizers when it re-upserts the Application: Argo CD's upsert replaces the lis
 
 ## Not in scope
 
-Cluster or gateway creation, BNK upgrades (BNK has no in-place upgrade), the gateway
-(Infra/GatewaySettings/Gateway) phase, traffic tests, BNK 2.3.
+Cluster or gateway creation, the gateway (Infra/GatewaySettings/Gateway) phase, traffic
+tests, BNK 2.3, and **BNK upgrades**. This tool is day-0 install and uninstall only. BNK
+supports in-place upgrades by changing the manifest version in its custom resources, as
+F5's BNK documentation describes; that is done outside this tool, following F5's
+procedure. (`roksbnkargoctl self update` updates the tool itself, not BNK.)
