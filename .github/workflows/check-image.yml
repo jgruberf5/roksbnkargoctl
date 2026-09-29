@@ -1,10 +1,14 @@
 name: check image
 
-# Publishes the in-cluster check image. main → :dev, tag vX → :vX and :latest.
+# Publishes the in-cluster check image. main → :dev, tag vX → :vX and :latest,
+# and a same-repo pull request → :pr-<number>, so a check change can be proven on
+# a live cluster (check.image: …:pr-N) BEFORE it merges, not after.
 on:
   push:
     branches: [main]
     tags: ['v*']
+    paths: ['cmd/check/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
+  pull_request:
     paths: ['cmd/check/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
   workflow_dispatch:
 
@@ -14,6 +18,8 @@ permissions:
 
 jobs:
   image:
+    # Fork PRs get no packages:write token; they are built by CI only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,7 +33,10 @@ jobs:
       - id: tags
         run: |
           img=ghcr.io/${{ github.repository_owner }}/roksbnkargoctl-check
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ "${{ github.event_name }}" == pull_request ]]; then
+            echo "tags=${img}:pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "version=pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             echo "tags=${img}:${GITHUB_REF_NAME},${img}:latest" >> "$GITHUB_OUTPUT"
             echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else

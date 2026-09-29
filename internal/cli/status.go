@@ -261,6 +261,33 @@ func runDiagnose(ctx context.Context, s *session) (string, error) {
 
 func ptr[T any](v T) *T { return &v }
 
+// saveCheckLogs writes every check pod's log (and its final verdict line) into
+// diagnostics/<label>-<time>/ and returns the directory ("" if there were none).
+func saveCheckLogs(ctx context.Context, s *session, k *kube.Client, label string) (string, error) {
+	pods, err := k.Typed.CoreV1().Pods(render.CheckNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil || len(pods.Items) == 0 {
+		return "", err
+	}
+	dir := filepath.Join(s.ws.Dir, "diagnostics", label+"-"+time.Now().UTC().Format("20060102-150405"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	var verdicts []string
+	for _, p := range pods.Items {
+		raw, err := k.Typed.CoreV1().Pods(render.CheckNamespace).GetLogs(p.Name, &corev1.PodLogOptions{TailLines: ptr(int64(2000))}).DoRaw(ctx)
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(filepath.Join(dir, "log-"+p.Name+".txt"), raw, 0o600)
+		if v := lastJSONLine(raw); v != "" {
+			verdicts = append(verdicts, "- "+p.Name+": `"+v+"`")
+		}
+	}
+	sort.Strings(verdicts)
+	_ = os.WriteFile(filepath.Join(dir, "summary.md"), []byte("# "+label+" check verdicts\n\n"+strings.Join(verdicts, "\n")+"\n"), 0o600)
+	return dir, nil
+}
+
 func lastJSONLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

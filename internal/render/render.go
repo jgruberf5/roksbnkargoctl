@@ -31,6 +31,7 @@ const (
 	WaveCATrust      = -19
 	WavePreInstall   = -18
 	WaveCertManager  = -12
+	WaveCMReady      = -11
 	WaveIssuers      = -10 // -10 self-signed, -9 ext-ca, -8 sample-issuer
 	WaveNetwork      = -6
 	WaveSweep        = -6
@@ -156,6 +157,9 @@ func Render(in Inputs) (*Output, error) {
 		}
 		add(objs...)
 	}
+	// Deployment health is not webhook readiness: gate the issuers on the
+	// webhook actually admitting one (a reinstall raced it live).
+	add(cp.hookJob("cert-manager-ready", "Sync", WaveCMReady, []string{"--timeout=10m"}, 12*60))
 	add(certChain(WaveIssuers)...)
 
 	// Networking + FLO.

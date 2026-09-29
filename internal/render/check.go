@@ -271,6 +271,9 @@ func checkRBAC() []Object {
 			rule([]string{"config.openshift.io"}, []string{"clusterversions"}, read),
 			rule([]string{"admissionregistration.k8s.io"}, []string{"validatingadmissionpolicies", "validatingadmissionpolicybindings", "validatingwebhookconfigurations"}, []string{"get", "list", "delete"}),
 			rule([]string{"cert-manager.io"}, []string{"certificates", "clusterissuers", "issuers"}, read),
+			// cert-manager-ready dry-run creates a ClusterIssuer (creates nothing,
+			// but the API server authorizes it as a create).
+			rule([]string{"cert-manager.io"}, []string{"clusterissuers"}, []string{"create"}),
 			rule([]string{"k8s.f5.com", "k8s.f5net.com", "gateway.k8s.f5.com", "fic.f5.com", "metrics.f5.com"}, []string{"*"}, all),
 		}}
 	bind := Object{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
