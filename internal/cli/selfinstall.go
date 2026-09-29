@@ -119,6 +119,13 @@ func copyExecutable(goos, src, dest string) error {
 		_ = tmp.Close()
 		return err
 	}
+	// Close the source before any rename: with --force over the running binary,
+	// src IS dest, and Windows refuses to rename a file that has an open handle
+	// (found by the Windows CI job; Linux allows it, so no Linux test could).
+	if err := in.Close(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Chmod(0o755); err != nil {
 		_ = tmp.Close()
 		return err
