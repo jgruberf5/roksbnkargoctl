@@ -170,7 +170,7 @@ func TestUpsertApplicationBody(t *testing.T) {
 			Destination: ApplicationDestination{Server: "https://c.private:30000"},
 			SyncPolicy: &SyncPolicy{
 				SyncOptions: []string{"ServerSideApply=true", "RespectIgnoreDifferences=true"},
-				Retry:       &RetryStrategy{Limit: 2, Backoff: &Backoff{Duration: "10s", Factor: 2, MaxDuration: "3m"}},
+				Retry:       &RetryStrategy{Limit: ptrInt64(2), Backoff: &Backoff{Duration: "10s", Factor: 2, MaxDuration: "3m"}},
 			},
 		},
 		Status: &ApplicationStatus{Sync: SyncStatus{Status: "Synced"}},
@@ -529,3 +529,5 @@ func TestUpsertSSHKnownHostsSkipsPatterns(t *testing.T) {
 		t.Fatal("a pattern reached Argo CD")
 	}
 }
+
+func ptrInt64(v int64) *int64 { return &v }

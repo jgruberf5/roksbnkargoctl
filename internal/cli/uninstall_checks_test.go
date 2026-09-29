@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -229,5 +230,40 @@ func TestUninstallRerunFinishesWithoutTheApplication(t *testing.T) {
 	}
 	if want := []string{"verify", "post-uninstall", "verify"}; !slices.Equal(f.calls, want) {
 		t.Fatalf("got %v, want %v", f.calls, want)
+	}
+}
+
+// Seen live: the rendered ignoreDifferences never reached Argo CD, because
+// toArgoApp decodes into typed structs that did not have the field. Every
+// field of the rendered Application must survive the conversion.
+func TestToArgoAppIsLossless(t *testing.T) {
+	c := &config.Config{IBMCloud: config.IBMCloud{Region: "us-east"}, Cluster: "c", TransitGateway: "t",
+		COS: config.COS{Bucket: "b"}, ArgoCD: config.ArgoCD{Server: "https://a"}, Git: config.Git{URL: "https://g/r.git"}}
+	c.Defaults("ws")
+	c.Resolved = &config.Resolved{VPCName: "v", TrustedProfileID: "p", ArgoCDClusterServer: "https://k"}
+	out, err := render.Render(render.Inputs{Config: c, Workspace: "ws", CheckImage: "ghcr.io/x/check:dev", RunID: "r",
+		Manifest: &far.Manifest{Version: config.BNKVersion,
+			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
+			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
+		FLOChart: chartTGZ(t, "flo"), CertManagerChart: chartTGZ(t, "cm"),
+		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := toArgoApp(out.Application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	norm := func(v any) any {
+		b, _ := json.Marshal(v)
+		var m any
+		_ = json.Unmarshal(b, &m)
+		return m
+	}
+	want, got := norm(map[string]any(out.Application)), norm(app)
+	if !reflect.DeepEqual(want, got) {
+		wb, _ := json.MarshalIndent(want, "", " ")
+		gb, _ := json.MarshalIndent(got, "", " ")
+		t.Fatalf("the Application lost fields on the way to Argo CD\nrendered: %s\nsent: %s", wb, gb)
 	}
 }
