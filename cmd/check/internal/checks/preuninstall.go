@@ -428,7 +428,9 @@ func PreUninstall(ctx context.Context, env *Env, cfg PreUninstallConfig, res *Re
 	for _, ns := range nss {
 		licLeft = append(licLeft, ld.drain(ctx, []kube.GVR{lic}, ns, time.Now().Add(cfg.LicenseTimeout))...)
 	}
-	if len(licLeft) > 0 {
+	if len(licLeft) > 0 && ctx.Err() != nil {
+		res.Warn("license", "interrupted (%v) while waiting for %s to go; not a timeout", context.Cause(ctx), strings.Join(licLeft, ", "))
+	} else if len(licLeft) > 0 {
 		res.Warn("license", "License not gone within %s: %s; continuing (post-uninstall strips its finalizer)", cfg.LicenseTimeout, strings.Join(licLeft, ", "))
 	} else {
 		res.Pass("license", "License deleted")
@@ -442,6 +444,12 @@ func PreUninstall(ctx context.Context, env *Env, cfg PreUninstallConfig, res *Re
 	cd := newDrainer(env, sw.Neutralise, cfg.Poll, cfg.RefusalGrace)
 	cd.skipOwned = false
 	left := cd.drain(ctx, []kube.GVR{*cne}, cfg.BNKNamespace, time.Now().Add(cfg.CNETimeout))
+	if len(left) > 0 && ctx.Err() != nil {
+		// Seen live: Argo CD killed the PreDelete pod 0.4s in, and this read
+		// "not gone within 10m0s", sending the reader after FLO.
+		res.Fail("cneinstance", "interrupted (%v) while waiting for %s to go; not a timeout, FLO was not given the chance to finalize it", context.Cause(ctx), strings.Join(left, ", "))
+		return nil
+	}
 	if len(left) > 0 {
 		res.Fail("cneinstance", "%s not gone within %s; FLO did not finish finalizing it", strings.Join(left, ", "), cfg.CNETimeout)
 		return nil

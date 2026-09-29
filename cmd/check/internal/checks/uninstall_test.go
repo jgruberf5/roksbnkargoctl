@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -403,5 +404,36 @@ func TestPreUninstallOwnedIPAMBlocksCNEInstance(t *testing.T) {
 		if strings.HasPrefix(d, "cneinstances/") {
 			t.Fatal("CNEInstance deleted with IPAM still present")
 		}
+	}
+}
+
+// Seen live: Argo CD sent SIGTERM 0.36s into the PreDelete check, and the
+// finding said "not gone within 10m0s; FLO did not finish finalizing it". An
+// interruption must say so, not blame FLO with a timeout that never elapsed.
+func TestPreUninstallReportsAnInterruptionAsSuch(t *testing.T) {
+	s, env, res := newFake(t)
+	installedBNK(s)
+	operator(s)
+	cfg := uninstallCfg()
+	cfg.CNETimeout = time.Minute
+	ctx, cancel := context.WithCancelCause(context.Background())
+	// FLO finalizes everything but the CNEInstance; its delete is when the
+	// signal lands.
+	floAfter := s.AfterDelete
+	s.AfterDelete = func(s *kubefake.Server, r kubefake.Request) {
+		if strings.HasSuffix(r.Path, "/cneinstances/f5-bnk-f5-cne-controller") {
+			cancel(errors.New("terminated signal received"))
+			return
+		}
+		floAfter(s, r)
+	}
+	start := time.Now()
+	_ = PreUninstall(ctx, env, cfg, res)
+	if took := time.Since(start); took > 20*time.Second {
+		t.Fatalf("kept waiting %s after the interruption", took)
+	}
+	d := detail(res, "cneinstance")
+	if !hasSev(res, "cneinstance", SevFail) || !strings.Contains(d, "interrupted (terminated signal received)") || strings.Contains(d, "within") {
+		t.Fatalf("cneinstance finding: %q", d)
 	}
 }
