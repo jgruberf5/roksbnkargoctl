@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -83,6 +84,25 @@ func checkImage(c *config.Config) string {
 		return registry.Artifact{Source: img}.Dest(c.ImageHost())
 	}
 	return img
+}
+
+// pinDigest resolves a tag to repo@sha256:… so what ROKS runs is exactly what
+// was rendered. With a mutable tag (:dev) and IfNotPresent, nodes that cached an
+// older image keep running it — a re-sync after a check fix would silently run
+// the unfixed check. A new image also changes the render, re-rolling the probes.
+func pinDigest(ctx context.Context, pl *far.Puller, ref string) (string, error) {
+	if strings.Contains(ref, "@sha256:") {
+		return ref, nil
+	}
+	d, err := pl.Digest(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolving the check image %s: %w", ref, err)
+	}
+	repo := ref
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		repo = ref[:i]
+	}
+	return repo + "@" + d, nil
 }
 
 // flpOutputs is what `flp up` records, and what an external FLP config supplies.
@@ -210,7 +230,10 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 	stable := *c
 	stable.Resolved = nil
 	cfgYAML, _ := config.Marshal(&stable)
-	img := checkImage(c)
+	img, err := pinDigest(ctx, pl, checkImage(c))
+	if err != nil {
+		return nil, err
+	}
 	runID := render.RunID(string(cfgYAML), m.Version, img, flpURL, mirrorCA, nodeImage)
 	return render.Render(render.Inputs{
 		Config: c, Workspace: s.ws.Name, Manifest: m, CertManagerChart: cm, FLOChart: flo,
