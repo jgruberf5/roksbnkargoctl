@@ -1,4 +1,6 @@
 /bin/
+/check
+/roksbnkargoctl
 /dist/
 *.test
 *.out
