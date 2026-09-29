@@ -48,14 +48,14 @@ func RunJob(ctx context.Context, k kubernetes.Interface, job *batchv1.Job, timeo
 		}
 		for _, c := range j.Status.Conditions {
 			if c.Type == batchv1.JobFailed && c.Status == "True" {
-				return fmt.Errorf("Job %s/%s failed: %s %s", job.Namespace, job.Name, c.Reason, c.Message)
+				return fmt.Errorf("the Job %s/%s failed: %s %s", job.Namespace, job.Name, c.Reason, c.Message)
 			}
 		}
 		if j.Status.Failed > 0 && (j.Spec.BackoffLimit == nil || j.Status.Failed > *j.Spec.BackoffLimit) {
-			return fmt.Errorf("Job %s/%s failed", job.Namespace, job.Name)
+			return fmt.Errorf("the Job %s/%s failed", job.Namespace, job.Name)
 		}
 		if err := sleepUntil(ctx, deadline); err != nil {
-			return fmt.Errorf("Job %s/%s did not finish: %w", job.Namespace, job.Name, err)
+			return fmt.Errorf("the Job %s/%s did not finish: %w", job.Namespace, job.Name, err)
 		}
 	}
 }
