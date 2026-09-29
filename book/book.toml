@@ -1,0 +1,18 @@
+[book]
+title = "Installing BIG-IP Next for Kubernetes on ROKS with Argo CD — roksbnkargoctl"
+authors = ["roksbnkargoctl maintainers"]
+language = "en"
+src = "src"
+
+# A chapter listed in SUMMARY.md but missing on disk fails the build instead of
+# being created as an empty page.
+[build]
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/jgruberf5/roksbnkargoctl"
+edit-url-template = "https://github.com/jgruberf5/roksbnkargoctl/edit/main/book/{path}"
+default-theme = "rust"
+
+[output.html.search]
+enable = true
