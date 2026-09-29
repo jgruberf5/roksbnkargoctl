@@ -68,6 +68,16 @@ func FromConfig(cfg *rest.Config) (*Client, error) {
 	return &Client{Config: cfg, Typed: typed, Dynamic: dyn, mapper: mapper}, nil
 }
 
+// Streaming returns a clientset for long-lived watches. The regular client's
+// 60s http.Client timeout also covers reading a response body, which cuts a
+// watch stream after a minute (found in review: the uninstall log watch died
+// 60s in, long before a real drain finishes).
+func (c *Client) Streaming() (kubernetes.Interface, error) {
+	cfg := rest.CopyConfig(c.Config)
+	cfg.Timeout = 0
+	return kubernetes.NewForConfig(cfg)
+}
+
 // ServerVersion returns the Kubernetes git version (e.g. v1.34.9).
 func (c *Client) ServerVersion() (string, error) {
 	v, err := c.Typed.Discovery().ServerVersion()

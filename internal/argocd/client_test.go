@@ -515,3 +515,17 @@ func TestUpsertSSHKnownHosts(t *testing.T) {
 		t.Fatalf("certificate body wrong: %+v", body.Items)
 	}
 }
+
+// Review finding: a wildcard or negated host pattern made Argo CD reject the
+// whole certificate request. Patterns are skipped, like hashed names.
+func TestUpsertSSHKnownHostsSkipsPatterns(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) { writeJSON(w, 200, map[string]any{}) })
+	kh := "*.corp.example,!bad.corp.example,git.corp.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n"
+	n, skipped, err := c.UpsertSSHKnownHosts(context.Background(), kh)
+	if err != nil || n != 1 || len(skipped) != 2 {
+		t.Fatalf("n=%d skipped=%v err=%v; want only git.corp.example sent", n, skipped, err)
+	}
+	if strings.Contains(string(rc.reqs[len(rc.reqs)-1].Body), "*.corp") {
+		t.Fatal("a pattern reached Argo CD")
+	}
+}

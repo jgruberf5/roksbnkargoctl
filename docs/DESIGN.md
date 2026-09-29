@@ -41,7 +41,7 @@ The workspace is `~/.roksbnkargoctl/<name>/` (override: `ROKSBNKARGOCTL_HOME`).
 
 | Item | Why not YAML | Done by |
 |---|---|---|
-| IAM trusted profile `<cluster>-f5-cne-controller`, link to SA `f5-bnk/f5-cne-controller`, policies (Viewer+Editor on `is` scoped to the VPC; Viewer on `containers-kubernetes` scoped to the cluster) | IBM IAM | `install` / `uninstall` |
+| IAM trusted profile `<cluster>-f5-cne-controller-<bnk namespace>`, link to SA `f5-bnk/f5-cne-controller`, policies (Viewer+Editor on `is` scoped to the VPC; Viewer on `containers-kubernetes` scoped to the cluster) | IBM IAM | `install` / `uninstall` |
 | FAR pull secret (`far-secret` or `mirror-secret`) in `f5-bnk`, `f5-utils`, `cert-manager` | Credential; never in Git | `install`, directly into ROKS |
 | Subscription JWT (Secret `bnk-license-jwt`) | `License.spec.jwt` is **required and inline** (no Secret ref in the 2.4 CRD), so a License in Git would leak the JWT | `install` writes the Secret; the `check license` hook builds the License from it |
 | FLP root CA (Secret `licenseserver-rootca`) | Produced by `flp up` | `install` |
@@ -130,6 +130,11 @@ It only ever runs in ROKS.
 
 - Access: REST API, `argocd.server` + token from `ARGOCD_AUTH_TOKEN`. Argo CD **≥ 3.3**
   (PreDelete hooks) is enforced.
+- Git SSH host keys: github.com, gitlab.com and bitbucket.org (and their port-443 SSH
+  endpoints) are built in, verified against the providers' published fingerprints;
+  `git.known_hosts_file` adds hosts, is validated before anything changes, and is uploaded to
+  Argo CD's certificate store (literal host names only). `ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1`
+  switches verification off, with a warning.
 - Registration: `install` creates ServiceAccount `roksbnkargoctl-argocd-manager` in
   `kube-system` on ROKS, a ClusterRoleBinding to `cluster-admin`, and a long-lived token Secret;
   then `POST /api/v1/clusters` with the ROKS **private** service endpoint (reached over the

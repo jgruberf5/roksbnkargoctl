@@ -11,7 +11,8 @@ slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbn
 
 - A ROKS cluster (OpenShift 4.16+, workers in 3 zones) and a transit gateway, by name or ID.
 - An Argo CD **3.3 or later** outside the cluster, reachable over the transit gateway,
-  and an API token for it.
+  and an API token for it (clusters, repositories and applications; plus `certificates,
+  create` when `git.known_hosts_file` is set).
 - A Git repo Argo CD can read, and a token (or SSH key) that can push to it. SSH host keys
   are verified: github.com, gitlab.com and bitbucket.org are built in; for any other Git
   server set `git.known_hosts_file` (it is also added to Argo CD).

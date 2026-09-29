@@ -47,6 +47,12 @@ func (c *Client) UpsertSSHKnownHosts(ctx context.Context, knownHosts string) (ad
 				skipped = append(skipped, h+" (hashed)")
 				continue
 			}
+			// Argo CD accepts only literal host names (util/db IsValidHostname);
+			// one pattern would make it reject the whole request.
+			if strings.ContainsAny(h, "*?!") {
+				skipped = append(skipped, h+" (pattern)")
+				continue
+			}
 			items = append(items, repoCert{ServerName: h, CertType: "ssh", CertSubType: key.Type(), CertData: []byte(f[2])})
 		}
 	}

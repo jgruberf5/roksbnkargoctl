@@ -272,6 +272,7 @@ func ptr[T any](v T) *T { return &v }
 // while the Application is being deleted, when that pod still exists.
 type checkLogCollector struct {
 	pods  corev1client.PodInterface
+	watch corev1client.PodInterface // no client timeout: a watch is long-lived
 	dir   string
 	every time.Duration
 	last  time.Time
@@ -279,8 +280,9 @@ type checkLogCollector struct {
 	logs  map[string][]byte
 }
 
-func newCheckLogCollector(k kubernetes.Interface, dir string) *checkLogCollector {
-	return &checkLogCollector{pods: k.CoreV1().Pods(render.CheckNamespace), dir: dir, every: 5 * time.Second, logs: map[string][]byte{}}
+func newCheckLogCollector(k, streaming kubernetes.Interface, dir string) *checkLogCollector {
+	return &checkLogCollector{pods: k.CoreV1().Pods(render.CheckNamespace), watch: streaming.CoreV1().Pods(render.CheckNamespace),
+		dir: dir, every: 5 * time.Second, logs: map[string][]byte{}}
 }
 
 // Snapshot reads every check pod's log now and saves any non-empty one.
@@ -313,8 +315,22 @@ func (c *checkLogCollector) fetch(ctx context.Context, pod string) {
 // ctx ends. Polling alone missed the PreDelete check live: with nothing to
 // drain it finished inside one snapshot interval and was deleted with the
 // Application before the next.
+//
+// A watch stream ends on its own (server-side expiry, an error event, a
+// dropped connection), so Watch re-establishes it until ctx is cancelled.
 func (c *checkLogCollector) Watch(ctx context.Context) {
-	w, err := c.pods.Watch(ctx, metav1.ListOptions{})
+	for ctx.Err() == nil {
+		c.watchOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (c *checkLogCollector) watchOnce(ctx context.Context) {
+	w, err := c.watch.Watch(ctx, metav1.ListOptions{})
 	if err != nil {
 		return
 	}
@@ -341,6 +357,21 @@ func (c *checkLogCollector) Watch(ctx context.Context) {
 	}
 }
 
+// collectCheckLogsDuring runs fn with the collector active: the watch runs for
+// exactly fn's duration, fn's tick snapshots (throttled), and the final
+// snapshot and summary are written whether fn succeeds or fails — a failed or
+// timed-out Application deletion is when the logs matter most.
+func collectCheckLogsDuring(ctx context.Context, c *checkLogCollector, fn func(tick func()) error) (kept int, err error) {
+	wctx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { c.Watch(wctx); close(done) }()
+	err = fn(func() { c.MaybeSnapshot(ctx) })
+	stop()
+	<-done
+	c.Snapshot(ctx)
+	return c.Finish("uninstall"), err
+}
+
 // MaybeSnapshot snapshots at most every c.every.
 func (c *checkLogCollector) MaybeSnapshot(ctx context.Context) {
 	if time.Since(c.last) >= c.every {
@@ -360,12 +391,14 @@ func (c *checkLogCollector) Finish(label string) int {
 	for name, raw := range c.logs {
 		v := lastJSONLine(raw)
 		if v == "" {
-			v = "(no verdict line: the pod was still running at its last snapshot)"
+			v = "(no verdict line in the last log captured for this pod)"
 		}
 		verdicts = append(verdicts, "- "+name+": `"+v+"`")
 	}
 	sort.Strings(verdicts)
-	_ = os.WriteFile(filepath.Join(c.dir, "summary.md"), []byte("# "+label+" check verdicts\n\n"+strings.Join(verdicts, "\n")+"\n"), 0o600)
+	head := "# " + label + " check verdicts\n\nEvery check pod that existed during the " + label +
+		" (install-time hook pods included), with the last JSON verdict line of its log.\n\n"
+	_ = os.WriteFile(filepath.Join(c.dir, "summary.md"), []byte(head+strings.Join(verdicts, "\n")+"\n"), 0o600)
 	return len(c.logs)
 }
 

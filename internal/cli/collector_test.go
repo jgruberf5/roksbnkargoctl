@@ -2,9 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"k8s.io/apimachinery/pkg/watch"
+	k8stesting "k8s.io/client-go/testing"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +26,7 @@ func TestCollectorKeepsLogsOfDeletedPods(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewSimpleClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-abc", Namespace: render.CheckNamespace}})
 	dir := filepath.Join(t.TempDir(), "uninstall")
-	c := newCheckLogCollector(cs, dir)
+	c := newCheckLogCollector(cs, cs, dir)
 	c.Snapshot(ctx) // the PreDelete pod exists
 	if err := cs.CoreV1().Pods(render.CheckNamespace).Delete(ctx, "check-pre-uninstall-abc", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
@@ -45,7 +49,7 @@ func TestCollectorKeepsLogsOfDeletedPods(t *testing.T) {
 
 func TestCollectorThrottles(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	c := newCheckLogCollector(cs, t.TempDir())
+	c := newCheckLogCollector(cs, cs, t.TempDir())
 	c.Snapshot(context.Background())
 	first := c.last
 	c.MaybeSnapshot(context.Background())
@@ -60,7 +64,7 @@ func TestCollectorWatchCatchesAPodBetweenSnapshots(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cs := fake.NewSimpleClientset()
-	c := newCheckLogCollector(cs, filepath.Join(t.TempDir(), "u"))
+	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
 	started := make(chan struct{})
 	go func() { close(started); c.Watch(ctx) }()
 	<-started
@@ -90,5 +94,108 @@ func TestCollectorWatchCatchesAPodBetweenSnapshots(t *testing.T) {
 	_ = pods.Delete(ctx, "check-pre-uninstall-xyz", metav1.DeleteOptions{})
 	if n := c.Finish("uninstall"); n != 1 {
 		t.Fatalf("kept %d logs, want 1", n)
+	}
+}
+
+// Review finding W1–W3: the collector's wiring was untested — removing the watch,
+// the per-poll tick, or the save on the failure path left the suite green.
+// collectCheckLogsDuring is what uninstall runs; each case below fails if one
+// of those three is removed.
+
+// W1: a pod that terminates and is deleted with no tick at all is caught only
+// by the watch collectCheckLogsDuring starts.
+func TestCollectDuringStartsTheWatch(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
+	pods := cs.CoreV1().Pods(render.CheckNamespace)
+	n, err := collectCheckLogsDuring(ctx, c, func(func()) error {
+		time.Sleep(100 * time.Millisecond)
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-w1", Namespace: render.CheckNamespace}}
+		_, _ = pods.Create(ctx, p, metav1.CreateOptions{})
+		p.Status.ContainerStatuses = []corev1.ContainerStatus{{State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}}}
+		_, _ = pods.UpdateStatus(ctx, p, metav1.UpdateOptions{})
+		time.Sleep(300 * time.Millisecond)
+		return pods.Delete(ctx, "check-pre-uninstall-w1", metav1.DeleteOptions{})
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("kept %d logs (err %v); the watch must catch the deleted PreDelete pod", n, err)
+	}
+}
+
+// W2: a running pod (no terminated container, so the watch ignores it) that is
+// deleted before the end is caught only by fn's tick.
+func TestCollectDuringTickSnapshots(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset()
+	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
+	c.every = 0
+	pods := cs.CoreV1().Pods(render.CheckNamespace)
+	n, _ := collectCheckLogsDuring(ctx, c, func(tick func()) error {
+		_, _ = pods.Create(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-w2", Namespace: render.CheckNamespace}}, metav1.CreateOptions{})
+		tick()
+		return pods.Delete(ctx, "check-pre-uninstall-w2", metav1.DeleteOptions{})
+	})
+	if n != 1 {
+		t.Fatalf("kept %d logs; the tick must snapshot", n)
+	}
+}
+
+// W3: the deletion fails; the logs are still saved and the error returned.
+func TestCollectDuringSavesOnFailure(t *testing.T) {
+	ctx := context.Background()
+	cs := fake.NewSimpleClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-w3", Namespace: render.CheckNamespace}})
+	dir := filepath.Join(t.TempDir(), "u")
+	c := newCheckLogCollector(cs, cs, dir)
+	n, err := collectCheckLogsDuring(ctx, c, func(func()) error { return errors.New("application deletion timed out") })
+	if err == nil || n != 1 {
+		t.Fatalf("n=%d err=%v; a failed deletion must still save logs and return its error", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "summary.md")); err != nil {
+		t.Fatalf("summary.md not written on the failure path: %v", err)
+	}
+}
+
+// Review finding: the watch stream ends (client timeout, server expiry, error
+// event) and the old Watch returned for good. It must re-establish itself.
+func TestCollectorRewatchesWhenTheStreamEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := fake.NewSimpleClientset()
+	var watches atomic.Int32
+	cs.PrependWatchReactor("pods", func(k8stesting.Action) (bool, watch.Interface, error) {
+		if watches.Add(1) == 1 {
+			w := watch.NewFake()
+			w.Stop() // the first stream ends at once, as a timed-out one does
+			return true, w, nil
+		}
+		return false, nil, nil // later watches: the fake clientset's real tracker
+	})
+	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
+	go c.Watch(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for watches.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the watch was not re-established after its stream ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	pods := cs.CoreV1().Pods(render.CheckNamespace)
+	p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-late", Namespace: render.CheckNamespace}}
+	_, _ = pods.Create(ctx, p, metav1.CreateOptions{})
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}}}
+	_, _ = pods.UpdateStatus(ctx, p, metav1.UpdateOptions{})
+	for {
+		c.mu.Lock()
+		_, got := c.logs["check-pre-uninstall-late"]
+		c.mu.Unlock()
+		if got {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a pod that terminated after the first stream ended was missed")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
