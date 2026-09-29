@@ -1,0 +1,57 @@
+name: Book
+
+# Builds the operator book with mdBook on every change to it; on main, publishes
+# it to GitHub Pages. mdBook is the release binary, pinned, so no third-party
+# action runs with the Pages token.
+
+on:
+  push:
+    branches: [main]
+    paths: ['book/**', '.github/workflows/book.yml']
+  pull_request:
+    paths: ['book/**', '.github/workflows/book.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: v0.5.4
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mdBook
+        run: |
+          curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin mdbook
+          mdbook --version
+      - name: Build (fails on a warning, such as a missing chapter)
+        run: |
+          mdbook build book 2>&1 | tee build.log
+          ! grep -E '(WARN|ERROR)' build.log
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: book/book
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
+      - id: deploy
+        uses: actions/deploy-pages@v5
