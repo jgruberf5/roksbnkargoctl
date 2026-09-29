@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -311,5 +313,66 @@ func TestCNEInstanceIsAlwaysTiny(t *testing.T) {
 		if spec["tmmReplicas"] != 3 {
 			t.Fatalf("%s: tmmReplicas = %v, want 3", mode, spec["tmmReplicas"])
 		}
+	}
+}
+
+// Seen live: right after a successful sync the CNEInstance read OutOfSync,
+// because FLO rewrites its spec without false bools and empty env values. The
+// rendered CNEInstance must hold neither, anywhere.
+func TestCNEInstanceRendersNoDefaultFalseOrEmpty(t *testing.T) {
+	out := doRender(t, baseConfig(config.ModeConnected, config.SourceFAR), nil)
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, c := range x {
+				walk(path+"."+k, c)
+			}
+		case []any:
+			for i, c := range x {
+				walk(fmt.Sprintf("%s[%d]", path, i), c)
+			}
+		case bool:
+			if !x && !strings.HasSuffix(path, ".stopOnFail") && !strings.HasSuffix(path, ".runAfterSuccess") {
+				t.Errorf("%s: false (FLO drops it; Argo CD then reports a diff)", path)
+			}
+		case string:
+			if x == "" {
+				t.Errorf("%s: empty string", path)
+			}
+		}
+	}
+	walk("spec", find(out.Git, "CNEInstance", CNEInstanceName)["spec"])
+}
+
+// OpenShift adds <sa>-dockercfg-<suffix> to every ServiceAccount's
+// imagePullSecrets. The Application must ignore exactly those entries — never
+// the mirror pull secret it renders. Runs the expression through jq, as Argo
+// CD does (del(<expr>)).
+func TestApplicationIgnoresOnlyOpenShiftPullSecrets(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not installed")
+	}
+	app := doRender(t, baseConfig(config.ModeConnected, config.SourceMirror), nil).Application
+	var expr string
+	for _, d := range app["spec"].(map[string]any)["ignoreDifferences"].([]any) {
+		d := d.(map[string]any)
+		if d["kind"] == "ServiceAccount" && d["group"] == "" {
+			expr = d["jqPathExpressions"].([]any)[0].(string)
+		}
+	}
+	if expr == "" {
+		t.Fatal("no ServiceAccount ignoreDifferences")
+	}
+	live := `{"imagePullSecrets":[{"name":"mirror-secret"},{"name":"cert-manager-dockercfg-4jtg6"}]}`
+	cmd := exec.Command(jq, "-c", "del("+expr+")")
+	cmd.Stdin = strings.NewReader(live)
+	got, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"imagePullSecrets":[{"name":"mirror-secret"}]}`; strings.TrimSpace(string(got)) != want {
+		t.Fatalf("after ignoring: %s, want %s", got, want)
 	}
 }

@@ -378,6 +378,14 @@ func application(c *config.Config, workspace string) Object {
 				"syncOptions": []any{"ServerSideApply=true", "RespectIgnoreDifferences=true", "PruneLast=true"},
 				"retry":       map[string]any{"limit": 0},
 			},
+			// OpenShift appends its own <sa>-dockercfg-* pull secret to every
+			// ServiceAccount; without this the cert-manager ServiceAccounts
+			// (which carry the mirror pull secret) read OutOfSync after every
+			// sync. Only OpenShift's entries are ignored, never ours.
+			"ignoreDifferences": []any{map[string]any{
+				"group": "", "kind": "ServiceAccount",
+				"jqPathExpressions": []any{`.imagePullSecrets[]? | select(.name | test("-dockercfg-[a-z0-9]+$"))`},
+			}},
 		}}
 	return app
 }
