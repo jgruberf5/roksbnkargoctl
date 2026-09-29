@@ -477,7 +477,11 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	// Collect the uninstall checks' logs WHILE Argo CD deletes the Application:
 	// the PreDelete pod is deleted with it (issue #5).
 	logs := newCheckLogCollector(k.Typed, filepath.Join(s.ws.Dir, "diagnostics", "uninstall-"+time.Now().UTC().Format("20060102-150405")))
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go logs.Watch(watchCtx)
 	saveLogs := func() {
+		stopWatch()
 		logs.Snapshot(ctx)
 		if n := logs.Finish("uninstall"); n > 0 {
 			p.ok("uninstall check logs (%d pods) saved to %s", n, logs.dir)

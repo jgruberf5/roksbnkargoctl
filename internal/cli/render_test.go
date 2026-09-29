@@ -91,3 +91,48 @@ func TestMirrorCredentialsIndependentOfSource(t *testing.T) {
 		t.Fatalf("no username: want no credential, got %+v", got)
 	}
 }
+
+// Found live: in mirror mode the check digest was resolved against the mirror,
+// whose :dev was a copy replicated before a check fix — so the cluster ran the
+// old check. The digest must come from upstream and be present in the mirror.
+func TestResolveCheckImageRefusesAStaleMirror(t *testing.T) {
+	upstream := httptest.NewServer(registry.New())
+	defer upstream.Close()
+	mirror := httptest.NewServer(registry.New())
+	defer mirror.Close()
+	up := strings.TrimPrefix(upstream.URL, "http://")
+	mh := strings.TrimPrefix(mirror.URL, "http://")
+	newImg, _ := random.Image(256, 1)
+	oldImg, _ := random.Image(256, 1)
+	src := up + "/jgruberf5/roksbnkargoctl-check:dev"
+	if err := crane.Push(newImg, src); err != nil {
+		t.Fatal(err)
+	}
+	// The mirror holds an OLDER image under the same tag.
+	if err := crane.Push(oldImg, mh+"/m/jgruberf5/roksbnkargoctl-check:dev"); err != nil {
+		t.Fatal(err)
+	}
+	c := &config.Config{Check: config.Check{Image: src},
+		Registry: config.Registry{Source: config.SourceMirror, Mirror: config.Mirror{Host: mh, Prefix: "m"}}}
+	pl, _ := far.NewPuller(nil, nil)
+	noWarn := func(string, ...any) {}
+	_, err := resolveCheckImage(context.Background(), pl, c, noWarn)
+	if err == nil || !strings.Contains(err.Error(), "registry replicate") {
+		t.Fatalf("a stale mirror copy must be refused, naming registry replicate; got %v", err)
+	}
+	// After replication the mirror has the upstream digest: pinned to the MIRROR path.
+	if err := crane.Push(newImg, mh+"/m/jgruberf5/roksbnkargoctl-check:dev"); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := newImg.Digest()
+	got, err := resolveCheckImage(context.Background(), pl, c, noWarn)
+	if err != nil || got != mh+"/m/jgruberf5/roksbnkargoctl-check@"+want.String() {
+		t.Fatalf("got %s, %v; want the mirror path at the upstream digest", got, err)
+	}
+	// Not mirror mode: the upstream reference, by digest.
+	c.Registry.Source = config.SourceFAR
+	got, err = resolveCheckImage(context.Background(), pl, c, noWarn)
+	if err != nil || got != up+"/jgruberf5/roksbnkargoctl-check@"+want.String() {
+		t.Fatalf("far mode: got %s, %v", got, err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,5 +51,44 @@ func TestCollectorThrottles(t *testing.T) {
 	c.MaybeSnapshot(context.Background())
 	if c.last != first {
 		t.Fatal("MaybeSnapshot within the interval must not snapshot again")
+	}
+}
+
+// The live gap polling left: a PreDelete check that finishes and is deleted
+// between two snapshots. The watch must catch it with no Snapshot at all.
+func TestCollectorWatchCatchesAPodBetweenSnapshots(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := fake.NewSimpleClientset()
+	c := newCheckLogCollector(cs, filepath.Join(t.TempDir(), "u"))
+	started := make(chan struct{})
+	go func() { close(started); c.Watch(ctx) }()
+	<-started
+	time.Sleep(100 * time.Millisecond) // let the watch register
+	pods := cs.CoreV1().Pods(render.CheckNamespace)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-xyz", Namespace: render.CheckNamespace}}
+	if _, err := pods.Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "check", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}}}
+	if _, err := pods.UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c.mu.Lock()
+		_, got := c.logs["check-pre-uninstall-xyz"]
+		c.mu.Unlock()
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watch did not capture the terminated pod's log")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = pods.Delete(ctx, "check-pre-uninstall-xyz", metav1.DeleteOptions{})
+	if n := c.Finish("uninstall"); n != 1 {
+		t.Fatalf("kept %d logs, want 1", n)
 	}
 }

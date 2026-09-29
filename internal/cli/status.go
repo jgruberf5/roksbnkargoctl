@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -274,6 +275,7 @@ type checkLogCollector struct {
 	dir   string
 	every time.Duration
 	last  time.Time
+	mu    sync.Mutex
 	logs  map[string][]byte
 }
 
@@ -289,13 +291,52 @@ func (c *checkLogCollector) Snapshot(ctx context.Context) {
 		return
 	}
 	for _, p := range pods.Items {
-		raw, err := c.pods.GetLogs(p.Name, &corev1.PodLogOptions{TailLines: ptr(int64(2000))}).DoRaw(ctx)
-		if err != nil || len(raw) == 0 {
-			continue
-		}
-		c.logs[p.Name] = raw
-		if err := os.MkdirAll(c.dir, 0o700); err == nil {
-			_ = os.WriteFile(filepath.Join(c.dir, "log-"+p.Name+".txt"), raw, 0o600)
+		c.fetch(ctx, p.Name)
+	}
+}
+
+// fetch reads one pod's log and keeps it if non-empty.
+func (c *checkLogCollector) fetch(ctx context.Context, pod string) {
+	raw, err := c.pods.GetLogs(pod, &corev1.PodLogOptions{TailLines: ptr(int64(2000))}).DoRaw(ctx)
+	if err != nil || len(raw) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logs[pod] = raw
+	if err := os.MkdirAll(c.dir, 0o700); err == nil {
+		_ = os.WriteFile(filepath.Join(c.dir, "log-"+pod+".txt"), raw, 0o600)
+	}
+}
+
+// Watch fetches a pod's log the moment one of its containers terminates, until
+// ctx ends. Polling alone missed the PreDelete check live: with nothing to
+// drain it finished inside one snapshot interval and was deleted with the
+// Application before the next.
+func (c *checkLogCollector) Watch(ctx context.Context) {
+	w, err := c.pods.Watch(ctx, metav1.ListOptions{})
+	if err != nil {
+		return
+	}
+	defer w.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-w.ResultChan():
+			if !ok {
+				return
+			}
+			p, isPod := ev.Object.(*corev1.Pod)
+			if !isPod {
+				continue
+			}
+			for _, cs := range p.Status.ContainerStatuses {
+				if cs.State.Terminated != nil {
+					c.fetch(ctx, p.Name)
+					break
+				}
+			}
 		}
 	}
 }
@@ -310,6 +351,8 @@ func (c *checkLogCollector) MaybeSnapshot(ctx context.Context) {
 // Finish writes summary.md with each pod's final verdict line and returns how
 // many pods' logs were kept.
 func (c *checkLogCollector) Finish(label string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if len(c.logs) == 0 {
 		return 0
 	}
