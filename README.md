@@ -52,8 +52,8 @@ container (one static binary on `scratch`):
 | `gateway-api-sweep` | during FLO's install | keeps OpenShift's Gateway API admission policy out of FLO's CRD installer's way |
 | `license` | last sync wave | builds `License` from the JWT Secret, waits for `Active` and `CNEInstance Available` |
 | `post-install` | PostSync | FLO, CNEInstance, License, TMM replicas spread across zones, no image-pull failures |
-| `pre-uninstall` | PreDelete | drains F5 resources while FLO still runs, `CNEInstance` last |
-| `post-uninstall` | PostDelete | license secrets, namespaces, stuck F5 finalizers, leftovers report |
+| `pre-uninstall` | `uninstall`, before the delete (and PreDelete) | drains F5 resources while FLO still runs, `CNEInstance` last |
+| `post-uninstall` | `uninstall`, after the delete (and PostDelete) | license secrets, namespaces, stuck F5 finalizers, leftovers report |
 
 ## Modes
 

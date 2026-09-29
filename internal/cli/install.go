@@ -176,6 +176,15 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 	if err != nil {
 		return err
 	}
+	// Argo CD's upsert REPLACES metadata.finalizers. The controller adds its
+	// pre-delete/post-delete finalizers itself once it sees the hooks; sending
+	// only ours on a re-install would strip them, and a delete before the next
+	// reconcile would then skip the uninstall checks.
+	if cur, err := ac.GetApplication(ctx, app.Metadata.Name, ""); err == nil {
+		app.Metadata.Finalizers = mergeFinalizers(cur.Metadata.Finalizers, app.Metadata.Finalizers)
+	} else if !argocd.IsNotFound(err) {
+		return fmt.Errorf("reading the Application: %w", err)
+	}
 	if _, err := ac.UpsertApplication(ctx, app); err != nil {
 		return fmt.Errorf("creating the Application: %w", err)
 	}
@@ -448,15 +457,17 @@ func ensureTrustedProfile(ctx context.Context, s *session, ibmc *ibm.Client) err
 
 func newUninstallCmd() *cobra.Command {
 	var timeout time.Duration
-	var purgeGit, keepProfile, detachTGW, removeRepo bool
+	var purgeGit, keepProfile, detachTGW, removeRepo, force bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Delete the Application; the uninstall checks drain BNK in ROKS",
-		Long: `uninstall deletes the Argo CD Application with foreground cascading. Argo CD
-runs the PreDelete check in ROKS (drains F5 resources while FLO still runs,
-CNEInstance last), deletes everything it synced, then the PostDelete check
-(license secrets, namespaces, stuck F5 finalizers). Then uninstall removes what
-install wrote out of band: the Secrets, the check namespace and RBAC, the
+		Long: `uninstall runs the pre-uninstall check in ROKS (drains F5 resources while
+FLO still runs, CNEInstance last), deletes the Argo CD Application with
+foreground cascading so Argo CD prunes everything it synced, then runs the
+post-uninstall check (license secrets, stuck F5 finalizers, namespaces) and
+confirms the BNK namespaces are gone. The checks run as Jobs uninstall waits on:
+Argo CD can skip its own PreDelete/PostDelete hooks (argoproj/argo-cd#29100).
+Then uninstall removes what install wrote out of band: the Secrets, the check namespace and RBAC, the
 Argo CD cluster registration and its ServiceAccount, and the trusted profile.
 
 F5 CRDs stay (deleting a CRD deletes every CR and can hang namespaces).
@@ -470,7 +481,7 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 			if !confirm(cmd, fmt.Sprintf("Uninstall BNK from %s (Application %s)?", s.cfg.Cluster, s.cfg.ArgoCD.Application)) {
 				return errors.New("not confirmed (pass --yes to skip the prompt)")
 			}
-			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo})
+			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo, force})
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 45*time.Minute, "how long to wait for Argo CD to finish deleting")
@@ -478,12 +489,13 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 	cmd.Flags().BoolVar(&keepProfile, "keep-trusted-profile", false, "keep the IAM trusted profile")
 	cmd.Flags().BoolVar(&detachTGW, "detach-tgw", false, "detach the cluster VPC from the transit gateway if install attached it")
 	cmd.Flags().BoolVar(&removeRepo, "remove-repo", false, "remove the Git repo credential from Argo CD (other Applications may use it)")
+	cmd.Flags().BoolVar(&force, "force", false, "delete the Application even when the pre-uninstall check fails or cannot run")
 	return cmd
 }
 
 type uninstallOpts struct {
-	timeout                                      time.Duration
-	purgeGit, keepProfile, detachTGW, removeRepo bool
+	timeout                                             time.Duration
+	purgeGit, keepProfile, detachTGW, removeRepo, force bool
 }
 
 func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
@@ -496,21 +508,31 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if err != nil {
 		return err
 	}
-	// Collect the uninstall checks' logs WHILE Argo CD deletes the Application:
-	// the PreDelete pod is deleted with it (issue #5). Without cluster access the
-	// uninstall still proceeds; only the logs are lost.
+	// Collect the uninstall checks' logs while they run: a hook pod is deleted
+	// with the Application (issue #5).
 	k, kerr := s.Kube(ctx)
+	if kerr != nil {
+		if !o.force {
+			return fmt.Errorf("cannot reach the cluster to run the uninstall checks: %w (--force deletes the Application anyway)", kerr)
+		}
+		p.warn("cannot reach the cluster (%v); deleting the Application without the uninstall checks (--force)", kerr)
+	}
 	var logs *checkLogCollector
 	if kerr == nil {
 		if stream, err := k.Streaming(); err == nil {
 			logs = newCheckLogCollector(k.Typed, stream, filepath.Join(s.ws.Dir, "diagnostics", "uninstall-"+time.Now().UTC().Format("20060102-150405")))
 		}
-	} else {
-		p.warn("cannot reach the cluster (%v); the uninstall checks' logs will not be collected", kerr)
 	}
-	deleteApp := func(tick func()) error {
-		if _, err := ac.GetApplication(ctx, c.ArgoCD.Application, ""); err == nil {
-			p.step("deleting Application %s (PreDelete check → prune → PostDelete check)", c.ArgoCD.Application)
+	steps := uninstallSteps{p: p, force: o.force,
+		appExists: func() (bool, error) {
+			_, err := ac.GetApplication(ctx, c.ArgoCD.Application, "")
+			if argocd.IsNotFound(err) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+		deleteApp: func(tick func()) error {
+			p.step("deleting Application %s (Argo CD prunes what it synced)", c.ArgoCD.Application)
 			if err := ac.Delete(ctx, c.ArgoCD.Application, true, "foreground"); err != nil {
 				return err
 			}
@@ -527,22 +549,22 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 			}
 			p.ok("Application deleted")
 			return nil
-		} else if argocd.IsNotFound(err) {
-			p.info("Application %s does not exist; cleaning up what install wrote out of band", c.ArgoCD.Application)
-			return nil
-		} else {
-			return err
-		}
+		},
 	}
+	if kerr == nil {
+		steps.runCheck = func(mode string) error { return runCheckJob(ctx, s, k.Typed, mode) }
+		steps.remaining = func() ([]string, error) { return namespacesRemaining(ctx, k.Typed, bnkNamespaces(c)) }
+	}
+	uninstall := steps.run
 	if logs != nil {
-		n, err := collectCheckLogsDuring(ctx, logs, deleteApp)
+		n, err := collectCheckLogsDuring(ctx, logs, uninstall)
 		if n > 0 {
 			p.ok("uninstall check logs (%d pods) saved to %s", n, logs.dir)
 		}
 		if err != nil {
 			return err
 		}
-	} else if err := deleteApp(func() {}); err != nil {
+	} else if err := uninstall(func() {}); err != nil {
 		return err
 	}
 	if kerr != nil {

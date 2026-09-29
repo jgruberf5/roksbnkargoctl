@@ -31,7 +31,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | `argocd` | `up`/`down`/`status`: a **test** Argo CD hub (k3s + Argo CD on a VSI), like roksbnkctl's demo hub | IBM VPC, TGW |
 | `render` | Writes every manifest the Application syncs into `<workspace>/manifests/` | FAR (chart pulls) |
 | `install` | Out-of-band secrets + trusted profile, cluster registration, Git publish, Application create + sync | IBM, ROKS, Git, Argo CD |
-| `uninstall` | Deletes the Application (PreDelete/PostDelete checks run in ROKS), then the out-of-band objects | Argo CD, ROKS, IBM |
+| `uninstall` | Runs `check pre-uninstall`, deletes the Application, runs `check post-uninstall`, verifies the BNK namespaces are gone, then removes the out-of-band objects | Argo CD, ROKS, IBM |
 | `status` | Application sync/health, check results, BNK CR state | Argo CD, ROKS |
 | `agent` | Scaffolds `AGENTS.md` + troubleshooting personas into the workspace | local |
 
@@ -79,8 +79,8 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −2 | `CNEInstance f5-bnk-f5-cne-controller` |
 | 0 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
-| PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3) |
-| PostDelete | Hook `check post-uninstall` |
+| PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3); `uninstall` also runs it as a Job first (see Uninstall order) |
+| PostDelete | Hook `check post-uninstall`; `uninstall` also runs it as a Job after the delete |
 
 The sweep is a **Deployment**, not a hook: the CRDs it waits for are installed by FLO in the
 *next* wave, and Argo CD will not start a wave until the previous wave's hooks finish. A
@@ -181,12 +181,31 @@ disconnected (FLP) install and uninstall; mirror mode (Artifactory, 93 artifacts
 uninstall with 3 TMM replicas on VPC block storage; `argocd up` and `flp up/down`. Not yet run
 live: a private-CA mirror, an anonymous mirror, `flp.external`.
 
+Correction: those uninstalls ended clean because the PostDelete check ran; none of their
+saved logs shows a pre-uninstall run, so the drain was never proven through Argo CD's hook
+(see Uninstall order). The CLI-run checks are what a live uninstall has to prove next.
+
 ## Uninstall order
 
-`uninstall` → Argo CD deletes the Application → PreDelete `check pre-uninstall` drains F5 CRs
-while FLO lives → Argo CD prunes in reverse wave order → PostDelete `check post-uninstall` →
-CLI removes the JWT/pull Secrets, the trusted profile, the cluster registration and the
-repository entry. Git history is left alone.
+`uninstall` runs `check pre-uninstall` as a Job it waits on (drains F5 CRs while FLO lives;
+a failure stops here and the Application is NOT deleted, unless `--force`) → deletes the
+Application with foreground cascading; Argo CD prunes in reverse wave order → runs
+`check post-uninstall` as a Job while any BNK namespace remains → fails unless `f5-bnk`,
+`f5-utils` and (when installed) `cert-manager` are gone → removes the JWT/pull Secrets, the
+check namespace, the trusted profile, the cluster registration and the repository entry.
+Git history is left alone. Re-running `uninstall` with the Application already gone runs
+`check post-uninstall` again, so an interrupted uninstall finishes.
+
+**Why the CLI runs the checks and not only Argo CD.** Argo CD 3.5.1 can declare a
+PreDelete/PostDelete hook complete the moment it creates it (argoproj/argo-cd#29100, open):
+a second finalization pass gets `AlreadyExists` from the create, finds no hook in its
+not-yet-updated cache, and removes the finalizer. Live on bnkargo the pre-uninstall pod got
+SIGTERM 0.4s after it started, the cascade pruned FLO beneath it, post-uninstall never ran,
+and `f5-bnk`, `f5-utils` and `cert-manager` stayed behind while the old `uninstall` printed
+"uninstalled". The hooks stay in Git so a delete from the Argo CD UI still tries them, best
+effort; both checks are idempotent, so a hook that does run after the CLI's copy finds
+nothing left. `install` also keeps Argo CD's `pre-delete-finalizer…`/`post-delete-finalizer…`
+finalizers when it re-upserts the Application: Argo CD's upsert replaces the list.
 
 ## Not in scope
 
