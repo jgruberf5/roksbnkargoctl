@@ -472,6 +472,10 @@ func (localLoader) Load(ep *transport.Endpoint) (storer.Storer, error) {
 	if len(p) >= 3 && p[0] == '/' && p[2] == ':' && filepath.VolumeName(p[1:]) != "" {
 		p = p[1:]
 	}
+	// file://C:/x (two slashes) parses the drive letter as the URL host.
+	if len(ep.Host) == 1 && filepath.VolumeName(ep.Host+":") != "" {
+		p = ep.Host + ":" + ep.Path
+	}
 	fsys := osfs.New(p)
 	if _, err := fsys.Stat("config"); err != nil {
 		dot, err := fsys.Chroot(git.GitDirName)

@@ -1,4 +1,6 @@
 /bin/
+/check
+/roksbnkargoctl
 /dist/
 *.test
 *.out
@@ -6,4 +8,7 @@
 .roksbnkargoctl/
 *.tgz
 *.jwt
-kubeconfig*
+# Anchored: an unanchored "kubeconfig*" also ignored internal/ibm/kubeconfig.go,
+# which CI then could not build.
+/kubeconfig*
+*.kubeconfig

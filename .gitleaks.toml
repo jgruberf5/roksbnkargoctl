@@ -1,0 +1,5 @@
+# gitleaks configuration: the default rules, plus allowlist entries that were
+# each inspected and found benign. Add an entry only with a reason; an
+# unexplained allowlist is how a real finding gets suppressed.
+[extend]
+useDefault = true

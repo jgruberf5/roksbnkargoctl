@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 )
@@ -154,7 +155,12 @@ func (n nextHref) href() string {
 
 // listPaged walks a VPC-style collection: each page is decoded by decode, which
 // returns the next.href cursor ("" on the last page).
+//
+// IBM's next.href omits the version (and generation) query parameters the VPC
+// API requires on every call, and a page-two GET without them is a 400
+// "missing_version". So the first URL's are carried onto every next page.
 func (c *Client) listPaged(ctx context.Context, url string, decode func([]byte) (string, error)) error {
+	carry := carriedParams(url)
 	for url != "" {
 		raw, err := c.doRaw(ctx, http.MethodGet, url, nil, nil)
 		if err != nil {
@@ -164,9 +170,44 @@ func (c *Client) listPaged(ctx context.Context, url string, decode func([]byte) 
 		if err != nil {
 			return fmt.Errorf("parsing %s: %w", redactQuery(url), err)
 		}
-		url = next
+		url = withParams(next, carry)
 	}
 	return nil
+}
+
+// carriedParams extracts the query parameters every page must repeat.
+func carriedParams(raw string) neturl.Values {
+	out := neturl.Values{}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return out
+	}
+	q := u.Query()
+	for _, k := range []string{"version", "generation"} {
+		if v := q.Get(k); v != "" {
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// withParams adds carried parameters the next URL lacks.
+func withParams(next string, carry neturl.Values) string {
+	if next == "" || len(carry) == 0 {
+		return next
+	}
+	u, err := neturl.Parse(next)
+	if err != nil {
+		return next
+	}
+	q := u.Query()
+	for k := range carry {
+		if q.Get(k) == "" {
+			q.Set(k, carry.Get(k))
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // poll calls check every c.pollInterval until it reports done, returns an
@@ -205,11 +246,4 @@ type ref struct {
 // nameRef is the {"name": ...} identity (zones, profiles).
 type nameRef struct {
 	Name string `json:"name"`
-}
-
-func refOrNil(id string) *ref {
-	if id == "" {
-		return nil
-	}
-	return &ref{ID: id}
 }

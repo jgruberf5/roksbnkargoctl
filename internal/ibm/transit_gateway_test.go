@@ -61,8 +61,6 @@ func TestResolveTransitGateway(t *testing.T) {
 type connSim struct {
 	mu       sync.Mutex
 	statuses []string // successive GET results; "404" means gone
-	deletes  int
-	deleteAt int // index into statuses when DELETE arrived
 }
 
 func (s *connSim) next() string {

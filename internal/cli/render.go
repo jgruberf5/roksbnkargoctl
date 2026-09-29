@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"regexp"
 
 	"github.com/spf13/cobra"
 
@@ -59,15 +59,25 @@ install: it is the whole of what the customer's repo will contain.`,
 	return cmd
 }
 
+// releaseTag matches the tags CI publishes a check image for (vX.Y.Z).
+var releaseTag = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
+
+// checkImageTag is the check image tag this build uses: its own version for a
+// release build, otherwise :dev (what main publishes). A `git describe` version
+// like "2ed6902" or "v0.1.0-3-gabc" has no image, and rendering it would leave
+// every check pod in ImagePullBackOff.
+func checkImageTag(version string) string {
+	if releaseTag.MatchString(version) {
+		return version
+	}
+	return "dev"
+}
+
 // checkImage is the check image reference ROKS pulls.
 func checkImage(c *config.Config) string {
 	img := c.Check.Image
 	if img == "" {
-		tag := Version
-		if tag == "" || strings.HasPrefix(tag, "dev") || strings.Contains(tag, "-dirty") {
-			tag = "dev"
-		}
-		img = CheckImageRepo + ":" + tag
+		img = CheckImageRepo + ":" + checkImageTag(Version)
 	}
 	if c.Registry.Source == config.SourceMirror {
 		return registry.Artifact{Source: img}.Dest(c.ImageHost())

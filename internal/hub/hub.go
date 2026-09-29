@@ -143,7 +143,7 @@ func WaitReady(ctx context.Context, url string, timeout time.Duration, log func(
 			last = msg
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("Argo CD at %s not ready after %s: %w", url, timeout, err)
+			return fmt.Errorf("the Argo CD at %s was not ready after %s: %w", url, timeout, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -198,7 +198,7 @@ func mint(ctx context.Context, c *http.Client, url, pw string) (string, error) {
 		return "", fmt.Errorf("generating the %s token: %w", Account, err)
 	}
 	if tok.Token == "" {
-		return "", errors.New("Argo CD returned an empty token")
+		return "", errors.New("empty token from Argo CD")
 	}
 	return tok.Token, nil
 }
