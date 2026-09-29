@@ -6,8 +6,11 @@ import (
 	"compress/gzip"
 	"flag"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/jgruberf5/roksbnkargoctl/cmd/check/internal/checks"
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 	"github.com/jgruberf5/roksbnkargoctl/internal/render"
@@ -117,4 +120,102 @@ func tinyChart(t *testing.T, name string) []byte {
 	tw.Close()
 	gz.Close()
 	return buf.Bytes()
+}
+
+// #11: the renderer named the CNEInstance with a constant, the check derives the
+// name from the namespace it is told; they agreed only for f5-bnk. Render a
+// non-default namespace and hold every check that looks the CR up by name to
+// the name actually rendered.
+func TestChecksLookUpTheRenderedCNEInstance(t *testing.T) {
+	c := &config.Config{IBMCloud: config.IBMCloud{Region: "us-east"}, Cluster: "c", TransitGateway: "t",
+		COS: config.COS{Bucket: "b"}, ArgoCD: config.ArgoCD{Server: "https://a"}, Git: config.Git{URL: "https://g/r.git"},
+		BNK: config.BNK{Namespace: "bnk", UtilsNamespace: "bnk-utils"}}
+	c.Defaults("ws")
+	c.Resolved = &config.Resolved{VPCName: "v", TrustedProfileID: "p", ArgoCDClusterServer: "https://k"}
+	in := render.Inputs{Config: c, Workspace: "ws", CheckImage: "ghcr.io/x/check:dev", RunID: "r",
+		Manifest: &far.Manifest{Version: config.BNKVersion,
+			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
+			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
+		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"),
+		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}}
+	out, err := render.Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cneName, cneNS string
+	for _, o := range out.Git {
+		if o.Kind() == "CNEInstance" {
+			cneName = o.Name()
+			cneNS, _ = o["metadata"].(map[string]any)["namespace"].(string)
+		}
+	}
+	if cneNS != "bnk" {
+		t.Fatalf("CNEInstance rendered in %q, want bnk", cneNS)
+	}
+	// The flag each mode takes the CNEInstance's namespace from.
+	nsFlag := map[string]string{"license": "--cne-namespace=", "post-install": "--bnk-namespace="}
+	checked := 0
+	for _, o := range out.Git {
+		for _, args := range checkArgs(o, in.CheckImage) {
+			prefix, ok := nsFlag[args[0]]
+			if !ok {
+				continue
+			}
+			for _, a := range args[1:] {
+				if strings.HasPrefix(a, prefix) {
+					checked++
+					if got := checks.CNEInstanceName(strings.TrimPrefix(a, prefix)); got != cneName {
+						t.Errorf("check %s looks for CNEInstance %q; the render names it %q", args[0], got, cneName)
+					}
+				}
+			}
+		}
+	}
+	if checked != len(nsFlag) {
+		t.Fatalf("checked %d modes, want %d", checked, len(nsFlag))
+	}
+}
+
+// #12: the license hook's deadline was 40m while its own waits could reach 65m,
+// so a slow install died of DeadlineExceeded with no finding. Parse the
+// rendered args with the real flag set and hold the Job's deadline above the
+// sum of the waits the check will actually use.
+func TestLicenseDeadlineCoversItsWaits(t *testing.T) {
+	c := &config.Config{IBMCloud: config.IBMCloud{Region: "us-east"}, Cluster: "c", TransitGateway: "t",
+		COS: config.COS{Bucket: "b"}, ArgoCD: config.ArgoCD{Server: "https://a"}, Git: config.Git{URL: "https://g/r.git"}}
+	c.Defaults("ws")
+	c.Resolved = &config.Resolved{VPCName: "v", TrustedProfileID: "p", ArgoCDClusterServer: "https://k"}
+	in := render.Inputs{Config: c, Workspace: "ws", CheckImage: "ghcr.io/x/check:dev", RunID: "r",
+		Manifest: &far.Manifest{Version: config.BNKVersion,
+			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
+			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
+		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"),
+		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}}
+	out, err := render.Render(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range out.Git {
+		for _, args := range checkArgs(o, in.CheckImage) {
+			if args[0] != "license" {
+				continue
+			}
+			fs := flag.NewFlagSet("license", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			modes["license"](fs)
+			if err := fs.Parse(args[1:]); err != nil {
+				t.Fatal(err)
+			}
+			var waits time.Duration
+			for _, f := range []string{"crd-timeout", "apply-retry", "timeout", "cne-timeout"} {
+				waits += fs.Lookup(f).Value.(flag.Getter).Get().(time.Duration)
+			}
+			deadline := time.Duration(o["spec"].(map[string]any)["activeDeadlineSeconds"].(int)) * time.Second
+			if deadline <= waits {
+				t.Fatalf("check-license deadline %s does not cover its waits (%s)", deadline, waits)
+			}
+			return
+		}
+	}
+	t.Fatal("no license check rendered")
 }

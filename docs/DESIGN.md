@@ -76,7 +76,7 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
 | −5 | FLO chart (its 26 `k8s.f5.com` CRDs, `Delete=false`) |
 | −4 | `CNEManifest bnk-2.4.0` |
-| −2 | `CNEInstance f5-bnk-f5-cne-controller` |
+| −2 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
 | 0 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
 | PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3); `uninstall` also runs it as a Job first (see Uninstall order) |

@@ -78,7 +78,7 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 	if err != nil {
 		return err
 	}
-	if err := ac.RequireAtLeast(ctx, MinArgoCD); err != nil {
+	if err := ac.CheckServer(ctx, MinArgoCD); err != nil {
 		return fmt.Errorf("checking the Argo CD at %s: %w", c.ArgoCD.Server, err)
 	}
 	v, _ := ac.Version(ctx)
