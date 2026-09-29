@@ -8,10 +8,12 @@ package gitpub
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -417,21 +419,52 @@ func authFor(o Options) (transport.AuthMethod, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gitpub: parse SSH key: %w", err)
 		}
-		switch {
-		case o.InsecureIgnoreHostKey:
+		if o.InsecureIgnoreHostKey {
 			keys.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // operator opted in
-		case o.SSHKnownHosts != "":
-			cb, err := knownHostsCallback(o.SSHKnownHosts)
-			if err != nil {
-				return nil, err
-			}
-			keys.HostKeyCallback = cb
-		default:
-			return nil, errors.New("gitpub: an ssh URL needs SSHKnownHosts or InsecureIgnoreHostKey")
+			return keys, nil
 		}
+		// The verified keys of the public Git hosts always apply; an operator's
+		// known_hosts adds hosts, it never replaces those.
+		content := BuiltinKnownHosts
+		if o.SSHKnownHosts != "" {
+			content = o.SSHKnownHosts + "\n" + BuiltinKnownHosts
+		}
+		cb, err := knownHostsCallback(content)
+		if err != nil {
+			return nil, err
+		}
+		keys.HostKeyCallback = explainHostKeyErrors(cb, o.SSHKnownHosts != "")
 		return keys, nil
 	default:
 		return nil, nil
+	}
+}
+
+// BuiltinKnownHosts are the SSH host keys of github.com, gitlab.com and
+// bitbucket.org, each verified against the provider's published fingerprints
+// (see the header of files/known_hosts).
+//
+//go:embed files/known_hosts
+var BuiltinKnownHosts string
+
+// explainHostKeyErrors turns knownhosts' terse errors into the two cases an
+// operator must tell apart: an unknown host (configure it) and a changed key
+// (stop: possibly a man-in-the-middle).
+func explainHostKeyErrors(cb ssh.HostKeyCallback, haveFile bool) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := cb(hostname, remote, key)
+		var ke *knownhosts.KeyError
+		if err == nil || !errors.As(err, &ke) {
+			return err
+		}
+		if len(ke.Want) == 0 {
+			hint := "set git.known_hosts_file to a known_hosts file for it"
+			if haveFile {
+				hint = "add it to git.known_hosts_file"
+			}
+			return fmt.Errorf("gitpub: SSH host %s is not a known host (built in: github.com, gitlab.com, bitbucket.org); %s", hostname, hint)
+		}
+		return fmt.Errorf("gitpub: SSH HOST KEY MISMATCH for %s: the server presented a %s key that does not match the known key — refusing to connect (possible man-in-the-middle; if the host really changed its key, update git.known_hosts_file)", hostname, key.Type())
 	}
 }
 

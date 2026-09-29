@@ -87,8 +87,12 @@ owns, then the PostDelete check (license secrets, namespaces, stuck F5
 finalizers). The CLI then removes the Secrets it wrote, the trusted profile and
 the cluster registration.
 
-- **Application stuck deleting** — the PreDelete hook failed. Its Job is kept
-  (`hook-delete-policy: BeforeHookCreation`); `diagnose` collects its log.
+- **Application stuck deleting** — the PreDelete hook failed. `uninstall` collects every
+  uninstall check's log while the Application is being deleted, into
+  `diagnostics/uninstall-<time>/` (read `summary.md`), including the PreDelete pod's,
+  which Argo CD deletes with the Application.
+- **Git push fails `SSH HOST KEY MISMATCH`** — stop: the server's key changed or someone is
+  in the path. **`is not a known host`** — set `git.known_hosts_file`.
 - **Namespace `f5-bnk` Terminating** — an F5 finalizer whose controller is gone.
   `check post-uninstall` strips only `f5.com`/`f5net.com` finalizers. Never strip
   `kubernetes.io/*` finalizers.

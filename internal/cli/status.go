@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/argocd"
@@ -261,31 +263,67 @@ func runDiagnose(ctx context.Context, s *session) (string, error) {
 
 func ptr[T any](v T) *T { return &v }
 
-// saveCheckLogs writes every check pod's log (and its final verdict line) into
-// diagnostics/<label>-<time>/ and returns the directory ("" if there were none).
-func saveCheckLogs(ctx context.Context, s *session, k *kube.Client, label string) (string, error) {
-	pods, err := k.Typed.CoreV1().Pods(render.CheckNamespace).List(ctx, metav1.ListOptions{})
-	if err != nil || len(pods.Items) == 0 {
-		return "", err
+// checkLogCollector keeps the latest log of every check pod it has seen and
+// writes it to disk each time, so a pod deleted mid-uninstall keeps its log.
+//
+// Issue #5: Argo CD deletes the PreDelete hook's pod together with the
+// Application, before uninstall can read it after the fact. The collector runs
+// while the Application is being deleted, when that pod still exists.
+type checkLogCollector struct {
+	pods  corev1client.PodInterface
+	dir   string
+	every time.Duration
+	last  time.Time
+	logs  map[string][]byte
+}
+
+func newCheckLogCollector(k kubernetes.Interface, dir string) *checkLogCollector {
+	return &checkLogCollector{pods: k.CoreV1().Pods(render.CheckNamespace), dir: dir, every: 5 * time.Second, logs: map[string][]byte{}}
+}
+
+// Snapshot reads every check pod's log now and saves any non-empty one.
+func (c *checkLogCollector) Snapshot(ctx context.Context) {
+	c.last = time.Now()
+	pods, err := c.pods.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return
 	}
-	dir := filepath.Join(s.ws.Dir, "diagnostics", label+"-"+time.Now().UTC().Format("20060102-150405"))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	var verdicts []string
 	for _, p := range pods.Items {
-		raw, err := k.Typed.CoreV1().Pods(render.CheckNamespace).GetLogs(p.Name, &corev1.PodLogOptions{TailLines: ptr(int64(2000))}).DoRaw(ctx)
-		if err != nil {
+		raw, err := c.pods.GetLogs(p.Name, &corev1.PodLogOptions{TailLines: ptr(int64(2000))}).DoRaw(ctx)
+		if err != nil || len(raw) == 0 {
 			continue
 		}
-		_ = os.WriteFile(filepath.Join(dir, "log-"+p.Name+".txt"), raw, 0o600)
-		if v := lastJSONLine(raw); v != "" {
-			verdicts = append(verdicts, "- "+p.Name+": `"+v+"`")
+		c.logs[p.Name] = raw
+		if err := os.MkdirAll(c.dir, 0o700); err == nil {
+			_ = os.WriteFile(filepath.Join(c.dir, "log-"+p.Name+".txt"), raw, 0o600)
 		}
 	}
+}
+
+// MaybeSnapshot snapshots at most every c.every.
+func (c *checkLogCollector) MaybeSnapshot(ctx context.Context) {
+	if time.Since(c.last) >= c.every {
+		c.Snapshot(ctx)
+	}
+}
+
+// Finish writes summary.md with each pod's final verdict line and returns how
+// many pods' logs were kept.
+func (c *checkLogCollector) Finish(label string) int {
+	if len(c.logs) == 0 {
+		return 0
+	}
+	var verdicts []string
+	for name, raw := range c.logs {
+		v := lastJSONLine(raw)
+		if v == "" {
+			v = "(no verdict line: the pod was still running at its last snapshot)"
+		}
+		verdicts = append(verdicts, "- "+name+": `"+v+"`")
+	}
 	sort.Strings(verdicts)
-	_ = os.WriteFile(filepath.Join(dir, "summary.md"), []byte("# "+label+" check verdicts\n\n"+strings.Join(verdicts, "\n")+"\n"), 0o600)
-	return dir, nil
+	_ = os.WriteFile(filepath.Join(c.dir, "summary.md"), []byte("# "+label+" check verdicts\n\n"+strings.Join(verdicts, "\n")+"\n"), 0o600)
+	return len(c.logs)
 }
 
 func lastJSONLine(b []byte) string {

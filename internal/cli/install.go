@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -66,6 +67,10 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 		return err
 	}
 	gitToken, sshKey, err := gitCredentials(c)
+	if err != nil {
+		return err
+	}
+	knownHosts, insecureHostKey, err := gitHostKeys(c, p)
 	if err != nil {
 		return err
 	}
@@ -141,7 +146,7 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 	p.step("publishing manifests/git to %s (%s:%s)", c.Git.URL, c.Git.Branch, c.Git.Path)
 	sha, changed, err := gitpub.Publish(ctx, gitpub.Options{
 		URL: c.Git.URL, Branch: c.Git.Branch, Path: c.Git.Path,
-		Username: c.Git.Username, Token: gitToken, SSHKeyPEM: sshKey, InsecureIgnoreHostKey: os.Getenv("ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY") == "1",
+		Username: c.Git.Username, Token: gitToken, SSHKeyPEM: sshKey, SSHKnownHosts: knownHosts, InsecureIgnoreHostKey: insecureHostKey,
 		AuthorName: c.Git.AuthorName, AuthorEmail: c.Git.AuthorEmail,
 		Message: fmt.Sprintf("roksbnkargoctl: BNK %s on %s (%s mode, %s registry)", c.BNK.Version, r.ClusterName, c.BNK.Mode, c.Registry.Source),
 		SrcDir:  s.ws.ManifestsDir() + "/git",
@@ -158,6 +163,16 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 	}
 
 	// 8. Repository + Application.
+	if knownHosts != "" {
+		n, skipped, err := ac.UpsertSSHKnownHosts(ctx, knownHosts)
+		if err != nil {
+			return fmt.Errorf("adding git.known_hosts_file to Argo CD: %w", err)
+		}
+		p.ok("added %d SSH known-host key(s) to Argo CD", n)
+		for _, sk := range skipped {
+			p.warn("not added to Argo CD (add it there by hand): %s", sk)
+		}
+	}
 	repo := argocd.Repo{URL: c.Git.URL, Username: c.Git.Username, Password: gitToken, SSHPrivateKey: string(sshKey), Project: c.ArgoCD.Project}
 	if _, err := ac.UpsertRepository(ctx, repo); err != nil {
 		return fmt.Errorf("adding the Git repo to Argo CD: %w", err)
@@ -250,6 +265,25 @@ func toArgoApp(o render.Object) (*argocd.Application, error) {
 		return nil, err
 	}
 	return &app, nil
+}
+
+// gitHostKeys returns the operator's known_hosts (added to the built-in keys of
+// github.com, gitlab.com and bitbucket.org) and whether host-key checking is
+// switched off. Off is an explicit, loudly-warned escape hatch (issue #2): the
+// default verifies every SSH host.
+func gitHostKeys(c *config.Config, p printer) (knownHosts string, insecure bool, err error) {
+	if f := c.Git.KnownHostsFile; f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return "", false, fmt.Errorf("git.known_hosts_file: %w", err)
+		}
+		knownHosts = string(b)
+	}
+	if os.Getenv("ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY") == "1" {
+		p.warn("ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1: the Git server's SSH host key is NOT verified — anyone on the path can impersonate it. Use git.known_hosts_file instead.")
+		insecure = true
+	}
+	return knownHosts, insecure, nil
 }
 
 func gitCredentials(c *config.Config) (token string, sshKey []byte, err error) {
@@ -436,6 +470,19 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if err != nil {
 		return err
 	}
+	k, err := s.Kube(ctx)
+	if err != nil {
+		return err
+	}
+	// Collect the uninstall checks' logs WHILE Argo CD deletes the Application:
+	// the PreDelete pod is deleted with it (issue #5).
+	logs := newCheckLogCollector(k.Typed, filepath.Join(s.ws.Dir, "diagnostics", "uninstall-"+time.Now().UTC().Format("20060102-150405")))
+	saveLogs := func() {
+		logs.Snapshot(ctx)
+		if n := logs.Finish("uninstall"); n > 0 {
+			p.ok("uninstall check logs (%d pods) saved to %s", n, logs.dir)
+		}
+	}
 	if _, err := ac.GetApplication(ctx, c.ArgoCD.Application, ""); err == nil {
 		p.step("deleting Application %s (PreDelete check → prune → PostDelete check)", c.ArgoCD.Application)
 		if err := ac.Delete(ctx, c.ArgoCD.Application, true, "foreground"); err != nil {
@@ -443,12 +490,14 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		}
 		last := ""
 		if err := ac.WaitGone(ctx, c.ArgoCD.Application, o.timeout, func(a *argocd.Application) {
+			logs.MaybeSnapshot(ctx)
 			if m := progressLine(a); m != last {
 				p.info("%s", m)
 				last = m
 			}
 		}); err != nil {
-			p.warn("the Application has not finished deleting — `roksbnkargoctl diagnose` collects the uninstall check logs")
+			saveLogs()
+			p.warn("the Application has not finished deleting — the check logs above, and `roksbnkargoctl diagnose`, show why")
 			return err
 		}
 		p.ok("Application deleted")
@@ -458,16 +507,9 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		return err
 	}
 
-	k, err := s.Kube(ctx)
-	if err != nil {
-		return err
-	}
 	var errs []error
-	// The PreDelete/PostDelete checks ran in the check namespace, which is
-	// about to go: keep their logs, which are the uninstall's only record.
-	if dir, err := saveCheckLogs(ctx, s, k, "uninstall"); err == nil && dir != "" {
-		p.ok("uninstall check logs saved to %s", dir)
-	}
+	// The check namespace is about to go: take the last snapshot first.
+	saveLogs()
 	// Out-of-band objects, in reverse: Secrets, then RBAC, then the namespace.
 	p.step("removing out-of-band objects")
 	for _, obj := range directObjectsOnDisk(s) {
@@ -509,9 +551,15 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	}
 	if o.purgeGit {
 		tok, key, err := gitCredentials(c)
+		var kh string
+		var insecure bool
+		if err == nil {
+			kh, insecure, err = gitHostKeys(c, p)
+		}
 		if err == nil {
 			_, _, err = gitpub.Remove(ctx, gitpub.Options{URL: c.Git.URL, Branch: c.Git.Branch, Path: c.Git.Path,
-				Username: c.Git.Username, Token: tok, SSHKeyPEM: key, AuthorName: c.Git.AuthorName, AuthorEmail: c.Git.AuthorEmail,
+				Username: c.Git.Username, Token: tok, SSHKeyPEM: key, SSHKnownHosts: kh, InsecureIgnoreHostKey: insecure,
+				AuthorName: c.Git.AuthorName, AuthorEmail: c.Git.AuthorEmail,
 				Message: "roksbnkargoctl: remove BNK from " + r.ClusterName})
 		}
 		if err != nil {

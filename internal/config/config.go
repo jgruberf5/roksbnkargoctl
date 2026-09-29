@@ -144,14 +144,18 @@ type ArgoCD struct {
 
 // Git is the customer repo Argo CD syncs from.
 type Git struct {
-	URL         string `yaml:"url"`
-	Branch      string `yaml:"branch,omitempty"`
-	Path        string `yaml:"path,omitempty"`
-	Username    string `yaml:"username,omitempty"`
-	TokenEnv    string `yaml:"token_env,omitempty"`
-	SSHKeyFile  string `yaml:"ssh_key_file,omitempty"`
-	AuthorName  string `yaml:"author_name,omitempty"`
-	AuthorEmail string `yaml:"author_email,omitempty"`
+	URL        string `yaml:"url"`
+	Branch     string `yaml:"branch,omitempty"`
+	Path       string `yaml:"path,omitempty"`
+	Username   string `yaml:"username,omitempty"`
+	TokenEnv   string `yaml:"token_env,omitempty"`
+	SSHKeyFile string `yaml:"ssh_key_file,omitempty"`
+	// KnownHostsFile holds SSH host keys for a Git server other than
+	// github.com, gitlab.com and bitbucket.org (whose verified keys are built
+	// in). It is also given to Argo CD so its clone verifies the same host.
+	KnownHostsFile string `yaml:"known_hosts_file,omitempty"`
+	AuthorName     string `yaml:"author_name,omitempty"`
+	AuthorEmail    string `yaml:"author_email,omitempty"`
 }
 
 // Check pins the check image.
