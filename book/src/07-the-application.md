@@ -235,8 +235,9 @@ runtime by FLO, not by its chart, so a `License` in Git could not pass Argo CD's
 The PostDelete hook `check-post-uninstall` runs after Argo CD has pruned every object it
 owns. If its namespace, ServiceAccount or RBAC were in Git they would already be gone. They
 are created by `install` and removed by `uninstall` only after the Application has been
-deleted. The `check` ClusterRole is read-only on core, apps, batch and storage resources,
-can patch and delete pods, Secrets, namespaces and a few other core resources, can delete
+deleted. The `check` ClusterRole reads core, apps, batch and storage resources, can patch
+Deployments, DaemonSets and StatefulSets (to roll CWC), can patch and delete pods, Secrets,
+namespaces and a few other core resources, can delete
 validating admission policies and webhooks, can create (dry-run) ClusterIssuers, and has
 full access to the F5 API groups (`k8s.f5.com`, `k8s.f5net.com`, `gateway.k8s.f5.com`,
 `fic.f5.com`, `metrics.f5.com`) because the uninstall checks delete whatever F5 resources

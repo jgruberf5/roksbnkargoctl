@@ -65,7 +65,7 @@ while FLO is still running:
 |---|---|---|
 | FLO check | Reports whether an FLO Deployment is available | Warning only: post-uninstall strips finalizers if namespaces stick |
 | Webhook sweep | Deletes F5 validating webhooks (`f5validate-*`, or any served from a BNK namespace) every 3 s and on every refused delete, for the whole check. FLO re-creates them during teardown | — |
-| Drain | Deletes every `gateway.k8s.f5.com` and `fic.f5.com` resource in `f5-bnk` and `f5-utils` and waits for them to finalize (4 minutes per namespace) | Fails the check; CNEInstance **not** deleted |
+| Drain | Deletes every `gateway.k8s.f5.com` and `fic.f5.com` resource in `f5-bnk` and `f5-utils` and waits for them to finalize (15 minutes per namespace, as rendered) | Fails the check; CNEInstance **not** deleted |
 | IPAM | Waits until no `fic.f5.com` IPAM/IPAMRange object remains | Fails the check; CNEInstance **not** deleted |
 | License | Deletes the `License` and waits up to 3 minutes | Warning only; post-uninstall strips its finalizer |
 | CNEInstance | Deletes `f5-bnk-f5-cne-controller` last and waits up to 10 minutes for FLO to finalize it | Fails the check |
@@ -81,6 +81,11 @@ would orphan exactly the objects still waiting. `uninstall` then stops **without
 Application** and says so. Fix what the check names (its log is saved, see below) and run
 `uninstall` again. `--force` deletes the Application anyway; post-uninstall then strips
 the F5 finalizers that are left.
+
+If the cluster cannot be reached at all, `--force` only deletes the Application:
+`uninstall` then exits with the connection error. No uninstall check runs and nothing out
+of band is removed. Re-run `uninstall` once the cluster is reachable; with the Application
+gone it goes straight to the post-uninstall check and the cleanup.
 
 ### 2. Argo CD deletes the Application
 
@@ -108,10 +113,10 @@ While any BNK namespace remains, `uninstall` runs the post-uninstall check and w
 |---|---|
 | License secrets | Deletes the 34 CWC license secrets in `f5-utils` by exact name (`activationcontext`, `cwcstate`, `licensekey`, `telemetryreport`, …). Leftovers make the next install find a previous activation and not re-activate. Never a prefix sweep: the namespace may hold unrelated secrets |
 | Namespaces | Deletes `f5-bnk`, `f5-utils`, and `cert-manager` if roksbnkargoctl installed cert-manager |
-| Finalizers | Waits up to 5 minutes for the namespaces to go. After 30 seconds, for `f5-bnk` and `f5-utils` only, removes F5 finalizers (`f5.com` / `f5net.com`) from objects still in the namespace, keeping every other finalizer. `cert-manager` is waited for but never stripped |
+| Finalizers | Waits up to 15 minutes (as rendered) for the namespaces to go. After 30 seconds, for `f5-bnk` and `f5-utils` only, removes F5 finalizers (`f5.com` / `f5net.com`) from objects still in the namespace, keeping every other finalizer. `cert-manager` is waited for but never stripped |
 | Report | Lists F5 CRDs (kept by design) and any cluster-scoped F5 objects or the ClusterIssuers `sample-issuer` / `selfsigned-cluster-issuer` that remain, as information |
 
-A namespace still present after 5 minutes fails the check, with the namespace's
+A namespace still present after 15 minutes fails the check, with the namespace's
 `NamespaceFinalizersRemaining` / `NamespaceContentRemaining` message in the finding.
 
 Then `uninstall` looks for `f5-bnk`, `f5-utils` and (when roksbnkargoctl installed it)
@@ -160,8 +165,8 @@ afterwards. So for the whole uninstall, `uninstall` collects every check pod's l
 | Snapshots | Every 5 seconds while waiting for the Application, every check pod's log is saved |
 | Final snapshot | Taken before the CLI deletes the check namespace, and when the wait fails or times out |
 
-`summary.md` marks a pod whose log had no verdict line yet as `(no verdict line: the pod was
-still running at its last snapshot)`. The CLI prints
+`summary.md` marks a pod whose log had no verdict line yet as `(no verdict line in the last
+log captured for this pod)`. The CLI prints
 `uninstall check logs (N pods) saved to <dir>`. Read verdicts as described in
 [status and diagnose](./09-status-and-diagnose.md#reading-a-check-verdict).
 

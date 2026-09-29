@@ -176,9 +176,7 @@ tracked by the Argo CD Application named by `--argocd-app` (annotation
 several TMM replicas. At `deploymentSize: Tiny` — the only size ROKS runs and the
 only size this tool renders — TMM mounts no PVC, so any StorageClass serves any
 replica count (see [Appendix C](./appendix-c-sizing.md)). With `--tmm-replicas`
-greater than 1 the check prints an `[INFO]` saying so. (The flag's own `-h` text
-still says ">1 requires a ReadWriteMany StorageClass"; the behaviour is the
-informational note, not a gate.)
+greater than 1 the check prints an `[INFO]` saying so; it is not a gate.
 
 **Waiting for the node probes.** This is the part that takes time, and two design
 rules shape it:

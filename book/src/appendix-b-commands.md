@@ -22,7 +22,8 @@ workspace home). Workspace names are 1–40 lowercase letters, digits and `-`,
 starting and ending alphanumeric.
 
 Commands that ask for confirmation refuse when there is no terminal to ask on and
-`--yes` was not given: `not confirmed (pass --yes to skip the prompt)`.
+`--yes` was not given: `uninstall` says `not confirmed (pass --yes to skip the prompt)`,
+`flp down` and `argocd down` say `not confirmed (pass --yes)`.
 
 ## The lifecycle
 

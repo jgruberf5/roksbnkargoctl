@@ -16,8 +16,9 @@ Three rules apply to the whole file:
 - **No secret values.** Keys ending in `_env` name an environment variable that
   holds the secret; keys ending in `_file` name a local file. The config never
   contains a key, token, password or JWT.
-- **Validation runs before `render` and `install`**, and lists every problem at
-  once. `init` and `status` work on a half-filled config.
+- **Validation runs before `init` saves the workspace, and before `render` and
+  `install`**, and lists every problem at once. `status`, and a resumed `init`
+  interview, load a half-filled config.
 
 ## Top level
 
@@ -184,7 +185,7 @@ lookup. The render's run id ignores this section. Do not edit it by hand.
 
 ## Validation rules
 
-`render` and `install` refuse a config that breaks any of these:
+`init`, `render` and `install` refuse a config that breaks any of these:
 
 | Rule | Message names |
 |---|---|
