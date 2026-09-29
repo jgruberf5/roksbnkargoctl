@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
@@ -184,7 +185,7 @@ func Render(in Inputs) (*Output, error) {
 
 	// License + lifecycle checks.
 	cp.LicenseArgs = licenseArgs(c, in.FLPURL)
-	add(cp.hookJob("license", "Sync", WaveLicenseCheck, append([]string{"--timeout=35m"}, cp.LicenseArgs[1:]...), 40*60))
+	add(cp.hookJob("license", "Sync", WaveLicenseCheck, append(licenseWaitArgs(), cp.LicenseArgs[1:]...), licenseDeadlineSeconds()))
 	add(cp.hookJob("post-install", "PostSync", 0, []string{"--timeout=10m", "--bnk-namespace=" + bnkNS,
 		"--utils-namespace=" + utilsNS, fmt.Sprintf("--tmm-replicas=%d", c.BNK.TMMReplicas)}, 15*60))
 	add(cp.hookJob("pre-uninstall", "PreDelete", 0, []string{"--timeout=15m", "--bnk-namespace=" + bnkNS,
@@ -502,4 +503,36 @@ func Summary(objs []Object) []string {
 		out = append(out, fmt.Sprintf("%6s  %s", ws, strings.Join(parts, ", ")))
 	}
 	return out
+}
+
+// licenseWaits are the check-license hook's sequential waits, rendered
+// explicitly: the License CRD, retrying a refused apply, License Active, then
+// CNEInstance Available.
+var licenseWaits = []struct {
+	flag string
+	d    time.Duration
+}{
+	{"--crd-timeout", 10 * time.Minute},
+	{"--apply-retry", 5 * time.Minute},
+	{"--timeout", 35 * time.Minute},
+	{"--cne-timeout", 15 * time.Minute},
+}
+
+func licenseWaitArgs() []string {
+	var out []string
+	for _, w := range licenseWaits {
+		out = append(out, w.flag+"="+w.d.String())
+	}
+	return out
+}
+
+// licenseDeadlineSeconds covers every wait plus five minutes, so the check
+// reports which wait ran out instead of the Job dying of DeadlineExceeded with
+// no finding (#12: the deadline was 40m against 65m of waits).
+func licenseDeadlineSeconds() int {
+	total := 5 * time.Minute
+	for _, w := range licenseWaits {
+		total += w.d
+	}
+	return int(total.Seconds())
 }

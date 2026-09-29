@@ -81,7 +81,7 @@ func runStatus(ctx context.Context, s *session, w io.Writer) error {
 		}
 	}
 	for _, x := range []struct{ api, kind, ns, name, what string }{
-		{"k8s.f5.com/v1", "CNEInstance", c.BNK.Namespace, render.CNEInstanceName, "conditions"},
+		{"k8s.f5.com/v1", "CNEInstance", c.BNK.Namespace, render.CNEInstanceName(c.BNK.Namespace), "conditions"},
 		{"k8s.f5net.com/v1", "License", c.BNK.UtilsNamespace, render.LicenseName, "state"},
 	} {
 		u, err := k.Get(ctx, x.api, x.kind, x.ns, x.name)
@@ -245,7 +245,7 @@ func runDiagnose(ctx context.Context, s *session) (string, error) {
 	}
 
 	for _, x := range []struct{ api, kind, ns, name string }{
-		{"k8s.f5.com/v1", "CNEInstance", c.BNK.Namespace, render.CNEInstanceName},
+		{"k8s.f5.com/v1", "CNEInstance", c.BNK.Namespace, render.CNEInstanceName(c.BNK.Namespace)},
 		{"k8s.f5net.com/v1", "License", c.BNK.UtilsNamespace, render.LicenseName},
 	} {
 		if u, err := k.Get(ctx, x.api, x.kind, x.ns, x.name); err == nil {

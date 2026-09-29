@@ -531,3 +531,31 @@ func TestUpsertSSHKnownHostsSkipsPatterns(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// Behaves like Argo CD 3.5.1 measured live: /api/version answers anyone;
+// userinfo reports loggedIn only for the accepted token.
+func TestCheckServerRejectsATokenTheServerDoesNotAccept(t *testing.T) {
+	h := func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		switch r.URL.Path {
+		case "/api/version":
+			writeJSON(w, 200, map[string]string{"Version": "v3.5.1"})
+		case "/api/v1/session/userinfo":
+			if r.Header.Get("Authorization") == "Bearer tok" {
+				writeJSON(w, 200, map[string]any{"loggedIn": true, "username": "roksbnkargoctl"})
+			} else {
+				writeJSON(w, 200, map[string]any{})
+			}
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+	}
+	c, _ := newTest(t, h)
+	if err := c.CheckServer(context.Background(), "3.3.0"); err != nil {
+		t.Fatalf("accepted token refused: %v", err)
+	}
+	bad := New(c.server, "wrong", true, nil)
+	err := bad.CheckServer(context.Background(), "3.3.0")
+	if err == nil || !strings.Contains(err.Error(), "did not accept the API token") {
+		t.Fatalf("a rejected token passed: %v", err)
+	}
+}

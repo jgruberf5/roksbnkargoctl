@@ -183,7 +183,7 @@ func TestWaveOrder(t *testing.T) {
 		wave("ClusterIssuer", ClusterIssuerCA),
 		wave("Deployment", "flo-op"),
 		wave("CNEManifest", CNEManifestName(config.BNKVersion)),
-		wave("CNEInstance", CNEInstanceName),
+		wave("CNEInstance", CNEInstanceName("f5-bnk")),
 		wave("Job", "check-license"),
 	}
 	for i := 1; i < len(order); i++ {
@@ -230,7 +230,7 @@ func TestMirrorRedirectsEveryPull(t *testing.T) {
 	if !strings.Contains(string(b), "harbor.x:8443/bnk-mirror/images/x:1") {
 		t.Fatalf("FLO image not redirected to the mirror:\n%s", b)
 	}
-	cne := find(out.Git, "CNEInstance", CNEInstanceName)
+	cne := find(out.Git, "CNEInstance", CNEInstanceName("f5-bnk"))
 	reg := cne["spec"].(map[string]any)["registry"].(map[string]any)
 	if reg["uri"] != "harbor.x:8443/bnk-mirror" {
 		t.Fatalf("CNEInstance registry.uri = %v", reg["uri"])
@@ -306,7 +306,7 @@ func TestCNEInstanceIsAlwaysTiny(t *testing.T) {
 		c := baseConfig(mode, config.SourceFAR)
 		c.BNK.TMMReplicas = 3
 		out := doRender(t, c, nil)
-		spec := find(out.Git, "CNEInstance", CNEInstanceName)["spec"].(map[string]any)
+		spec := find(out.Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"].(map[string]any)
 		if spec["deploymentSize"] != "Tiny" {
 			t.Fatalf("%s: deploymentSize = %v, want Tiny", mode, spec["deploymentSize"])
 		}
@@ -342,7 +342,7 @@ func TestCNEInstanceRendersNoDefaultFalseOrEmpty(t *testing.T) {
 			}
 		}
 	}
-	walk("spec", find(out.Git, "CNEInstance", CNEInstanceName)["spec"])
+	walk("spec", find(out.Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"])
 }
 
 // OpenShift adds <sa>-dockercfg-<suffix> to every ServiceAccount's

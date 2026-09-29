@@ -78,3 +78,26 @@ func ParseVersion(s string) ([3]int, error) {
 	}
 	return out, nil
 }
+
+// CheckServer is install's first step: the server is new enough AND accepts the
+// token. /api/version answers without authentication (Argo CD 3.5.1 returned
+// 200 to a bogus token and to none), so a wrong token used to pass here and
+// fail only at cluster registration, after the transit gateway, IAM and ROKS
+// had been changed. /api/v1/session/userinfo needs no RBAC permission and
+// reports loggedIn only for a token it accepted.
+func (c *Client) CheckServer(ctx context.Context, min string) error {
+	if err := c.RequireAtLeast(ctx, min); err != nil {
+		return err
+	}
+	var u struct {
+		LoggedIn bool   `json:"loggedIn"`
+		Username string `json:"username"`
+	}
+	if err := c.do(ctx, "check the token", "GET", "/api/v1/session/userinfo", nil, &u); err != nil {
+		return err
+	}
+	if !u.LoggedIn {
+		return fmt.Errorf("argocd: the server at %s did not accept the API token (session/userinfo: not logged in); check ARGOCD_AUTH_TOKEN", c.server)
+	}
+	return nil
+}

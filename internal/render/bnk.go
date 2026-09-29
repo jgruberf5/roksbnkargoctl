@@ -16,7 +16,6 @@ const (
 	ClusterIssuerCA         = "sample-issuer"
 	CACertName              = "ext-ca"
 	NADName                 = "ens3-ipvlan-l2"
-	CNEInstanceName         = "f5-bnk-f5-cne-controller"
 	LicenseName             = "bnk-license"
 	LicenseJWTSecret        = "bnk-license-jwt"
 	FLPRootCASecret         = "licenseserver-rootca"
@@ -134,6 +133,13 @@ type CNEInstanceParams struct {
 	Version          string
 }
 
+// CNEInstanceName is the CNEInstance's name in namespace ns. The check binary
+// derives the same name from the namespace it is given
+// (cmd/check/internal/checks.CNEInstanceName); a constant here once named it
+// f5-bnk-f5-cne-controller in every namespace, so any bnk.namespace but
+// f5-bnk left the license hook waiting for a CR that did not exist (#11).
+func CNEInstanceName(ns string) string { return ns + "-f5-cne-controller" }
+
 // cneInstance builds the 2.4 CNEInstance exactly as roksbnkctl's verified 2.4
 // install renders it (terraform/modules/cne_instance, 2.4 branch): Tiny +
 // demoMode off (stock ROKS workers have zero hugepages), wholeCluster false with
@@ -218,7 +224,7 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 	}
 	o := Object{"apiVersion": "k8s.f5.com/v1", "kind": "CNEInstance",
 		"metadata": map[string]any{
-			"name": CNEInstanceName, "namespace": p.Namespace,
+			"name": CNEInstanceName(p.Namespace), "namespace": p.Namespace,
 			"labels": map[string]any{
 				"app.kubernetes.io/name": "f5-lifecycle-operator", "app.kubernetes.io/managed-by": "kustomize",
 			},
