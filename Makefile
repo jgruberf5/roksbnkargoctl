@@ -6,7 +6,7 @@ LDFLAGS := -s -w -X github.com/jgruberf5/roksbnkargoctl/internal/cli.Version=$(V
 	-X github.com/jgruberf5/roksbnkargoctl/internal/cli.BuildDate=$(DATE)
 CHECK_IMAGE ?= ghcr.io/jgruberf5/roksbnkargoctl-check
 
-.PHONY: build check-binary check-image test vet fmt verify far-test
+.PHONY: build check-binary check-image test vet fmt staticcheck verify far-test
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/roksbnkargoctl ./cmd/roksbnkargoctl
 
@@ -25,8 +25,13 @@ vet:
 fmt:
 	@test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
 
+# The same checker CI runs (dominikh/staticcheck-action, version latest).
+# Without it here, a capitalised error string passed `make verify` and failed CI.
+staticcheck:
+	go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
 # Everything a change must pass locally.
-verify: fmt vet test build check-binary
+verify: fmt vet staticcheck test build check-binary
 
 # Renders the real BNK 2.4 GA charts pulled from FAR (never committed).
 far-test:

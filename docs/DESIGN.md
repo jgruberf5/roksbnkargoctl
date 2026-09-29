@@ -31,7 +31,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | `argocd` | `up`/`down`/`status`: a **test** Argo CD hub (k3s + Argo CD on a VSI), like roksbnkctl's demo hub | IBM VPC, TGW |
 | `render` | Writes every manifest the Application syncs into `<workspace>/manifests/` | FAR (chart pulls) |
 | `install` | Out-of-band secrets + trusted profile, cluster registration, Git publish, Application create + sync | IBM, ROKS, Git, Argo CD |
-| `uninstall` | Deletes the Application (PreDelete/PostDelete checks run in ROKS), then the out-of-band objects | Argo CD, ROKS, IBM |
+| `uninstall` | Runs `check pre-uninstall`, deletes the Application, runs `check post-uninstall`, verifies the BNK namespaces are gone, then removes the out-of-band objects | Argo CD, ROKS, IBM |
 | `status` | Application sync/health, check results, BNK CR state | Argo CD, ROKS |
 | `agent` | Scaffolds `AGENTS.md` + troubleshooting personas into the workspace | local |
 
@@ -41,7 +41,7 @@ The workspace is `~/.roksbnkargoctl/<name>/` (override: `ROKSBNKARGOCTL_HOME`).
 
 | Item | Why not YAML | Done by |
 |---|---|---|
-| IAM trusted profile `<cluster>-f5-cne-controller`, link to SA `f5-bnk/f5-cne-controller`, policies (Viewer+Editor on `is` scoped to the VPC; Viewer on `containers-kubernetes` scoped to the cluster) | IBM IAM | `install` / `uninstall` |
+| IAM trusted profile `<cluster>-f5-cne-controller-<bnk namespace>`, link to SA `f5-bnk/f5-cne-controller`, policies (Viewer+Editor on `is` scoped to the VPC; Viewer on `containers-kubernetes` scoped to the cluster) | IBM IAM | `install` / `uninstall` |
 | FAR pull secret (`far-secret` or `mirror-secret`) in `f5-bnk`, `f5-utils`, `cert-manager` | Credential; never in Git | `install`, directly into ROKS |
 | Subscription JWT (Secret `bnk-license-jwt`) | `License.spec.jwt` is **required and inline** (no Secret ref in the 2.4 CRD), so a License in Git would leak the JWT | `install` writes the Secret; the `check license` hook builds the License from it |
 | FLP root CA (Secret `licenseserver-rootca`) | Produced by `flp up` | `install` |
@@ -79,8 +79,8 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −2 | `CNEInstance f5-bnk-f5-cne-controller` |
 | 0 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
-| PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3) |
-| PostDelete | Hook `check post-uninstall` |
+| PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3); `uninstall` also runs it as a Job first (see Uninstall order) |
+| PostDelete | Hook `check post-uninstall`; `uninstall` also runs it as a Job after the delete |
 
 The sweep is a **Deployment**, not a hook: the CRDs it waits for are installed by FLO in the
 *next* wave, and Argo CD will not start a wave until the previous wave's hooks finish. A
@@ -130,6 +130,11 @@ It only ever runs in ROKS.
 
 - Access: REST API, `argocd.server` + token from `ARGOCD_AUTH_TOKEN`. Argo CD **≥ 3.3**
   (PreDelete hooks) is enforced.
+- Git SSH host keys: github.com, gitlab.com and bitbucket.org (and their port-443 SSH
+  endpoints) are built in, verified against the providers' published fingerprints;
+  `git.known_hosts_file` adds hosts, is validated before anything changes, and is uploaded to
+  Argo CD's certificate store (literal host names only). `ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1`
+  switches verification off, with a warning.
 - Registration: `install` creates ServiceAccount `roksbnkargoctl-argocd-manager` in
   `kube-system` on ROKS, a ClusterRoleBinding to `cluster-admin`, and a long-lived token Secret;
   then `POST /api/v1/clusters` with the ROKS **private** service endpoint (reached over the
@@ -171,16 +176,36 @@ These shaped the implementation; each has a regression test that fails against i
   pinned (roksbnkctl#327).
 - **cert-manager's webhook can lag its Deployment**: gated by `cert-manager-ready`.
 
-Proven live: connected install, re-sync, uninstall, reinstall on a used cluster, and
-disconnected (FLP) install and uninstall; `argocd up` and `flp up/down`. Not yet run live:
-mirror mode, `tmm_replicas` > 1 (both being proven in the PR that corrects the RWX claim).
+Proven live: connected install, re-sync, uninstall, reinstall on a used cluster;
+disconnected (FLP) install and uninstall; mirror mode (Artifactory, 93 artifacts) install and
+uninstall with 3 TMM replicas on VPC block storage; `argocd up` and `flp up/down`. Not yet run
+live: a private-CA mirror, an anonymous mirror, `flp.external`.
+
+Correction: those uninstalls ended clean because the PostDelete check ran; none of their
+saved logs shows a pre-uninstall run, so the drain was never proven through Argo CD's hook
+(see Uninstall order). The CLI-run checks are what a live uninstall has to prove next.
 
 ## Uninstall order
 
-`uninstall` → Argo CD deletes the Application → PreDelete `check pre-uninstall` drains F5 CRs
-while FLO lives → Argo CD prunes in reverse wave order → PostDelete `check post-uninstall` →
-CLI removes the JWT/pull Secrets, the trusted profile, the cluster registration and the
-repository entry. Git history is left alone.
+`uninstall` runs `check pre-uninstall` as a Job it waits on (drains F5 CRs while FLO lives;
+a failure stops here and the Application is NOT deleted, unless `--force`) → deletes the
+Application with foreground cascading; Argo CD prunes in reverse wave order → runs
+`check post-uninstall` as a Job while any BNK namespace remains → fails unless `f5-bnk`,
+`f5-utils` and (when installed) `cert-manager` are gone → removes the JWT/pull Secrets, the
+check namespace, the trusted profile, the cluster registration and the repository entry.
+Git history is left alone. Re-running `uninstall` with the Application already gone runs
+`check post-uninstall` again, so an interrupted uninstall finishes.
+
+**Why the CLI runs the checks and not only Argo CD.** Argo CD 3.5.1 can declare a
+PreDelete/PostDelete hook complete the moment it creates it (argoproj/argo-cd#29100, open):
+a second finalization pass gets `AlreadyExists` from the create, finds no hook in its
+not-yet-updated cache, and removes the finalizer. Live on bnkargo the pre-uninstall pod got
+SIGTERM 0.4s after it started, the cascade pruned FLO beneath it, post-uninstall never ran,
+and `f5-bnk`, `f5-utils` and `cert-manager` stayed behind while the old `uninstall` printed
+"uninstalled". The hooks stay in Git so a delete from the Argo CD UI still tries them, best
+effort; both checks are idempotent, so a hook that does run after the CLI's copy finds
+nothing left. `install` also keeps Argo CD's `pre-delete-finalizer…`/`post-delete-finalizer…`
+finalizers when it re-upserts the Application: Argo CD's upsert replaces the list.
 
 ## Not in scope
 

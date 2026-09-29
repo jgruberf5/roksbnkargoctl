@@ -42,6 +42,10 @@ type ApplicationSpec struct {
 	Source      *ApplicationSource     `json:"source,omitempty"`
 	Destination ApplicationDestination `json:"destination"`
 	SyncPolicy  *SyncPolicy            `json:"syncPolicy,omitempty"`
+	// IgnoreDifferences is passed through as rendered. Any field missing from
+	// these types is silently dropped on the way to Argo CD (it happened to
+	// this one), so a test round-trips the rendered Application.
+	IgnoreDifferences []map[string]any `json:"ignoreDifferences,omitempty"`
 }
 
 // ApplicationSource is a plain-directory Git source.
@@ -74,7 +78,7 @@ type SyncPolicy struct {
 
 // RetryStrategy is the sync retry policy.
 type RetryStrategy struct {
-	Limit   int64    `json:"limit,omitempty"`
+	Limit   *int64   `json:"limit,omitempty"` // a pointer, so the rendered 0 is sent
 	Backoff *Backoff `json:"backoff,omitempty"`
 }
 

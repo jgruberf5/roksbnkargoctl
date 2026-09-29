@@ -110,7 +110,13 @@ func cneManifest(m *far.Manifest, wave int) Object {
 func env(pairs ...string) []any {
 	var out []any
 	for i := 0; i+1 < len(pairs); i += 2 {
-		out = append(out, map[string]any{"name": pairs[i], "value": pairs[i+1]})
+		e := map[string]any{"name": pairs[i]}
+		if pairs[i+1] != "" {
+			// An empty value is omitted, as the API server stores it; a
+			// rendered "" reads as a permanent diff in Argo CD.
+			e["value"] = pairs[i+1]
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -133,6 +139,11 @@ type CNEInstanceParams struct {
 // demoMode off (stock ROKS workers have zero hugepages), wholeCluster false with
 // watchNamespaces [All], gatewayAPI on with USE_GATEWAY_SETTINGS, and the
 // reference TMM placement.
+//
+// Every "off" is rendered as the field's absence (an empty object where the
+// parent is kept): false is each field's default, and FLO rewrites the spec
+// without false bools, so a rendered `enabled: false` left the CNEInstance
+// OutOfSync in Argo CD straight after a successful sync (seen live on bnkargo).
 func cneInstance(p CNEInstanceParams, wave int) Object {
 	var pullSecrets []any
 	if p.PullSecret != "" {
@@ -142,7 +153,6 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 	spec := map[string]any{
 		"product":         map[string]any{"gatewayAPI": true, "type": "BNK"},
 		"manifestVersion": p.Version,
-		"wholeCluster":    false,
 		"telemetry": map[string]any{
 			"loggingSubsystem": map[string]any{"enabled": true},
 			"metricSubsystem":  map[string]any{"enabled": true},
@@ -153,13 +163,13 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 			"uri": p.ImageHost, "imagePullSecrets": pullSecrets, "imagePullPolicy": "Always",
 		},
 		"networkAttachments": []any{NADName},
-		"dynamicRouting":     map[string]any{"enabled": false},
+		"dynamicRouting":     map[string]any{},
 		"firewallACL":        map[string]any{"enabled": true},
 		"pseudoCNI":          map[string]any{"enabled": true},
 		"coreCollection":     map[string]any{"enabled": true},
 		"advanced": map[string]any{
 			"coremon":      map[string]any{"hostPath": true, "env": env("COREMOND_OVERRIDE_CORE_PATTERN", "true")},
-			"envDiscovery": map[string]any{"enabled": false, "stopOnFail": false, "runAfterSuccess": false},
+			"envDiscovery": map[string]any{"stopOnFail": false, "runAfterSuccess": false},
 			"cneController": map[string]any{"env": env(
 				"TMM_DEFAULT_MTU", "9000",
 				"CLOUD_ENV", "true",
@@ -171,8 +181,8 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 				"USE_GATEWAY_SETTINGS", "true",
 				"GATEWAY_API_VERSION", GatewayAPIVersion,
 			)},
-			"demoMode":        map[string]any{"enabled": false},
-			"maintenanceMode": map[string]any{"enabled": false},
+			"demoMode":        map[string]any{},
+			"maintenanceMode": map[string]any{},
 			"tmm": map[string]any{
 				"env": env(
 					"TMM_CALICO_ROUTER", "default",
@@ -190,7 +200,7 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 		},
 		"tmmReplicas":     p.TMMReplicas,
 		"watchNamespaces": []any{"All"},
-		"externalBigip":   map[string]any{"enabled": false},
+		"externalBigip":   map[string]any{},
 		"placement": map[string]any{"dataPlane": map[string]any{
 			"affinity": map[string]any{"podAntiAffinity": map[string]any{
 				"requiredDuringSchedulingIgnoredDuringExecution": []any{

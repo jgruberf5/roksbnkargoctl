@@ -2,8 +2,10 @@ package kube
 
 import (
 	"context"
+	"k8s.io/client-go/rest"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -52,5 +54,25 @@ func TestApplySendsNoEmptyAnnotations(t *testing.T) {
 	}
 	if strings.Contains(string(sent), `"annotations"`) {
 		t.Fatalf("Apply sent an annotations map: %s", sent)
+	}
+}
+
+// Review finding: the regular client's 60s timeout also bounds a watch stream.
+// Streaming must hand out a client without it, and leave the regular one alone.
+func TestStreamingClientHasNoTimeout(t *testing.T) {
+	cfg := &rest.Config{Host: "https://example.invalid:6443", Timeout: 60 * time.Second}
+	c, err := FromConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.Streaming()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if to := s.CoreV1().RESTClient().(*rest.RESTClient).Client.Timeout; to != 0 {
+		t.Fatalf("streaming client timeout = %s, want 0", to)
+	}
+	if c.Config.Timeout != 60*time.Second {
+		t.Fatal("Streaming must not change the regular client's config")
 	}
 }

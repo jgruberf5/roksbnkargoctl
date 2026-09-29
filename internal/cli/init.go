@@ -212,6 +212,7 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 		c.Git.Username = ask("  username (token from $"+c.Git.TokenEnv+")", firstOf(c.Git.Username, "git"))
 	} else {
 		c.Git.SSHKeyFile = ask("  SSH private key file", c.Git.SSHKeyFile)
+		c.Git.KnownHostsFile = ask("  known_hosts file for the Git host (empty for github.com / gitlab.com / bitbucket.org)", c.Git.KnownHostsFile)
 	}
 	_ = ws
 	return nil

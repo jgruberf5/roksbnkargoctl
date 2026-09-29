@@ -11,8 +11,11 @@ slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbn
 
 - A ROKS cluster (OpenShift 4.16+, workers in 3 zones) and a transit gateway, by name or ID.
 - An Argo CD **3.3 or later** outside the cluster, reachable over the transit gateway,
-  and an API token for it.
-- A Git repo Argo CD can read, and a token (or SSH key) that can push to it.
+  and an API token for it (clusters, repositories and applications; plus `certificates,
+  create` when `git.known_hosts_file` is set).
+- A Git repo Argo CD can read, and a token (or SSH key) that can push to it. SSH host keys
+  are verified: github.com, gitlab.com and bitbucket.org are built in; for any other Git
+  server set `git.known_hosts_file` (it is also added to Argo CD).
 - The FAR auth tarball and subscription JWT from MyF5, in COS (or local files).
 - `IBMCLOUD_API_KEY` in the environment.
 
@@ -49,8 +52,8 @@ container (one static binary on `scratch`):
 | `gateway-api-sweep` | during FLO's install | keeps OpenShift's Gateway API admission policy out of FLO's CRD installer's way |
 | `license` | last sync wave | builds `License` from the JWT Secret, waits for `Active` and `CNEInstance Available` |
 | `post-install` | PostSync | FLO, CNEInstance, License, TMM replicas spread across zones, no image-pull failures |
-| `pre-uninstall` | PreDelete | drains F5 resources while FLO still runs, `CNEInstance` last |
-| `post-uninstall` | PostDelete | license secrets, namespaces, stuck F5 finalizers, leftovers report |
+| `pre-uninstall` | `uninstall`, before the delete (and PreDelete) | drains F5 resources while FLO still runs, `CNEInstance` last |
+| `post-uninstall` | `uninstall`, after the delete (and PostDelete) | license secrets, namespaces, stuck F5 finalizers, leftovers report |
 
 ## Modes
 

@@ -74,18 +74,6 @@ func checkImageTag(version string) string {
 	return "dev"
 }
 
-// checkImage is the check image reference ROKS pulls.
-func checkImage(c *config.Config) string {
-	img := c.Check.Image
-	if img == "" {
-		img = CheckImageRepo + ":" + checkImageTag(Version)
-	}
-	if c.Registry.Source == config.SourceMirror {
-		return registry.Artifact{Source: img}.Dest(c.ImageHost())
-	}
-	return img
-}
-
 // pinDigest resolves a tag to repo@sha256:… so what ROKS runs is exactly what
 // was rendered. With a mutable tag (:dev) and IfNotPresent, nodes that cached an
 // older image keep running it — a re-sync after a check fix would silently run
@@ -98,11 +86,60 @@ func pinDigest(ctx context.Context, pl *far.Puller, ref string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("resolving the check image %s: %w", ref, err)
 	}
-	repo := ref
-	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
-		repo = ref[:i]
+	return repoOf(ref) + "@" + d, nil
+}
+
+// resolveCheckImage returns the check image ROKS will run, pinned by digest.
+//
+// The digest comes from UPSTREAM (the source image), not from the mirror. Found
+// live: a mirror does not follow a mutable tag, and resolving :dev against
+// Artifactory pinned — faithfully — a copy replicated before the check was fixed,
+// so the cluster ran a check the code no longer contained. In mirror mode the
+// upstream digest must therefore already be in the mirror; if it is not, install
+// stops and says to replicate. If upstream is unreachable (an operator host with
+// no internet), the mirror's own digest is used, with a warning that its
+// currency could not be checked.
+func resolveCheckImage(ctx context.Context, pl *far.Puller, c *config.Config, warn func(string, ...any)) (string, error) {
+	src := c.Check.Image
+	if src == "" {
+		src = CheckImageRepo + ":" + checkImageTag(Version)
 	}
-	return repo + "@" + d, nil
+	upstream, upErr := pinDigest(ctx, pl, src)
+	if c.Registry.Source != config.SourceMirror {
+		return upstream, upErr
+	}
+	mirrorRef := registry.Artifact{Source: src}.Dest(c.ImageHost())
+	if upErr != nil {
+		warn("could not resolve %s upstream (%v); using the mirror's copy without checking it is current", src, upErr)
+		return pinDigest(ctx, pl, mirrorRef)
+	}
+	// The mirror holds the linux/amd64 manifest (replicate narrows multi-arch
+	// images to it), so compare that platform's digest — found live: comparing
+	// the upstream INDEX digest refused every mirror install.
+	digest, err := pl.PlatformDigest(ctx, src)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s for linux/amd64: %w", src, err)
+	}
+	mirrorPinned := repoOf(mirrorRef) + "@" + digest
+	if _, err := pl.Digest(ctx, mirrorPinned); err != nil {
+		have := "no copy"
+		if d, err := pl.Digest(ctx, mirrorRef); err == nil {
+			have = "an older copy (" + d + ")"
+		}
+		return "", fmt.Errorf("the mirror has %s of the check image, not %s (%s, linux/amd64): run `roksbnkargoctl registry replicate` so the cluster runs the current check", have, digest, src)
+	}
+	return mirrorPinned, nil
+}
+
+// repoOf strips a :tag or @digest from an image reference.
+func repoOf(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		ref = ref[:i]
+	}
+	return ref
 }
 
 // flpOutputs is what `flp up` records, and what an external FLP config supplies.
@@ -230,7 +267,7 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 	stable := *c
 	stable.Resolved = nil
 	cfgYAML, _ := config.Marshal(&stable)
-	img, err := pinDigest(ctx, pl, checkImage(c))
+	img, err := resolveCheckImage(ctx, pl, c, s.p.warn)
 	if err != nil {
 		return nil, err
 	}

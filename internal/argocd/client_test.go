@@ -170,7 +170,7 @@ func TestUpsertApplicationBody(t *testing.T) {
 			Destination: ApplicationDestination{Server: "https://c.private:30000"},
 			SyncPolicy: &SyncPolicy{
 				SyncOptions: []string{"ServerSideApply=true", "RespectIgnoreDifferences=true"},
-				Retry:       &RetryStrategy{Limit: 2, Backoff: &Backoff{Duration: "10s", Factor: 2, MaxDuration: "3m"}},
+				Retry:       &RetryStrategy{Limit: ptrInt64(2), Backoff: &Backoff{Duration: "10s", Factor: 2, MaxDuration: "3m"}},
 			},
 		},
 		Status: &ApplicationStatus{Sync: SyncStatus{Status: "Synced"}},
@@ -479,3 +479,55 @@ func TestMutatingCallsDeclareJSON(t *testing.T) {
 		t.Errorf("DeleteRepository: %v", err)
 	}
 }
+
+// Issue #2: a custom Git host's key must reach Argo CD in the shape
+// `argocd cert add-ssh` sends — one item per hostname, certData = the key field.
+func TestUpsertSSHKnownHosts(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		writeJSON(w, 200, map[string]any{"items": []any{}})
+	})
+	kh := "# comment\n" +
+		"git.example.com,10.0.0.5 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n" +
+		"|1|abc=|def= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n"
+	n, skipped, err := c.UpsertSSHKnownHosts(context.Background(), kh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || len(skipped) != 1 {
+		t.Fatalf("added=%d skipped=%v, want 2 added (both names) and the hashed entry skipped", n, skipped)
+	}
+	req := rc.reqs[len(rc.reqs)-1]
+	if req.Method != "POST" || req.Path != "/api/v1/certificates" || req.Query != "upsert=true" {
+		t.Fatalf("request: %s %s?%s", req.Method, req.Path, req.Query)
+	}
+	var body struct {
+		Items []struct {
+			ServerName, CertType, CertSubType string
+			CertData                          []byte
+		}
+	}
+	if err := json.Unmarshal(req.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Items[0].ServerName != "git.example.com" || body.Items[1].ServerName != "10.0.0.5" ||
+		body.Items[0].CertType != "ssh" || body.Items[0].CertSubType != "ssh-ed25519" ||
+		string(body.Items[0].CertData) != "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" {
+		t.Fatalf("certificate body wrong: %+v", body.Items)
+	}
+}
+
+// Review finding: a wildcard or negated host pattern made Argo CD reject the
+// whole certificate request. Patterns are skipped, like hashed names.
+func TestUpsertSSHKnownHostsSkipsPatterns(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) { writeJSON(w, 200, map[string]any{}) })
+	kh := "*.corp.example,!bad.corp.example,git.corp.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n"
+	n, skipped, err := c.UpsertSSHKnownHosts(context.Background(), kh)
+	if err != nil || n != 1 || len(skipped) != 2 {
+		t.Fatalf("n=%d skipped=%v err=%v; want only git.corp.example sent", n, skipped, err)
+	}
+	if strings.Contains(string(rc.reqs[len(rc.reqs)-1].Body), "*.corp") {
+		t.Fatal("a pattern reached Argo CD")
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }

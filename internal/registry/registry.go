@@ -17,7 +17,6 @@ import (
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/crane"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 )
@@ -89,7 +88,6 @@ func Replicate(ctx context.Context, p *far.Puller, mirror string, bom []Artifact
 	results := make([]Result, len(bom))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	amd64 := &v1.Platform{OS: "linux", Architecture: "amd64"}
 	for i, a := range bom {
 		wg.Add(1)
 		go func(i int, a Artifact) {
@@ -99,7 +97,7 @@ func Replicate(ctx context.Context, p *far.Puller, mirror string, bom []Artifact
 			r := Result{Artifact: a}
 			opts := p.Options(ctx)
 			if a.Kind == "image" {
-				opts = append(opts, crane.WithPlatform(amd64))
+				opts = append(opts, crane.WithPlatform(far.ROKSPlatform))
 			}
 			var src string
 			for attempt := 0; attempt < 4; attempt++ {

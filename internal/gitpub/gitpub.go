@@ -8,13 +8,17 @@ package gitpub
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
+	skeemaknownhosts "github.com/skeema/knownhosts"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -417,25 +421,75 @@ func authFor(o Options) (transport.AuthMethod, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gitpub: parse SSH key: %w", err)
 		}
-		switch {
-		case o.InsecureIgnoreHostKey:
+		if o.InsecureIgnoreHostKey {
 			keys.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // operator opted in
-		case o.SSHKnownHosts != "":
-			cb, err := knownHostsCallback(o.SSHKnownHosts)
-			if err != nil {
-				return nil, err
-			}
-			keys.HostKeyCallback = cb
-		default:
-			return nil, errors.New("gitpub: an ssh URL needs SSHKnownHosts or InsecureIgnoreHostKey")
+			return keys, nil
 		}
+		// The verified keys of the public Git hosts always apply; an operator's
+		// known_hosts adds hosts, it never replaces those.
+		content := BuiltinKnownHosts
+		if o.SSHKnownHosts != "" {
+			content = o.SSHKnownHosts + "\n" + BuiltinKnownHosts
+		}
+		db, err := knownHostsDB(content)
+		if err != nil {
+			return nil, err
+		}
+		keys.HostKeyCallback = explainHostKeyErrors(db.HostKeyCallback(), o.SSHKnownHosts != "")
+		// With its own HostKeyCallback set, go-git no longer negotiates host key
+		// algorithms, so the server presents its preferred type (often ECDSA)
+		// even when known_hosts lists only another (often ed25519) — found in
+		// review: a legitimate host was refused as a "mismatch". Offer only the
+		// types known_hosts has for this host.
+		port := ep.Port
+		if port == 0 {
+			port = 22
+		}
+		keys.HostKeyAlgorithms = db.HostKeyAlgorithms(net.JoinHostPort(ep.Host, strconv.Itoa(port)))
 		return keys, nil
 	default:
 		return nil, nil
 	}
 }
 
-func knownHostsCallback(content string) (ssh.HostKeyCallback, error) {
+// BuiltinKnownHosts are the SSH host keys of github.com, gitlab.com and
+// bitbucket.org, each verified against the provider's published fingerprints
+// (see the header of files/known_hosts).
+//
+//go:embed files/known_hosts
+var BuiltinKnownHosts string
+
+// explainHostKeyErrors turns knownhosts' terse errors into the two cases an
+// operator must tell apart: an unknown host (configure it) and a changed key
+// (stop: possibly a man-in-the-middle).
+func explainHostKeyErrors(cb ssh.HostKeyCallback, haveFile bool) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := cb(hostname, remote, key)
+		var ke *knownhosts.KeyError
+		if err == nil || !errors.As(err, &ke) {
+			return err
+		}
+		if len(ke.Want) == 0 {
+			hint := "set git.known_hosts_file to a known_hosts file for it"
+			if haveFile {
+				hint = "add it to git.known_hosts_file"
+			}
+			return fmt.Errorf("gitpub: SSH host %s is not a known host (built in: github.com, gitlab.com, bitbucket.org); %s", hostname, hint)
+		}
+		sameType := false
+		for _, w := range ke.Want {
+			if w.Key.Type() == key.Type() {
+				sameType = true
+			}
+		}
+		if !sameType {
+			return fmt.Errorf("gitpub: SSH host %s presented a %s host key, but known_hosts has only other key types for it; add its %s key to git.known_hosts_file", hostname, key.Type(), key.Type())
+		}
+		return fmt.Errorf("gitpub: SSH HOST KEY MISMATCH for %s: the server presented a %s key that does not match the known key — refusing to connect (possible man-in-the-middle; if the host really changed its key, update git.known_hosts_file)", hostname, key.Type())
+	}
+}
+
+func knownHostsDB(content string) (*skeemaknownhosts.HostKeyDB, error) {
 	f, err := os.CreateTemp("", "gitpub-known-hosts-*")
 	if err != nil {
 		return nil, err
@@ -448,11 +502,11 @@ func knownHostsCallback(content string) (ssh.HostKeyCallback, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	cb, err := knownhosts.New(f.Name())
+	db, err := skeemaknownhosts.NewDB(f.Name())
 	if err != nil {
 		return nil, fmt.Errorf("gitpub: parse known_hosts: %w", err)
 	}
-	return cb, nil
+	return db, nil
 }
 
 func orDefault(v, d string) string {
