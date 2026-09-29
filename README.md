@@ -11,7 +11,22 @@ slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbn
 
 ## Install
 
-Download the archive for your platform from
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
+```
+
+Both install the latest release for BNK 2.4.0 (`BNK_VERSION` picks another, `VERSION`
+another release), verify its SHA256, and put it on `PATH` with
+`roksbnkargoctl self install`. Later, `roksbnkargoctl self update` updates it in place,
+for the same BNK version.
+
+Or download the archive for your platform from
 [Releases](https://github.com/jgruberf5/roksbnkargoctl/releases). Each binary installs
 one BNK release, and its name says which:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. Linux and macOS use `.tar.gz`,

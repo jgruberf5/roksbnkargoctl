@@ -4,6 +4,18 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [Unreleased]
+
+### Added
+- `self install [--dir D] [--force]` copies the running binary onto PATH (the BNK
+  `install` is unchanged).
+- `self update [--version vX.Y.Z] [--check]` updates the binary in place from a GitHub
+  release: SHA256 verified against the release's checksums file, atomic replace, and on
+  Windows a move-aside with rollback. It only installs the archive for the binary's own
+  BNK version, and "latest" is the newest release that has one.
+- `install.sh` and `install.ps1`, the one-line installers. `BNK_VERSION` picks the BNK
+  release (default 2.4.0); the checksum is mandatory.
+
 ## [0.5.0] - 2026-09-29
 
 First release. Installs and uninstalls **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)** on an
