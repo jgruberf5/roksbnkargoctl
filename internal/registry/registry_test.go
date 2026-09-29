@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
@@ -50,5 +51,21 @@ func TestBOMIncludesEverythingAnInstallPulls(t *testing.T) {
 	}
 	if len(bom) != len(want) {
 		t.Errorf("BOM has %d artifacts, want %d", len(bom), len(want))
+	}
+}
+
+// The 2.4 GA manifest lists utils/log-doc-f5ingress at 14.91.12+0.4.7; "+" cannot
+// appear in an OCI tag and the reference would not even parse.
+func TestBOMMapsPlusToUnderscore(t *testing.T) {
+	m := &far.Manifest{Version: "2.4.0",
+		Charts: []far.Artifact{{Name: "utils/log-doc-f5ingress", Version: "14.91.12+0.4.7"}},
+		Images: []far.Artifact{{Name: "images/x", Version: "1"}}}
+	for _, a := range BOM(m, "repo.f5.com", "v1.17.3", "", false) {
+		if strings.Contains(a.Source, "+") {
+			t.Fatalf("BOM kept an illegal '+' tag: %s", a.Source)
+		}
+		if strings.Contains(a.Source, "log-doc") && !strings.HasSuffix(a.Source, ":14.91.12_0.4.7") {
+			t.Fatalf("log-doc tag = %s, want 14.91.12_0.4.7", a.Source)
+		}
 	}
 }

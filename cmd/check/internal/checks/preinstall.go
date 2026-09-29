@@ -34,7 +34,7 @@ type PreInstallConfig struct {
 	PollInterval   time.Duration
 }
 
-// RWX provisioners on IBM Cloud VPC.
+// IBM Cloud VPC CSI provisioners (reported in findings).
 const (
 	ProvisionerVPCFile  = "vpc.file.csi.ibm.io"
 	ProvisionerVPCBlock = "vpc.block.csi.ibm.io"
@@ -337,10 +337,17 @@ func isDefaultClass(sc kube.Object) bool {
 	return a["storageclass.kubernetes.io/is-default-class"] == "true" || a["storageclass.beta.kubernetes.io/is-default-class"] == "true"
 }
 
-// checkStorageClass: a default class must exist, and with more than one TMM
-// replica the class TMM uses must be ReadWriteMany — the replicas share one PVC.
-// IBM's classes do not advertise access modes, so the provisioner decides:
-// vpc.file.csi.ibm.io is RWX, vpc.block.csi.ibm.io is not.
+// checkStorageClass: a default class must exist (BNK's DSSM, controller and
+// downloader claim volumes), and a named --storage-class must exist.
+//
+// There is deliberately NO ReadWriteMany requirement for multiple TMM replicas.
+// An earlier version failed tmm_replicas > 1 on VPC block storage, believing the
+// replicas share one tmm-pvc. roksbnkctl#197 measured otherwise on live 2.4
+// clusters: at deploymentSize Tiny TMM mounts no PVC at all (3 and 9 replicas
+// Running on block storage, one per node). Tiny is the only size ROKS can run
+// (#203: larger sizes need hugepages, and ROKS has no Machine Config Operator to
+// allocate them), and the only size this tool renders — so the gate blocked
+// F5's reference 3-replica install on a stock cluster for no reason.
 func checkStorageClass(ctx context.Context, env *Env, cfg PreInstallConfig, res *Result) {
 	scs, err := env.Kube.List(ctx, GVRStorageClass.Path("", ""), kube.ListOptions{})
 	if err != nil {
@@ -362,26 +369,12 @@ func checkStorageClass(ctx context.Context, env *Env, cfg PreInstallConfig, res 
 	} else {
 		res.Pass("storageclass", "default StorageClass %s (%s)", def[0].Name(), def[0].String("provisioner"))
 	}
-	eff := named
 	if cfg.StorageClass != "" && named == nil {
 		res.Fail("storageclass", "StorageClass %q (--storage-class) does not exist", cfg.StorageClass)
 		return
 	}
-	if eff == nil && len(def) > 0 {
-		eff = def[0]
-	}
-	if cfg.TMMReplicas <= 1 || eff == nil {
-		return
-	}
-	prov := eff.String("provisioner")
-	switch {
-	case prov == ProvisionerVPCFile:
-		res.Pass("storageclass-rwx", "%d TMM replicas share one PVC; StorageClass %s (%s) supports ReadWriteMany", cfg.TMMReplicas, eff.Name(), prov)
-	case prov == ProvisionerVPCBlock:
-		res.Fail("storageclass-rwx", "%d TMM replicas share one PVC, which must be ReadWriteMany, but StorageClass %s is VPC block storage (%s, ReadWriteOnce only). "+
-			"Enable the vpc-file-csi-driver cluster add-on and pass --storage-class=ibmc-vpc-file-<tier> (or make it the default)", cfg.TMMReplicas, eff.Name(), prov)
-	default:
-		res.Warn("storageclass-rwx", "%d TMM replicas need a ReadWriteMany class; cannot tell whether %s (%s) supports it", cfg.TMMReplicas, eff.Name(), prov)
+	if cfg.TMMReplicas > 1 {
+		res.Info("tmm-storage", "%d TMM replicas: at deploymentSize Tiny TMM mounts no PVC, so any StorageClass works (roksbnkctl#197)", cfg.TMMReplicas)
 	}
 }
 

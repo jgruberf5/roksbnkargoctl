@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 )
 
@@ -73,5 +74,20 @@ func TestPinDigestResolvesTag(t *testing.T) {
 	}
 	if got != host+"/jgruberf5/roksbnkargoctl-check@"+want.String() {
 		t.Fatalf("pinDigest = %s, want repo@%s", got, want)
+	}
+}
+
+// Replication happens while registry.source is still "far"; the mirror login
+// must be sent anyway, to the mirror host only.
+func TestMirrorCredentialsIndependentOfSource(t *testing.T) {
+	c := &config.Config{Registry: config.Registry{Source: config.SourceFAR,
+		Mirror: config.Mirror{Host: "artifactory.example.org", Prefix: "bnk-mirror", Username: "admin"}}}
+	got := mirrorCredentials(c, "tok")
+	if len(got) != 1 || got[0].Host != "artifactory.example.org" || got[0].Username != "admin" || got[0].Password != "tok" {
+		t.Fatalf("source=far with a mirror configured: got %+v", got)
+	}
+	c.Registry.Mirror.Username = ""
+	if got := mirrorCredentials(c, "tok"); got != nil {
+		t.Fatalf("no username: want no credential, got %+v", got)
 	}
 }

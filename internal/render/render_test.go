@@ -296,3 +296,20 @@ func TestNoEmptyMetadataMaps(t *testing.T) {
 		}
 	}
 }
+
+// IBM ROKS runs only deploymentSize Tiny (larger sizes need hugepages ROKS cannot
+// allocate). Every Application this tool creates must say Tiny.
+func TestCNEInstanceIsAlwaysTiny(t *testing.T) {
+	for _, mode := range []string{config.ModeConnected, config.ModeDisconnected} {
+		c := baseConfig(mode, config.SourceFAR)
+		c.BNK.TMMReplicas = 3
+		out := doRender(t, c, nil)
+		spec := find(out.Git, "CNEInstance", CNEInstanceName)["spec"].(map[string]any)
+		if spec["deploymentSize"] != "Tiny" {
+			t.Fatalf("%s: deploymentSize = %v, want Tiny", mode, spec["deploymentSize"])
+		}
+		if spec["tmmReplicas"] != 3 {
+			t.Fatalf("%s: tmmReplicas = %v, want 3", mode, spec["tmmReplicas"])
+		}
+	}
+}

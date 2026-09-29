@@ -107,12 +107,12 @@ It only ever runs in ROKS.
 
 | Mode | Hook | Checks and actions |
 |---|---|---|
-| `pre-install` | Sync −18 | OpenShift ≥ 4.16; 3 zones; ≥ 3 schedulable workers; no pre-existing BNK not owned by this Application (`--argocd-app`, so re-syncs pass); required Secrets present; with `tmm_replicas` > 1 a ReadWriteMany (`vpc.file.csi.ibm.io`) StorageClass, since TMM replicas share one volume; then deletes every `check-node-probe` pod and waits for fresh verdicts from all nodes (a re-sync never reads a stale one — roksbnkctl #57), failing on any unreachable target |
+| `pre-install` | Sync −18 | OpenShift ≥ 4.16; 3 zones; ≥ 3 schedulable workers; no pre-existing BNK not owned by this Application (`--argocd-app`, so re-syncs pass); required Secrets present; a default StorageClass (any class serves any TMM replica count: at Tiny TMM mounts no PVC — roksbnkctl#197); then deletes every `check-node-probe` pod and waits for fresh verdicts from all nodes (a re-sync never reads a stale one — roksbnkctl #57), failing on any unreachable target |
 | `node-probe` | DaemonSet | From each node: DNS + TCP (+TLS handshake) to FAR or the mirror (`:443`), FLP (`:8443`) in disconnected mode, F5 licensing endpoints in connected mode; writes the result to its pod annotation; sleeps |
 | `gateway-api-sweep` | Sync −6 | Deletes OpenShift's `openshift-ingress-operator-gatewayapi-crd-admission` VAP + binding every 5 s until `gateways.gateway.networking.k8s.io` and `gatewaysettings.gateway.k8s.f5.com` exist (timeout 20 min) |
 | `cert-manager-ready` | Sync −11 | Server-side dry-run `ClusterIssuer` create, retried on webhook/x509/5xx/404 until admitted (10 min); fails fast on anything else (e.g. RBAC) |
 | `license` | Sync 0 | Builds `License` from Secret `bnk-license-jwt` (+ FLP URLs/CA path in disconnected mode); waits `Active` (15 min) then `CNEInstance Available` (15 min) |
-| `post-install` | PostSync | FLO Ready; `CNEInstance` Available; `License` Active; TMM replicas Ready and spread across zones; no `ImagePullBackOff`; reports |
+| `post-install` | PostSync | `CNEInstance.spec.deploymentSize` is `Tiny` (catches a hand edit in Git); FLO Ready; `CNEInstance` Available; `License` Active; TMM replicas Ready and spread across zones; no `ImagePullBackOff`; reports |
 | `pre-uninstall` | PreDelete | Sweeps `f5validate-*` webhooks; drains `gateway.k8s.f5.com` and `fic.f5.com` (not FLO-managed `k8s.f5.com` components, which FLO re-creates while the CNEInstance lives, nor `k8s.f5net.com` product defaults the webhook refuses — roksbnkctl #266); waits for IPAM to be gone; deletes `License`, then `CNEInstance`, **while FLO still runs** (roksbnkctl #217). A failed drain leaves the CNEInstance and fails the hook |
 | `post-uninstall` | PostDelete | Deletes the 34 CWC license secrets; strips `f5.com`/`f5net.com` finalizers from anything stuck in a Terminating namespace; reports leftover F5 CRDs and cluster objects (CRDs are kept by design) |
 
@@ -143,6 +143,15 @@ It only ever runs in ROKS.
   Active and `CNEInstance` Available) is the real gate, and fails the sync if BNK does not come
   up. `install` prints an optional Lua snippet for operators who want CR health in the UI.
 
+## deploymentSize: Tiny only
+
+IBM ROKS runs only `deploymentSize: Tiny`. F5's CRD offers `Tiny`, `Small`, `Medium`, `Large`
+and `Max`; every size above Tiny requests hugepages, and ROKS workers report
+`hugepages-2Mi: 0` (verified on bnkargo) with no Machine Config Operator to allocate them
+(roksbnkctl#203). So Tiny is a literal in the renderer, `config.yaml` has no size key (strict
+parsing rejects one), and `check post-install` fails any CNEInstance that is not Tiny. At Tiny,
+TMM mounts no persistent volume, so multiple TMM replicas need no ReadWriteMany storage.
+
 ## Findings from the live runs (bnkargo, OpenShift 4.21.31; Argo CD 3.5.1)
 
 These shaped the implementation; each has a regression test that fails against it.
@@ -164,7 +173,7 @@ These shaped the implementation; each has a regression test that fails against i
 
 Proven live: connected install, re-sync, uninstall, reinstall on a used cluster, and
 disconnected (FLP) install and uninstall; `argocd up` and `flp up/down`. Not yet run live:
-mirror mode, `tmm_replicas` > 1 on RWX storage.
+mirror mode, `tmm_replicas` > 1 (both being proven in the PR that corrects the RWX claim).
 
 ## Uninstall order
 
