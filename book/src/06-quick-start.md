@@ -8,8 +8,14 @@ have seen every file the install publishes, and you will have removed it again.
 Before you start, work through [Prerequisites](./03-prerequisites.md). In particular you
 need the cluster and transit gateway, an Argo CD 3.3 or later that can reach the
 cluster's private endpoint over the gateway, a Git repository you can push to, the FAR
-auth tarball and subscription JWT in a COS bucket, and the binary from
-[Installing roksbnkargoctl](./04-installation.md).
+auth tarball and subscription JWT in a COS bucket, and the binary:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh
+```
+
+(on Windows, and other ways to install it, see
+[Installing roksbnkargoctl](./04-installation.md)).
 
 ## 1. Write config.yaml
 

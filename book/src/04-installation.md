@@ -1,10 +1,139 @@
 # Installing roksbnkargoctl
 
 This chapter gets the `roksbnkargoctl` binary onto your workstation, on Linux, macOS or
-Windows, and explains where the in-cluster `check` image comes from and how the binary
-chooses which one to deploy.
+Windows, keeps it up to date, and explains where the in-cluster `check` image comes from
+and how the binary chooses which one to deploy.
 
-## Build from source
+## Install with one line
+
+On Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
+```
+
+Then confirm:
+
+```sh
+roksbnkargoctl version
+```
+
+```text
+roksbnkargoctl v0.5.0 for BNK 2.4.0 (commit 1a2b3c4, built 2026-09-29T12:00:00Z)
+```
+
+The installer:
+
+1. finds the latest release on GitHub (or the one you pin, below);
+2. downloads the archive for your operating system, your architecture and the BNK
+   release you want;
+3. verifies its SHA256 against the release's checksums file, and refuses to go on if
+   the checksum does not match, the checksums file is missing or does not list the
+   archive;
+4. extracts the binary and hands off to `roksbnkargoctl self install --force`, which
+   copies it onto your `PATH` (below);
+5. removes the downloaded archive and the extracted copy.
+
+### One binary per BNK release
+
+Each `roksbnkargoctl` binary installs exactly one BNK release, and the release assets are
+named for it:
+
+```text
+roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>.tar.gz   (Linux, macOS)
+roksbnkargoctl_<version>_bnk-<BNK version>_windows_<arch>.zip  (Windows)
+roksbnkargoctl_<version>_checksums.txt
+```
+
+Release 0.5.0 ships binaries for BNK 2.4.0 for Linux, macOS and Windows on `amd64` and
+`arm64`. `roksbnkargoctl version` prints both versions. Later BNK releases will ship as
+their own binaries beside these.
+
+### Installer options
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VERSION` | the latest release | install this release, for example `v0.5.0` (on Linux and macOS also the first argument: `… \| sh -s -- v0.5.0`) |
+| `BNK_VERSION` | `2.4.0` | the BNK release the binary installs. If the chosen release has no archive for it, the installer fails and lists the BNK releases it does have |
+| `ROKSBNKARGOCTL_INSTALL_ARGS` | none | passed to `self install`, for example `--dir $HOME/bin` |
+| `GITHUB_TOKEN` | none | authenticates the one GitHub API call, if you hit its rate limit |
+
+```sh
+# a specific release, into ~/bin
+curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh \
+  | VERSION=v0.5.0 ROKSBNKARGOCTL_INSTALL_ARGS="--dir $HOME/bin" sh
+```
+
+```powershell
+$env:VERSION = 'v0.5.0'
+irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
+```
+
+You can also download an archive from the
+[Releases page](https://github.com/jgruberf5/roksbnkargoctl/releases), check it against the
+checksums file, and run `roksbnkargoctl self install` from where you extracted it.
+
+### Where it goes: self install
+
+```sh
+roksbnkargoctl self install [--dir DIR] [--force]
+```
+
+`self install` copies the running binary onto your `PATH`. The installer calls it for
+you; run it yourself after a manual download or a build from source.
+
+| Platform | Default directory |
+|---|---|
+| Linux, macOS | `$HOME/.local/bin` if it exists or is on `PATH`; else `$HOME/bin` if it does; else `$HOME/.local/bin` is created, with a hint to add it to `PATH`. `/usr/local/bin` only when there is no home directory |
+| Windows | `%LOCALAPPDATA%\Microsoft\WindowsApps` if it is on `PATH` and writable; else the first writable `PATH` entry under your profile; else `%LOCALAPPDATA%\Programs\roksbnkargoctl`, with a hint to add it to `PATH` |
+
+`--dir` picks the directory (a leading `~` is expanded). Without `--force` it does nothing
+when the running binary already is the installed one.
+
+This is not the same as `roksbnkargoctl install`, which installs **BNK** on your cluster
+([chapter 8](./08-install.md)).
+
+## Keep it up to date: self update
+
+```sh
+roksbnkargoctl self update              # choose a newer release, then confirm
+roksbnkargoctl self update --check      # list newer releases; change nothing
+roksbnkargoctl self update --yes        # take the latest without asking
+roksbnkargoctl self update --version v0.5.1
+```
+
+`self update` replaces the running binary with one from a GitHub release. It downloads
+the archive, verifies its SHA256 against the release's checksums file (and refuses
+without one), and replaces the binary in place. On Windows a running `.exe` cannot be
+overwritten, so the old one is moved aside and restored if the replacement fails.
+
+- **It never switches BNK releases.** It only installs the archive for the BNK release
+  the running binary installs. "Latest" is the newest release that has one; a newer
+  release that ships only other BNK releases is skipped. A pinned `--version` without
+  one is refused, and the error names the BNK releases it does have.
+- On a terminal, without `--yes`, it lists the newer releases (newest first, the default)
+  and asks `Switch to vX? (y/n)`. With `--yes`, or without a terminal, it takes the
+  latest.
+- `--version` pins a release (the `v` is optional). It can go back to an older release,
+  reinstall the current one, or install a prerelease.
+- `--check` prints the current version and the newer releases, changes nothing and
+  exits 0.
+- `GITHUB_TOKEN`, when set, is sent to `api.github.com` only, never with a download.
+- On Windows, if the replacement failed **and** the rollback failed, it exits with code
+  125 and prints the `.old` file and the `Move-Item` command that restores it.
+
+**This updates roksbnkargoctl, not BNK.** roksbnkargoctl installs and uninstalls BNK; it
+does not upgrade it. BNK supports an in-place upgrade by changing the manifest version in
+its custom resources, as F5's BNK documentation describes, and that is beyond the scope
+of this tool.
+
+## Build from the repository
 
 `roksbnkargoctl` is one Go module, `github.com/jgruberf5/roksbnkargoctl`. It needs Go
 **1.26** (the module declares `go 1.26.6`) and nothing else: no C toolchain, no cgo, no
@@ -14,7 +143,8 @@ other binaries at build time or at run time.
 git clone https://github.com/jgruberf5/roksbnkargoctl.git
 cd roksbnkargoctl
 make build
-./bin/roksbnkargoctl version
+./bin/roksbnkargoctl self install
+roksbnkargoctl version
 ```
 
 `make build` produces a static binary at `bin/roksbnkargoctl` and stamps it with version
@@ -32,30 +162,42 @@ Without `make`, a plain Go build works on every platform:
 go build ./cmd/roksbnkargoctl
 ```
 
-An unstamped build reports its version as `dev`. Put the binary anywhere on your `PATH`.
+An unstamped build reports its version as `dev`: `roksbnkargoctl dev for BNK 2.4.0
+(commit none, built unknown)`. A build from a checkout that is not exactly on a release
+tag deploys the `:dev` check image (see [below](#which-image-a-build-deploys)).
 
 Other targets in the `Makefile`:
 
 | Target | Does |
 |---|---|
 | `make test` | `go test -race ./...` |
-| `make vet`, `make fmt` | `go vet`, and fails if any file needs `gofmt` |
-| `make verify` | fmt, vet, test, build and the check binary: everything a change must pass |
+| `make vet`, `make fmt`, `make staticcheck` | `go vet`; fails if any file needs `gofmt`; the same staticcheck CI runs |
+| `make verify` | fmt, vet, staticcheck, test, build and the check binary: everything a change must pass |
 | `make check-binary` | the `check` binary for Linux, into `bin/check` |
 | `make check-image` | builds the `check` image with Docker from `build/check/Dockerfile` |
+| `make book`, `make book-pdf` | this book as HTML, or as a PDF and an HTML archive in `dist/` (needs Docker) |
 
-## Windows
+### On Windows
 
 The binary is native on Windows. Every feature is implemented in-process, so it does not
 shell out to `curl`, `kubectl`, `helm`, `git`, `openssl` or `terraform`; continuous
-integration builds it on Windows for every change.
+integration builds and tests it on Windows for every change.
 
 ```powershell
 go build ./cmd/roksbnkargoctl
-.\roksbnkargoctl.exe version
+.\roksbnkargoctl.exe self install
+roksbnkargoctl version
 ```
 
-Set environment variables for the session with `$env:`:
+## Environment
+
+Set the credentials for the session. On Linux and macOS:
+
+```sh
+export IBMCLOUD_API_KEY=…  ARGOCD_AUTH_TOKEN=…  ROKSBNKARGOCTL_GIT_TOKEN=…
+```
+
+On Windows:
 
 ```powershell
 $env:IBMCLOUD_API_KEY = "…"
@@ -63,21 +205,8 @@ $env:ARGOCD_AUTH_TOKEN = "…"
 $env:ROKSBNKARGOCTL_GIT_TOKEN = "…"
 ```
 
-The workspace lives under your user profile, in `.roksbnkargoctl\` (see
-[Workspaces and init](./05-workspaces-and-init.md)).
-
-## Check the build
-
-```sh
-roksbnkargoctl version
-```
-
-```text
-roksbnkargoctl v1.2.3 (commit 1a2b3c4, built 2026-09-29T12:00:00Z)
-```
-
-The values are examples; an unstamped build prints
-`roksbnkargoctl dev (commit none, built unknown)`.
+The workspace lives under your home directory (your user profile on Windows), in
+`.roksbnkargoctl` (see [Workspaces and init](./05-workspaces-and-init.md)).
 
 ## The check image
 

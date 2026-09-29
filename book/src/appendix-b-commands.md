@@ -69,7 +69,9 @@ hub](./15-test-hub.md).
 | `agent init` | `--force` — overwrite existing files | Scaffold the troubleshooting guide, personas and a journal directory into the workspace ([chapter 18](./18-agent.md)) |
 | `workspaces list` (alias `ws list`) | — | List workspaces; the current one is marked `*` |
 | `workspaces use <name>` (alias `ws use`) | — | Make a workspace current |
-| `version` | — | Print the version |
+| `version` | — | Print the version and the BNK release this binary installs |
+| `self install` | `--dir <dir>` — where to copy it (default: see [chapter 4](./04-installation.md#where-it-goes-self-install)); `--force` — copy even if the running binary is already the installed one | Copy the running binary onto `PATH`. Not the BNK `install` |
+| `self update` | `--version <vX.Y.Z>` — install that release (may go back, reinstall or take a prerelease); `--check` — list newer releases and change nothing; honours `--yes` | Replace the running binary with a release's, verified against the release's checksums. Only the archive for its own BNK release; never switches BNK releases. Updates the tool, not BNK |
 | `completion <shell>` | — | Generate a shell completion script (`bash`, `zsh`, `fish`, `powershell`) |
 | `help [command]` | — | Help about any command |
 
