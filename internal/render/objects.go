@@ -75,6 +75,26 @@ func (o Object) Wave() int {
 // SetWave sets the sync wave.
 func (o Object) SetWave(w int) { o.Annotations()[AnnoWave] = fmt.Sprint(w) }
 
+// PruneEmptyMeta removes empty metadata.annotations / metadata.labels maps.
+//
+// Found live on OpenShift 4.21: a Namespace server-side-applied with
+// `annotations: {}` is never given its openshift.io/sa.scc.* annotations by the
+// cluster-policy-controller, so every pod in it is rejected ("unable to find
+// annotation openshift.io/sa.scc.uid-range"). Without the empty map the
+// controller annotates it within seconds, and re-applying without it repairs a
+// namespace already affected.
+func (o Object) PruneEmptyMeta() {
+	m, ok := o["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, k := range []string{"annotations", "labels"} {
+		if v, ok := m[k].(map[string]any); ok && len(v) == 0 {
+			delete(m, k)
+		}
+	}
+}
+
 // YAML marshals the object.
 func (o Object) YAML() ([]byte, error) { return yaml.Marshal(map[string]any(o)) }
 

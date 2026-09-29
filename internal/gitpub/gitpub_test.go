@@ -37,7 +37,13 @@ func bareRepo(t *testing.T) (dir, url string) {
 	if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName("main"))); err != nil {
 		t.Fatal(err)
 	}
-	return dir, "file://" + filepath.ToSlash(dir)
+	// file:// + an absolute path: "file:///tmp/x" on Unix, "file:///C:/x" on
+	// Windows (a bare "file://C:/x" makes the drive letter the URL host).
+	slashed := filepath.ToSlash(dir)
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return dir, "file://" + slashed
 }
 
 func writeTree(t *testing.T, files map[string]string) string {

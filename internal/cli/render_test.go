@@ -14,3 +14,16 @@ func TestCheckImageTag(t *testing.T) {
 		}
 	}
 }
+
+// Found live on bnkargo: registering the private endpoint without the cluster
+// CA fails x509; the public endpoint must NOT get it (it would replace the
+// public roots its certificate chains to).
+func TestRegistrationCA(t *testing.T) {
+	ca := []byte("-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n")
+	if got := registrationCA("private", ca); string(got) != string(ca) {
+		t.Fatal("private endpoint must be registered with the cluster CA")
+	}
+	if got := registrationCA("public", ca); got != nil {
+		t.Fatal("public endpoint must use system roots, not the cluster CA")
+	}
+}

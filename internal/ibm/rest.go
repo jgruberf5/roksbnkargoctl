@@ -247,10 +247,3 @@ type ref struct {
 type nameRef struct {
 	Name string `json:"name"`
 }
-
-func refOrNil(id string) *ref {
-	if id == "" {
-		return nil
-	}
-	return &ref{ID: id}
-}

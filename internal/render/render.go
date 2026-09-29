@@ -211,6 +211,10 @@ func Render(in Inputs) (*Output, error) {
 		// Direct objects carry no Argo CD wave: nothing syncs them.
 		delete(o.Annotations(), AnnoWave)
 		o.Labels()[LabelManagedBy] = ManagedByValue
+		o.PruneEmptyMeta()
+	}
+	for _, o := range out.Git {
+		o.PruneEmptyMeta()
 	}
 	if err := checkNoSecretsInGit(out.Git, in.Secrets); err != nil {
 		return nil, err

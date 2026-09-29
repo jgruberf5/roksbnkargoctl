@@ -277,3 +277,20 @@ func TestPreInstallKnowsItsApplication(t *testing.T) {
 		t.Fatalf("pre-install is not told its Application: %s", args)
 	}
 }
+
+// Found live: an empty annotations map on a server-side-applied Namespace keeps
+// OpenShift from adding the SCC annotations, and every pod in it is rejected.
+// No rendered object may carry an empty metadata map.
+func TestNoEmptyMetadataMaps(t *testing.T) {
+	out := doRender(t, baseConfig(config.ModeConnected, config.SourceFAR), nil)
+	for _, set := range [][]Object{out.Git, out.Direct} {
+		for _, o := range set {
+			m := o["metadata"].(map[string]any)
+			for _, k := range []string{"annotations", "labels"} {
+				if v, ok := m[k].(map[string]any); ok && len(v) == 0 {
+					t.Errorf("%s %s/%s has an empty metadata.%s", o.Kind(), o.Namespace(), o.Name(), k)
+				}
+			}
+		}
+	}
+}

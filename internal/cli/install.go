@@ -76,7 +76,7 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 		return err
 	}
 	if err := ac.RequireAtLeast(ctx, MinArgoCD); err != nil {
-		return fmt.Errorf("Argo CD at %s: %w", c.ArgoCD.Server, err)
+		return fmt.Errorf("checking the Argo CD at %s: %w", c.ArgoCD.Server, err)
 	}
 	v, _ := ac.Version(ctx)
 	p.ok("Argo CD %s at %s", v, c.ArgoCD.Server)
@@ -124,15 +124,13 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 
 	// 6. Register ROKS with Argo CD.
 	p.step("registering %s with Argo CD (%s endpoint %s)", r.ClusterName, c.ArgoCD.ClusterEndpoint, r.ArgoCDClusterServer)
-	token, _, err := k.EnsureArgoCDManager(ctx)
+	token, clusterCA, err := k.EnsureArgoCDManager(ctx)
 	if err != nil {
 		return err
 	}
-	// ROKS service endpoints present publicly trusted certificates, so Argo CD
-	// verifies them with its system roots; the SA token's ca.crt is the cluster's
-	// internal CA and would not match.
 	if _, err := ac.UpsertCluster(ctx, argocd.Cluster{
 		Name: r.ClusterName, Server: r.ArgoCDClusterServer, BearerToken: token,
+		CAData: registrationCA(c.ArgoCD.ClusterEndpoint, clusterCA),
 		Labels: map[string]string{render.LabelManagedBy: render.ManagedByValue},
 	}); err != nil {
 		return fmt.Errorf("registering the cluster with Argo CD: %w", err)
@@ -264,6 +262,19 @@ func gitCredentials(c *config.Config) (token string, sshKey []byte, err error) {
 	}
 	t, err := config.Env(c.Git.TokenEnv, "Git token")
 	return t, nil, err
+}
+
+// registrationCA is the CA Argo CD verifies the ROKS API with. The two ROKS
+// endpoints differ, verified live: the public endpoint presents a publicly
+// trusted certificate (no CA: Argo CD's system roots verify it, and a cluster CA
+// would REPLACE those roots and fail), while the private endpoint's certificate
+// chains to the cluster's own root CA — the same CA as the ServiceAccount token
+// Secret's ca.crt. Without it: "x509: certificate signed by unknown authority".
+func registrationCA(endpoint string, clusterCA []byte) []byte {
+	if endpoint == "private" {
+		return clusterCA
+	}
+	return nil
 }
 
 // ensureClusterOnTGW attaches the cluster VPC to the transit gateway when it is

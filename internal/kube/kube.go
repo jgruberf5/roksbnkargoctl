@@ -79,7 +79,18 @@ func (c *Client) ServerVersion() (string, error) {
 
 // Apply server-side-applies one object (a generic map) with force, so objects
 // we own converge to what we render.
+//
+// Empty metadata.annotations / metadata.labels maps are dropped first: applying
+// `annotations: {}` to a Namespace stops OpenShift's cluster-policy-controller
+// from ever adding the SCC annotations pods need (see render.PruneEmptyMeta).
 func (c *Client) Apply(ctx context.Context, obj map[string]any) error {
+	if m, ok := obj["metadata"].(map[string]any); ok {
+		for _, k := range []string{"annotations", "labels"} {
+			if v, ok := m[k].(map[string]any); ok && len(v) == 0 {
+				delete(m, k)
+			}
+		}
+	}
 	u := &unstructured.Unstructured{Object: obj}
 	gvk := u.GroupVersionKind()
 	mapping, err := c.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
