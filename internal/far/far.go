@@ -24,6 +24,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/crane"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"gopkg.in/yaml.v3"
 )
 
@@ -119,6 +120,17 @@ func (p *Puller) opts(ctx context.Context) []crane.Option {
 // ListTags lists a repository's tags.
 func (p *Puller) ListTags(ctx context.Context, repo string) ([]string, error) {
 	return crane.ListTags(repo, p.opts(ctx)...)
+}
+
+// ROKSPlatform is the one platform ROKS workers run. `registry replicate`
+// narrows multi-arch images to it, so anything comparing a mirror copy with its
+// source must compare this platform's digest, not the source index's.
+var ROKSPlatform = &v1.Platform{OS: "linux", Architecture: "amd64"}
+
+// PlatformDigest returns the digest of ref's ROKSPlatform manifest (for a
+// single-platform image, its own digest).
+func (p *Puller) PlatformDigest(ctx context.Context, ref string) (string, error) {
+	return crane.Digest(ref, append(p.opts(ctx), crane.WithPlatform(ROKSPlatform))...)
 }
 
 // Digest returns an artifact's manifest digest.

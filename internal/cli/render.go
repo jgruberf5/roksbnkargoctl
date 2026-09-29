@@ -113,14 +113,20 @@ func resolveCheckImage(ctx context.Context, pl *far.Puller, c *config.Config, wa
 		warn("could not resolve %s upstream (%v); using the mirror's copy without checking it is current", src, upErr)
 		return pinDigest(ctx, pl, mirrorRef)
 	}
-	digest := upstream[strings.LastIndex(upstream, "@")+1:]
+	// The mirror holds the linux/amd64 manifest (replicate narrows multi-arch
+	// images to it), so compare that platform's digest — found live: comparing
+	// the upstream INDEX digest refused every mirror install.
+	digest, err := pl.PlatformDigest(ctx, src)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s for linux/amd64: %w", src, err)
+	}
 	mirrorPinned := repoOf(mirrorRef) + "@" + digest
 	if _, err := pl.Digest(ctx, mirrorPinned); err != nil {
 		have := "no copy"
 		if d, err := pl.Digest(ctx, mirrorRef); err == nil {
 			have = "an older copy (" + d + ")"
 		}
-		return "", fmt.Errorf("the mirror has %s of the check image, not %s (%s): run `roksbnkargoctl registry replicate` so the cluster runs the current check", have, digest, src)
+		return "", fmt.Errorf("the mirror has %s of the check image, not %s (%s, linux/amd64): run `roksbnkargoctl registry replicate` so the cluster runs the current check", have, digest, src)
 	}
 	return mirrorPinned, nil
 }

@@ -7,11 +7,17 @@ import (
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
+	bomregistry "github.com/jgruberf5/roksbnkargoctl/internal/registry"
 )
 
 // Only a release version names a published check image; everything else must
@@ -134,5 +140,43 @@ func TestResolveCheckImageRefusesAStaleMirror(t *testing.T) {
 	got, err = resolveCheckImage(context.Background(), pl, c, noWarn)
 	if err != nil || got != up+"/jgruberf5/roksbnkargoctl-check@"+want.String() {
 		t.Fatalf("far mode: got %s, %v", got, err)
+	}
+}
+
+// Found live: the check image is a multi-arch INDEX (CI builds amd64+arm64);
+// registry replicate narrows it to linux/amd64. Comparing the upstream index
+// digest with the mirror's amd64 manifest refused every mirror install. This
+// mirrors a real index with the real Replicate and requires the check to pass.
+func TestResolveCheckImageAcceptsAReplicatedMultiArchImage(t *testing.T) {
+	upstream := httptest.NewServer(registry.New())
+	defer upstream.Close()
+	mirror := httptest.NewServer(registry.New())
+	defer mirror.Close()
+	up := strings.TrimPrefix(upstream.URL, "http://")
+	mh := strings.TrimPrefix(mirror.URL, "http://")
+	amd, _ := random.Image(256, 1)
+	arm, _ := random.Image(256, 1)
+	idx := mutate.AppendManifests(empty.Index,
+		mutate.IndexAddendum{Add: amd, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}}},
+		mutate.IndexAddendum{Add: arm, Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}})
+	src := up + "/jgruberf5/roksbnkargoctl-check:dev"
+	ref, _ := name.ParseReference(src)
+	if err := remote.WriteIndex(ref, idx); err != nil {
+		t.Fatal(err)
+	}
+	pl, _ := far.NewPuller(nil, nil)
+	res := bomregistry.Replicate(context.Background(), pl, mh+"/m", []bomregistry.Artifact{{Source: src, Kind: "image"}}, 1, nil)
+	if res[0].Err != nil {
+		t.Fatal(res[0].Err)
+	}
+	c := &config.Config{Check: config.Check{Image: src},
+		Registry: config.Registry{Source: config.SourceMirror, Mirror: config.Mirror{Host: mh, Prefix: "m"}}}
+	got, err := resolveCheckImage(context.Background(), pl, c, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("a freshly replicated multi-arch check image was refused: %v", err)
+	}
+	want, _ := amd.Digest()
+	if got != mh+"/m/jgruberf5/roksbnkargoctl-check@"+want.String() {
+		t.Fatalf("got %s, want the mirror path at the amd64 digest %s", got, want)
 	}
 }
