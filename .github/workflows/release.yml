@@ -70,7 +70,10 @@ jobs:
         with:
           ref: ${{ env.TAG }}
       - name: Build the book (PDF + HTML archive)
-        run: scripts/book-pdf.sh "$TAG"
+        # Through bash, not by its mode bit: the v0.5.0 tag carries this script as
+        # 100644 (committed from a checkout with core.fileMode=false) and failed
+        # "Permission denied".
+        run: bash scripts/book-pdf.sh "$TAG"
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
