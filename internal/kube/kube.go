@@ -84,13 +84,7 @@ func (c *Client) ServerVersion() (string, error) {
 // `annotations: {}` to a Namespace stops OpenShift's cluster-policy-controller
 // from ever adding the SCC annotations pods need (see render.PruneEmptyMeta).
 func (c *Client) Apply(ctx context.Context, obj map[string]any) error {
-	if m, ok := obj["metadata"].(map[string]any); ok {
-		for _, k := range []string{"annotations", "labels"} {
-			if v, ok := m[k].(map[string]any); ok && len(v) == 0 {
-				delete(m, k)
-			}
-		}
-	}
+	pruneEmptyMeta(obj)
 	u := &unstructured.Unstructured{Object: obj}
 	gvk := u.GroupVersionKind()
 	mapping, err := c.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
@@ -111,6 +105,19 @@ func (c *Client) Apply(ctx context.Context, obj map[string]any) error {
 		return fmt.Errorf("apply %s %s/%s: %w", gvk.Kind, u.GetNamespace(), u.GetName(), err)
 	}
 	return nil
+}
+
+// pruneEmptyMeta drops empty metadata.annotations / metadata.labels maps.
+func pruneEmptyMeta(obj map[string]any) {
+	m, ok := obj["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, k := range []string{"annotations", "labels"} {
+		if v, ok := m[k].(map[string]any); ok && len(v) == 0 {
+			delete(m, k)
+		}
+	}
 }
 
 // Delete removes one object; absent is success.
