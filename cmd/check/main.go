@@ -189,7 +189,7 @@ func preInstall(fs *flag.FlagSet) func(context.Context, *checks.Env, *checks.Res
 	minWorkers := fs.Int("min-workers", 3, "minimum schedulable Ready workers")
 	secrets := &listFlag{}
 	fs.Var(secrets, "require-secret", "namespace/name of a Secret that must exist (repeatable, or comma-separated)")
-	tmm := fs.Int("tmm-replicas", 1, "TMM replicas; >1 requires a ReadWriteMany StorageClass")
+	tmm := fs.Int("tmm-replicas", 1, "expected TMM replicas (informational: at deploymentSize Tiny TMM mounts no PVC, so any StorageClass works)")
 	sc := fs.String("storage-class", "", "StorageClass TMM uses (empty = the default class)")
 	app := fs.String("argocd-app", "", "Argo CD Application name; its own objects do not count as a pre-existing BNK on a re-sync")
 	ds := fs.String("probe-daemonset", "check-node-probe", "node-probe DaemonSet name")

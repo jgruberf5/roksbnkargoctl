@@ -176,9 +176,10 @@ These shaped the implementation; each has a regression test that fails against i
   pinned (roksbnkctl#327).
 - **cert-manager's webhook can lag its Deployment**: gated by `cert-manager-ready`.
 
-Proven live: connected install, re-sync, uninstall, reinstall on a used cluster, and
-disconnected (FLP) install and uninstall; `argocd up` and `flp up/down`. Not yet run live:
-mirror mode, `tmm_replicas` > 1 (both being proven in the PR that corrects the RWX claim).
+Proven live: connected install, re-sync, uninstall, reinstall on a used cluster;
+disconnected (FLP) install and uninstall; mirror mode (Artifactory, 93 artifacts) install and
+uninstall with 3 TMM replicas on VPC block storage; `argocd up` and `flp up/down`. Not yet run
+live: a private-CA mirror, an anonymous mirror, `flp.external`.
 
 ## Uninstall order
 
