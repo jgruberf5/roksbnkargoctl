@@ -34,6 +34,7 @@ type fakeGitHub struct {
 
 	mu              sync.Mutex
 	downloadAuthHdr []string // Authorization seen on asset downloads
+	apiAuthHdr      []string // Authorization seen on API requests
 	rateLimited     bool
 	pretty          bool // indent the JSON, as api.github.com does for curl
 }
@@ -76,6 +77,12 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		http.NotFound(w, r)
+	case func() bool {
+		f.mu.Lock()
+		f.apiAuthHdr = append(f.apiAuthHdr, r.Header.Get("Authorization"))
+		f.mu.Unlock()
+		return false
+	}():
 	case limited:
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)

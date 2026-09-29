@@ -25,10 +25,14 @@ curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/insta
 irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
 ```
 
-Both install the latest release for BNK 2.4.0 (`BNK_VERSION` picks another, `VERSION`
-another release), verify its SHA256, and put it on `PATH` with
-`roksbnkargoctl self install`. Later, `roksbnkargoctl self update` updates it in place,
-for the same BNK version.
+Both install the latest release for BNK 2.4.0, verify its SHA256, and put it on `PATH`
+with `roksbnkargoctl self install`. `ROKSBNKARGOCTL_VERSION` pins a release,
+`ROKSBNKARGOCTL_BNK_VERSION` picks another BNK release and `ROKSBNKARGOCTL_INSTALL_DIR`
+the directory (see the book's install chapter). Later, `roksbnkargoctl self update`
+updates the tool in place, for the same BNK version; it does not upgrade BNK.
+
+Or build it from the repository: `make build && ./bin/roksbnkargoctl self install`
+(Go 1.26).
 
 Or download the archive for your platform from
 [Releases](https://github.com/jgruberf5/roksbnkargoctl/releases). Each binary installs

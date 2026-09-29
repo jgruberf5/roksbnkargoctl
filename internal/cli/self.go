@@ -73,7 +73,8 @@ never switches BNK lines: a release without that archive is skipped when looking
 for the latest, and refused when named with --version.
 
   self update                 on a terminal: list the newer releases, pick one
-                              without a terminal, or with --yes: the latest
+                              without a terminal, or with --yes: the latest,
+                              unless this binary is already newer
   self update --version vX.Y.Z  install that release (may downgrade or reinstall)
   self update --check         report what is available and change nothing
 
@@ -85,8 +86,10 @@ Needs write permission on the binary's directory. GITHUB_TOKEN, when set,
 authenticates the GitHub API calls (60 requests/hour without it).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx, cancel := context.WithTimeout(cmd.Context(), selfUpdateTimeout)
-			defer cancel()
+			// No deadline on ctx: it would also run while the user sits at the
+			// picker or the confirmation. Each HTTP request has its own
+			// (the client's Timeout), which covers the download.
+			ctx := cmd.Context()
 			u := newUpdater(cmd.ErrOrStderr())
 			if check {
 				return u.check(ctx, cmd.OutOrStdout())
@@ -119,7 +122,7 @@ type updater struct {
 
 func newUpdater(w io.Writer) *updater {
 	return &updater{
-		api: githubAPI, repo: selfRepo, client: http.DefaultClient,
+		api: githubAPI, repo: selfRepo, client: &http.Client{Timeout: selfUpdateTimeout},
 		goos: runtime.GOOS, goarch: runtime.GOARCH,
 		bnk: config.BNKVersion, current: Version, w: w,
 	}
@@ -133,6 +136,9 @@ func (u *updater) run(ctx context.Context, target, pinned string, auto bool) err
 	switch {
 	case pinned != "":
 		tag := normalizeTag(pinned)
+		if !pinnedTag.MatchString(tag) {
+			return fmt.Errorf("--version %q is not a release tag like v0.5.1", pinned)
+		}
 		fmt.Fprintf(u.w, "→ Fetching release %s\n", tag)
 		r, err := u.releaseByTag(ctx, tag)
 		if err != nil {
@@ -144,6 +150,13 @@ func (u *updater) run(ctx context.Context, target, pinned string, auto bool) err
 		r, err := u.latest(ctx)
 		if err != nil {
 			return err
+		}
+		// Never go backwards without being asked: a binary newer than every
+		// release for its line (a prerelease installed with --version, or a
+		// local build) stays as it is. Only --version may downgrade.
+		if !sameVersion(u.current, r.TagName) && len(u.newerThanCurrent([]ghRelease{*r})) == 0 {
+			fmt.Fprintf(u.w, "✓ %s is newer than the latest release for BNK %s (%s); nothing to do (use --version to go back)\n", u.current, u.bnk, r.TagName)
+			return nil
 		}
 		rel = r
 	default:
@@ -499,6 +512,10 @@ func findAsset(assets []ghAsset, name string) (ghAsset, bool) {
 	}
 	return ghAsset{}, false
 }
+
+// pinnedTag is what --version accepts once normalized: a release tag, never a
+// path or a query (it is put into the API URL).
+var pinnedTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
 // normalizeTag ensures a leading v, so "0.5.1" and "v0.5.1" both name the tag.
 func normalizeTag(v string) string {

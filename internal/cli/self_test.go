@@ -469,3 +469,46 @@ func TestInstallByMoveAside(t *testing.T) {
 		t.Error("the staged file should have been renamed away")
 	}
 }
+
+// Review finding: with --yes (or no terminal) self update took "the latest"
+// even when it was OLDER than the running binary, and replaced it. A binary
+// newer than every release for its line stays as it is; only --version may go
+// back.
+func TestAutoUpdateNeverDowngrades(t *testing.T) {
+	for _, current := range []string{"v0.6.0", "v0.6.0-rc.1"} {
+		f := newFakeGitHub(t, release(t, "v0.5.0", []string{"2.4.0"}, linuxAMD))
+		u, log := testUpdater(f, current)
+		target := installedBinary(t, selfBinary)
+		if err := u.run(t.Context(), target, "", true); err != nil {
+			t.Fatalf("%s: run: %v\n%s", current, err, log)
+		}
+		if got := readFile(t, target); got != "OLD" {
+			t.Errorf("%s: downgraded to %q\n%s", current, got, log)
+		}
+	}
+	// A dev build is older than any release: it does update.
+	f := newFakeGitHub(t, release(t, "v0.5.0", []string{"2.4.0"}, linuxAMD))
+	u, log := testUpdater(f, "dev")
+	target := installedBinary(t, selfBinary)
+	if err := u.run(t.Context(), target, "", true); err != nil {
+		t.Fatalf("dev: %v\n%s", err, log)
+	}
+	if got, want := readFile(t, target), string(binaryFor("v0.5.0", "2.4.0")); got != want {
+		t.Errorf("dev build not updated: %q", got)
+	}
+}
+
+// Review finding: --version went into the API URL unchecked.
+func TestPinnedVersionMustBeATag(t *testing.T) {
+	f := newFakeGitHub(t, release(t, "v0.5.0", []string{"2.4.0"}, linuxAMD))
+	u, _ := testUpdater(f, "v0.4.0")
+	target := installedBinary(t, selfBinary)
+	for _, bad := range []string{"v1/../../../../other/repo/releases/tags/v0.5.0", "v0.5.0?x=1", "latest", "v0.5"} {
+		if err := u.run(t.Context(), target, bad, true); err == nil || !strings.Contains(err.Error(), "not a release tag") {
+			t.Errorf("%q: want a refusal, got %v", bad, err)
+		}
+	}
+	if err := u.run(t.Context(), target, "0.5.0", true); err != nil {
+		t.Errorf("a bare version must still work: %v", err)
+	}
+}

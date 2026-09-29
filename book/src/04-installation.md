@@ -59,19 +59,26 @@ their own binaries beside these.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `VERSION` | the latest release | install this release, for example `v0.5.0` (on Linux and macOS also the first argument: `… \| sh -s -- v0.5.0`) |
-| `BNK_VERSION` | `2.4.0` | the BNK release the binary installs. If the chosen release has no archive for it, the installer fails and lists the BNK releases it does have |
-| `ROKSBNKARGOCTL_INSTALL_ARGS` | none | passed to `self install`, for example `--dir $HOME/bin` |
-| `GITHUB_TOKEN` | none | authenticates the one GitHub API call, if you hit its rate limit |
+| `ROKSBNKARGOCTL_VERSION` (or `VERSION`) | the latest release | install this release tag, for example `v0.5.0` (on Linux and macOS also the first argument: `… \| sh -s -- v0.5.0`). Anything but a release tag is refused |
+| `ROKSBNKARGOCTL_BNK_VERSION` (or `BNK_VERSION`) | `2.4.0` | the BNK release the binary installs. If the chosen release has no archive for it, the installer fails and lists the BNK releases it does have |
+| `ROKSBNKARGOCTL_INSTALL_DIR` | see [self install](#where-it-goes-self-install) | the directory to install into; spaces are fine |
+| `ROKSBNKARGOCTL_INSTALL_ARGS` | none | more arguments for `self install`, split on spaces |
+| `GITHUB_TOKEN` | none | authenticates the one GitHub API call, if you hit its rate limit. It is sent to the API only, and on Linux and macOS it is passed to `curl` in a file, not on the command line |
+
+The `ROKSBNKARGOCTL_` names win over the short ones, which are common in CI
+environments. The Linux and macOS installer runs nothing until it has been downloaded
+in full, so a `curl | sh` cut off mid-transfer does nothing. The Windows installer
+leaves no variables or settings behind in your PowerShell session, and supports amd64
+and arm64 only.
 
 ```sh
 # a specific release, into ~/bin
 curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh \
-  | VERSION=v0.5.0 ROKSBNKARGOCTL_INSTALL_ARGS="--dir $HOME/bin" sh
+  | ROKSBNKARGOCTL_VERSION=v0.5.0 ROKSBNKARGOCTL_INSTALL_DIR="$HOME/bin" sh
 ```
 
 ```powershell
-$env:VERSION = 'v0.5.0'
+$env:ROKSBNKARGOCTL_VERSION = 'v0.5.0'
 irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
 ```
 
@@ -119,9 +126,12 @@ overwritten, so the old one is moved aside and restored if the replacement fails
   one is refused, and the error names the BNK releases it does have.
 - On a terminal, without `--yes`, it lists the newer releases (newest first, the default)
   and asks `Switch to vX? (y/n)`. With `--yes`, or without a terminal, it takes the
-  latest.
-- `--version` pins a release (the `v` is optional). It can go back to an older release,
-  reinstall the current one, or install a prerelease.
+  latest, unless the running binary is already newer (a prerelease or a local build): it
+  never goes back to an older release unless `--version` asks for it.
+- Each request to GitHub has its own 5-minute timeout, so time spent at the prompts
+  does not count against the download.
+- `--version` pins a release tag (the `v` is optional; anything else is refused). It can
+  go back to an older release, reinstall the current one, or install a prerelease.
 - `--check` prints the current version and the newer releases, changes nothing and
   exits 0.
 - `GITHUB_TOKEN`, when set, is sent to `api.github.com` only, never with a download.

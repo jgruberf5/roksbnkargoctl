@@ -21,7 +21,7 @@ func shRelease(t *testing.T, tag string, lines ...string) fakeRelease {
 	rel := fakeRelease{tag: tag, assets: map[string][]byte{}}
 	for _, bnk := range lines {
 		script := "#!/bin/sh\n" +
-			"{ echo \"from $(dirname \"$0\")\"; echo \"args $*\"; echo \"installed " + tag + " bnk " + bnk + "\"; } > \"$MARKER\"\n"
+			"{ echo \"from $(dirname \"$0\")\"; echo \"args $*\"; for a in \"$@\"; do echo \"arg=$a\"; done; echo \"installed " + tag + " bnk " + bnk + "\"; } > \"$MARKER\"\n"
 		rel.assets[assetName(tag, bnk, runtime.GOOS, runtime.GOARCH)] = tarGzOf(t, map[string][]byte{
 			"LICENSE": []byte("license"), selfBinary: []byte(script),
 		})
@@ -52,7 +52,8 @@ func runInstallSh(t *testing.T, f *fakeGitHub, env []string, args ...string) shR
 	cmd := exec.Command("sh", append([]string{"../../install.sh"}, args...)...)
 	cmd.Env = append(os.Environ(),
 		"ROKSBNKARGOCTL_GITHUB_API="+f.URL, "MARKER="+marker,
-		"VERSION=", "BNK_VERSION=", "ROKSBNKARGOCTL_INSTALL_ARGS=", "GITHUB_TOKEN=")
+		"VERSION=", "BNK_VERSION=", "ROKSBNKARGOCTL_INSTALL_ARGS=", "GITHUB_TOKEN=",
+		"ROKSBNKARGOCTL_VERSION=", "ROKSBNKARGOCTL_BNK_VERSION=", "ROKSBNKARGOCTL_INSTALL_DIR=")
 	cmd.Env = append(cmd.Env, env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -203,5 +204,90 @@ func TestInstallShLints(t *testing.T) {
 	}
 	if out, err := exec.Command("shellcheck", "-s", "sh", "../../install.sh").CombinedOutput(); err != nil {
 		t.Fatalf("shellcheck: %v\n%s", err, out)
+	}
+}
+
+// Review findings on install.sh, each driven through the real script.
+
+// VERSION and BNK_VERSION are common names in CI; the specific names win.
+func TestInstallShSpecificNamesWin(t *testing.T) {
+	f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0", "2.5.0"), shRelease(t, "v0.5.0", "2.4.0", "2.5.0"))
+	r := runInstallSh(t, f, []string{"VERSION=v0.6.0", "ROKSBNKARGOCTL_VERSION=v0.5.0",
+		"BNK_VERSION=2.4.0", "ROKSBNKARGOCTL_BNK_VERSION=2.5.0"})
+	if r.err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
+	}
+	if !strings.Contains(r.marker, "installed v0.5.0 bnk 2.5.0") {
+		t.Errorf("the ROKSBNKARGOCTL_ names did not win:\n%s", r.marker)
+	}
+}
+
+// The version goes into the API URL: only a release tag is accepted.
+func TestInstallShRejectsANonTagVersion(t *testing.T) {
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	for _, bad := range []string{"v1/../../other/repo/releases/tags/v0.5.0", "v0.5.0?x=1", "latest", "v0.5"} {
+		r := runInstallSh(t, f, []string{"ROKSBNKARGOCTL_VERSION=" + bad})
+		if r.err == nil || !strings.Contains(r.stderr, "is not a release tag") {
+			t.Errorf("%q: want a refusal, got %v\n%s", bad, r.err, r.stderr)
+		}
+		if r.marker != "" {
+			t.Errorf("%q: the binary ran", bad)
+		}
+	}
+}
+
+// A directory with a space reaches `self install` as ONE argument, and a * in
+// the extra arguments is passed on, not expanded against the current directory.
+func TestInstallShPassesArgumentsIntact(t *testing.T) {
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	r := runInstallSh(t, f, []string{"ROKSBNKARGOCTL_INSTALL_DIR=/opt/my tools/bin", "ROKSBNKARGOCTL_INSTALL_ARGS=--note *"})
+	if r.err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
+	}
+	for _, want := range []string{"arg=--dir\narg=/opt/my tools/bin\n", "arg=--note\narg=*\n"} {
+		if !strings.Contains(r.marker, want) {
+			t.Errorf("missing %q in:\n%s", want, r.marker)
+		}
+	}
+}
+
+// The token authenticates the API call and is never sent with a download.
+func TestInstallShSendsTheTokenToTheAPIOnly(t *testing.T) {
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	r := runInstallSh(t, f, []string{"GITHUB_TOKEN=tok123"})
+	if r.err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.apiAuthHdr) == 0 || f.apiAuthHdr[0] != "Bearer tok123" {
+		t.Errorf("API auth headers %q", f.apiAuthHdr)
+	}
+	for _, h := range f.downloadAuthHdr {
+		if h != "" {
+			t.Errorf("a download carried %q", h)
+		}
+	}
+}
+
+// `curl | sh` cut off mid-transfer must run nothing: the body is inside main.
+func TestInstallShTruncatedRunsNothing(t *testing.T) {
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	full, err := os.ReadFile("../../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := full[:bytes.Index(full, []byte("Downloading"))]
+	cmd := exec.Command("sh")
+	cmd.Stdin = bytes.NewReader(cut)
+	cmd.Env = append(os.Environ(), "ROKSBNKARGOCTL_GITHUB_API="+f.URL)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Errorf("a truncated script succeeded:\n%s", out)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.apiAuthHdr) != 0 {
+		t.Errorf("a truncated script reached the API %d time(s)", len(f.apiAuthHdr))
 	}
 }

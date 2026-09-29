@@ -17,13 +17,15 @@ The book: https://jgruberf5.github.io/roksbnkargoctl/ (and as a PDF on this rele
   `curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh`
   (Linux, macOS) and
   `irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex`
-  (Windows). `VERSION` pins a release and `BNK_VERSION` picks the BNK release (default
-  2.4.0). The checksum is mandatory.
+  (Windows). `ROKSBNKARGOCTL_VERSION` pins a release, `ROKSBNKARGOCTL_BNK_VERSION` picks the
+  BNK release (default 2.4.0) and `ROKSBNKARGOCTL_INSTALL_DIR` where it goes; `VERSION` and
+  `BNK_VERSION` also work. The checksum is mandatory.
 - `self install [--dir D] [--force]` copies the running binary onto your PATH.
 - `self update [--version vX.Y.Z] [--check]` updates roksbnkargoctl in place from a GitHub
-  release: verified against the release's checksums, replaced atomically, and rolled back
-  on Windows if needed. It only installs the archive for the binary's own BNK release.
-  This updates the tool, not BNK.
+  release: verified against the release's checksums, then swapped in by a rename (on
+  Windows the running binary is moved aside, and restored if the swap fails). It only
+  installs the archive for the binary's own BNK release, and never goes back to an older
+  release unless `--version` asks for it. This updates the tool, not BNK.
 
 ### What it does
 - `init` from a `config.yaml` or an interview; one workspace per cluster.

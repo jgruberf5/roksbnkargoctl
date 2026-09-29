@@ -315,18 +315,19 @@ which need no kubectl or oc.`,
 				fmt.Fprintf(cmd.OutOrStdout(), "supported: %s\nworkspace: %s\n", strings.Join(agent.Names(), ", "), ws.Dir)
 				return nil
 			}
-			if _, err := os.Stat(filepath.Join(ws.Dir, "AGENTS.md")); err != nil {
-				if _, err := agent.Init(ws.Dir, false); err != nil {
-					return err
-				}
-			}
 			if show {
+				// Print only: no scaffolding, and the directory quoted like the args.
 				argv, err := agent.Argv(args[0], persona)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "cd %s && %s\n", ws.Dir, agent.Show(argv))
+				fmt.Fprintf(cmd.OutOrStdout(), "cd %s && %s\n", agent.Show([]string{ws.Dir}), agent.Show(argv))
 				return nil
+			}
+			if _, err := os.Stat(filepath.Join(ws.Dir, "AGENTS.md")); err != nil {
+				if _, err := agent.Init(ws.Dir, false); err != nil {
+					return err
+				}
 			}
 			c, err := agent.Command(args[0], persona, ws.Dir)
 			if err != nil {

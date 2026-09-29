@@ -12,123 +12,149 @@
 # Each binary installs one BNK release, and the archives are named for it:
 #   roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>.tar.gz
 #
-# Options (environment):
-#   VERSION=vX.Y.Z                install that release (or pass it as the first
-#                                 argument: `sh -s -- v0.5.0`); default: latest
-#   BNK_VERSION=2.4.0             the BNK release the binary installs (default 2.4.0)
-#   ROKSBNKARGOCTL_INSTALL_ARGS   passed to `self install` (e.g. "--dir $HOME/bin")
-#   GITHUB_TOKEN                  authenticates the GitHub API call (rate limit)
+# Options (environment; the ROKSBNKARGOCTL_ names win over the short ones, which
+# are common in CI environments and Makefiles):
+#   ROKSBNKARGOCTL_VERSION (or VERSION)          install that release, e.g. v0.5.0
+#                        (or the first argument: `sh -s -- v0.5.0`); default: latest
+#   ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.0)
+#   ROKSBNKARGOCTL_INSTALL_DIR                   where `self install` puts it (spaces OK)
+#   ROKSBNKARGOCTL_INSTALL_ARGS                  more `self install` arguments
+#   GITHUB_TOKEN                                 authenticates the GitHub API call
 #
 # The checksum is mandatory: a release without a checksums file, or one that does
 # not list the archive, is refused. Every roksbnkargoctl release is cut by
 # goreleaser, which always publishes one, so its absence means something is wrong.
 set -eu
 
-REPO="jgruberf5/roksbnkargoctl"
-BIN="roksbnkargoctl"
-BNK="${BNK_VERSION:-2.4.0}"
-INSTALL_ARGS="${ROKSBNKARGOCTL_INSTALL_ARGS:-}"
-# The GitHub API base. Overridable only so the installer can be tested against a
-# local server; the download URLs come from the API's answer.
-API="${ROKSBNKARGOCTL_GITHUB_API:-https://api.github.com}"
+# Everything runs inside main, called on the last line: if `curl | sh` is cut off
+# mid-transfer, sh reads a function that never closes and runs nothing.
+main() {
 
-die() { echo "$BIN: $*" >&2; exit 1; }
+  REPO="jgruberf5/roksbnkargoctl"
+  BIN="roksbnkargoctl"
+  BNK="${ROKSBNKARGOCTL_BNK_VERSION:-${BNK_VERSION:-2.4.0}}"
+  INSTALL_ARGS="${ROKSBNKARGOCTL_INSTALL_ARGS:-}"
+  INSTALL_DIR="${ROKSBNKARGOCTL_INSTALL_DIR:-}"
+  # The GitHub API base. Overridable only so the installer can be tested against a
+  # local server; the download URLs come from the API's answer.
+  API="${ROKSBNKARGOCTL_GITHUB_API:-https://api.github.com}"
 
-# ---- OS / arch (goreleaser naming) -----------------------------------------
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$os" in
-  linux|darwin) ;;
-  *) die "unsupported OS '$os' (Linux/macOS only; on Windows use install.ps1)" ;;
-esac
-arch=$(uname -m)
-case "$arch" in
-  x86_64|amd64) arch=amd64 ;;
-  arm64|aarch64) arch=arm64 ;;
-  *) die "unsupported architecture '$arch'" ;;
-esac
-case "$BNK" in
-  *[!0-9.]*|'') die "BNK_VERSION '$BNK' is not a version like 2.4.0" ;;
-esac
+  die() { echo "$BIN: $*" >&2; exit 1; }
 
-# ---- temp dir, removed on exit ----------------------------------------------
-tmp=$(mktemp -d 2>/dev/null || mktemp -d -t "$BIN")
-trap 'rm -rf "$tmp"' EXIT
-trap 'exit 1' INT TERM
-
-# ---- resolve the release ----------------------------------------------------
-ver="${1:-${VERSION:-}}"
-if [ -n "$ver" ]; then
-  case "$ver" in v*) ;; *) ver="v$ver" ;; esac
-  url="$API/repos/$REPO/releases/tags/$ver"
-else
-  url="$API/repos/$REPO/releases/latest"
-fi
-set -- -fsSL -H "Accept: application/vnd.github+json"
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  set -- "$@" -H "Authorization: Bearer $GITHUB_TOKEN"
-fi
-curl "$@" "$url" -o "$tmp/release.json" \
-  || die "could not read ${ver:-the latest release} of $REPO from the GitHub API ($url)"
-
-# The release JSON, one key per line: splitting on , { and [ puts every key at
-# the start of a line whatever the key order or formatting, while a key quoted
-# inside a string (the release notes) is escaped as \" and cannot match.
-# shellcheck disable=SC2020 # three characters, each to a newline
-tr ',{[' '\n\n\n' < "$tmp/release.json" > "$tmp/fields"
-tag=$(sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$tmp/fields" | head -1)
-[ -n "$tag" ] || die "could not resolve a release version"
-verNoV="${tag#v}"
-sed -n 's/^[[:space:]]*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$tmp/fields" > "$tmp/urls"
-
-asset="${BIN}_${verNoV}_bnk-${BNK}_${os}_${arch}.tar.gz"
-sums="${BIN}_${verNoV}_checksums.txt"
-asset_url=""
-sums_url=""
-while IFS= read -r u; do
-  case "$u" in
-    */"$asset") asset_url=$u ;;
-    */"$sums") sums_url=$u ;;
+  # ---- OS / arch (goreleaser naming) -----------------------------------------
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  case "$os" in
+    linux|darwin) ;;
+    *) die "unsupported OS '$os' (Linux/macOS only; on Windows use install.ps1)" ;;
   esac
-done < "$tmp/urls"
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64) arch=amd64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) die "unsupported architecture '$arch'" ;;
+  esac
+  case "$BNK" in
+    *[!0-9.]*|'') die "BNK_VERSION '$BNK' is not a version like 2.4.0" ;;
+  esac
 
-if [ -z "$asset_url" ]; then
-  have=$(sed -n "s|.*/${BIN}_[^_/]*_bnk-\([^_/]*\)_[^_/]*_[^_/]*\.[a-z.]*\$|\1|p" "$tmp/urls" | sort -u | tr '\n' ' ')
-  if [ -n "$have" ]; then
-    echo "$BIN: release $tag has no $asset" >&2
-    echo "  it has archives for BNK: $have" >&2
+  # ---- temp dir, removed on exit ----------------------------------------------
+  tmp=$(mktemp -d 2>/dev/null || mktemp -d -t "$BIN")
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 1' INT TERM
+
+  # ---- resolve the release ----------------------------------------------------
+  ver="${1:-${ROKSBNKARGOCTL_VERSION:-${VERSION:-}}}"
+  if [ -n "$ver" ]; then
+    case "$ver" in v*) ;; *) ver="v$ver" ;; esac
+    # A release tag only: it goes into the API URL.
+    case "$ver" in
+      v[0-9]*.[0-9]*.[0-9]*) ;;
+      *) die "version '$ver' is not a release tag like v0.5.0" ;;
+    esac
+    case "${ver#v}" in *[!0-9A-Za-z.-]*) die "version '$ver' is not a release tag like v0.5.0" ;; esac
+    url="$API/repos/$REPO/releases/tags/$ver"
   else
-    echo "$BIN: release $tag has no $asset, and no BNK archives at all" >&2
+    url="$API/repos/$REPO/releases/latest"
   fi
-  echo "  set BNK_VERSION to one of those, or VERSION to a release that has BNK $BNK" >&2
-  exit 1
-fi
-[ -n "$sums_url" ] || die "release $tag has no $sums; refusing to install without checksum verification"
+  set -- -fsSL -H "Accept: application/vnd.github+json"
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    # From a file, not the command line, where `ps` would show it to other users.
+    (umask 077; printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" > "$tmp/auth")
+    set -- "$@" -H "@$tmp/auth"
+  fi
+  curl "$@" "$url" -o "$tmp/release.json" \
+    || die "could not read ${ver:-the latest release} of $REPO from the GitHub API ($url)"
 
-# ---- download + verify --------------------------------------------------------
-echo "Downloading $BIN $tag for BNK $BNK ($os/$arch)..."
-curl -fsSL "$asset_url" -o "$tmp/$asset" || die "downloading $asset_url failed"
-curl -fsSL "$sums_url" -o "$tmp/$sums" || die "downloading $sums_url failed"
+  # The release JSON, one key per line: splitting on , { and [ puts every key at
+  # the start of a line whatever the key order or formatting, while a key quoted
+  # inside a string (the release notes) is escaped as \" and cannot match.
+  # shellcheck disable=SC2020 # three characters, each to a newline
+  tr ',{[' '\n\n\n' < "$tmp/release.json" > "$tmp/fields"
+  tag=$(sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$tmp/fields" | head -1)
+  [ -n "$tag" ] || die "could not resolve a release version"
+  verNoV="${tag#v}"
+  sed -n 's/^[[:space:]]*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' "$tmp/fields" > "$tmp/urls"
 
-want=$(awk -v a="$asset" '$2 == a { print $1; exit }' "$tmp/$sums")
-[ -n "$want" ] || die "$sums does not list $asset; refusing to install an unverified archive"
-if command -v sha256sum >/dev/null 2>&1; then
-  got=$(sha256sum "$tmp/$asset" | awk '{print $1}')
-elif command -v shasum >/dev/null 2>&1; then
-  got=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
-else
-  die "neither sha256sum nor shasum is available to verify $asset"
-fi
-want=$(echo "$want" | tr '[:upper:]' '[:lower:]')
-[ "$want" = "$got" ] || die "checksum mismatch for $asset (want $want, got $got)"
-echo "Checksum OK."
+  asset="${BIN}_${verNoV}_bnk-${BNK}_${os}_${arch}.tar.gz"
+  sums="${BIN}_${verNoV}_checksums.txt"
+  asset_url=""
+  sums_url=""
+  while IFS= read -r u; do
+    case "$u" in
+      */"$asset") asset_url=$u ;;
+      */"$sums") sums_url=$u ;;
+    esac
+  done < "$tmp/urls"
 
-# ---- extract + hand off to the binary's own installer ------------------------
-mkdir "$tmp/x"
-tar -xzf "$tmp/$asset" -C "$tmp/x" "$BIN" || die "extracting $BIN from $asset failed"
-[ -x "$tmp/x/$BIN" ] || die "$BIN not found in $asset"
+  if [ -z "$asset_url" ]; then
+    have=$(sed -n "s|.*/${BIN}_[^_/]*_bnk-\([^_/]*\)_[^_/]*_[^_/]*\.[a-z.]*\$|\1|p" "$tmp/urls" | sort -u | tr '\n' ' ')
+    if [ -n "$have" ]; then
+      echo "$BIN: release $tag has no $asset" >&2
+      echo "  it has archives for BNK: $have" >&2
+    else
+      echo "$BIN: release $tag has no $asset, and no BNK archives at all" >&2
+    fi
+    echo "  set BNK_VERSION to one of those, or VERSION to a release that has BNK $BNK" >&2
+    exit 1
+  fi
+  [ -n "$sums_url" ] || die "release $tag has no $sums; refusing to install without checksum verification"
 
-echo "Installing via '$BIN self install'..."
-# shellcheck disable=SC2086 # INSTALL_ARGS is split into arguments on purpose
-"$tmp/x/$BIN" self install --force $INSTALL_ARGS
+  # ---- download + verify --------------------------------------------------------
+  echo "Downloading $BIN $tag for BNK $BNK ($os/$arch)..."
+  curl -fsSL "$asset_url" -o "$tmp/$asset" || die "downloading $asset_url failed"
+  curl -fsSL "$sums_url" -o "$tmp/$sums" || die "downloading $sums_url failed"
 
-echo "Done. Run '$BIN version' to confirm."
+  want=$(awk -v a="$asset" '$2 == a { print $1; exit }' "$tmp/$sums")
+  [ -n "$want" ] || die "$sums does not list $asset; refusing to install an unverified archive"
+  if command -v sha256sum >/dev/null 2>&1; then
+    got=$(sha256sum "$tmp/$asset" | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    got=$(shasum -a 256 "$tmp/$asset" | awk '{print $1}')
+  else
+    die "neither sha256sum nor shasum is available to verify $asset"
+  fi
+  want=$(echo "$want" | tr '[:upper:]' '[:lower:]')
+  [ "$want" = "$got" ] || die "checksum mismatch for $asset (want $want, got $got)"
+  echo "Checksum OK."
+
+  # ---- extract + hand off to the binary's own installer ------------------------
+  mkdir "$tmp/x"
+  tar -xzf "$tmp/$asset" -C "$tmp/x" "$BIN" || die "extracting $BIN from $asset failed"
+  [ -x "$tmp/x/$BIN" ] || die "$BIN not found in $asset"
+
+  echo "Installing via '$BIN self install'..."
+  set -- self install --force
+  if [ -n "$INSTALL_DIR" ]; then
+    set -- "$@" --dir "$INSTALL_DIR"
+  fi
+  # INSTALL_ARGS is split into arguments on purpose, with globbing off so a * in
+  # it is passed on rather than expanded against the current directory.
+  set -f
+  # shellcheck disable=SC2086
+  "$tmp/x/$BIN" "$@" $INSTALL_ARGS
+  set +f
+
+  echo "Done. Run '$BIN version' to confirm."
+}
+
+main "$@"

@@ -15,23 +15,29 @@
   Run it directly:
     irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
 
-  Options (environment):
-    $env:VERSION                      install that release, e.g. 'v0.5.0' (default: latest)
-    $env:BNK_VERSION                  the BNK release the binary installs (default 2.4.0)
-    $env:ROKSBNKARGOCTL_INSTALL_ARGS  passed to `self install` (e.g. "--dir C:\tools")
-    $env:GITHUB_TOKEN                 authenticates the GitHub API call (rate limit)
+  Options (environment; the ROKSBNKARGOCTL_ names win over the short ones):
+    $env:ROKSBNKARGOCTL_VERSION (or VERSION)          install that release, e.g. 'v0.5.0'
+    $env:ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.0)
+    $env:ROKSBNKARGOCTL_INSTALL_DIR                   where `self install` puts it (spaces OK)
+    $env:ROKSBNKARGOCTL_INSTALL_ARGS                  more `self install` arguments
+    $env:GITHUB_TOKEN                                 authenticates the GitHub API call
+
+  Everything runs inside a script block, so `irm | iex` leaves no variables or
+  preference changes behind in your session.
 
   The checksum is mandatory: a release without a checksums file, or one that does
   not list the archive, is refused.
 #>
+& {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $Repo = 'jgruberf5/roksbnkargoctl'
 $Bin = 'roksbnkargoctl'
-$Bnk = if ($env:BNK_VERSION) { $env:BNK_VERSION } else { '2.4.0' }
-$Version = if ($env:VERSION) { $env:VERSION } else { '' }
+$Bnk = if ($env:ROKSBNKARGOCTL_BNK_VERSION) { $env:ROKSBNKARGOCTL_BNK_VERSION } elseif ($env:BNK_VERSION) { $env:BNK_VERSION } else { '2.4.0' }
+$Version = if ($env:ROKSBNKARGOCTL_VERSION) { $env:ROKSBNKARGOCTL_VERSION } elseif ($env:VERSION) { $env:VERSION } else { '' }
 $InstallArgs = if ($env:ROKSBNKARGOCTL_INSTALL_ARGS) { $env:ROKSBNKARGOCTL_INSTALL_ARGS } else { '' }
+$InstallDir = if ($env:ROKSBNKARGOCTL_INSTALL_DIR) { $env:ROKSBNKARGOCTL_INSTALL_DIR } else { '' }
 $Api = if ($env:ROKSBNKARGOCTL_GITHUB_API) { $env:ROKSBNKARGOCTL_GITHUB_API } else { 'https://api.github.com' }
 
 if ($Bnk -notmatch '^[0-9][0-9.]*$') { throw "${Bin}: BNK_VERSION '$Bnk' is not a version like 2.4.0" }
@@ -39,7 +45,8 @@ if ($Bnk -notmatch '^[0-9][0-9.]*$') { throw "${Bin}: BNK_VERSION '$Bnk' is not 
 # ---- architecture (goreleaser naming) --------------------------------------
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'ARM64' { 'arm64' }
-  default { 'amd64' }
+  'AMD64' { 'amd64' }
+  default { throw "${Bin}: unsupported architecture '$($env:PROCESSOR_ARCHITECTURE)' (amd64 and arm64 only)" }
 }
 
 # ---- resolve the release ----------------------------------------------------
@@ -47,6 +54,8 @@ $headers = @{ 'User-Agent' = $Bin; 'Accept' = 'application/vnd.github+json' }
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
 if ($Version) {
   if (-not $Version.StartsWith('v')) { $Version = "v$Version" }
+  # A release tag only: it goes into the API URL.
+  if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$') { throw "${Bin}: version '$Version' is not a release tag like v0.5.0" }
   $url = "$Api/repos/$Repo/releases/tags/$Version"
 } else {
   $url = "$Api/repos/$Repo/releases/latest"
@@ -103,7 +112,8 @@ try {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   $extra = @()
-  if ($InstallArgs) { $extra = $InstallArgs.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) }
+  if ($InstallDir) { $extra += @('--dir', $InstallDir) }
+  if ($InstallArgs) { $extra += $InstallArgs.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) }
   & $exe self install --force @extra 2>&1 | ForEach-Object { Write-Host $_ }
   $code = $LASTEXITCODE
   $ErrorActionPreference = $prev
@@ -114,3 +124,4 @@ finally {
 }
 
 Write-Host "Done. Run '$Bin version' to confirm."
+}

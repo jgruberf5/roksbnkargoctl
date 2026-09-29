@@ -61,3 +61,7 @@ release:
     name: roksbnkargoctl
   # 0.x is pre-1.0 but a real release; only -rc/-beta tags are prereleases.
   prerelease: auto
+  # Re-running the workflow against an existing tag (workflow_dispatch) must be
+  # able to re-upload: without this goreleaser stops at the first asset that
+  # already exists (HTTP 422), and the book job, which needs it, never runs.
+  replace_existing_artifacts: true
