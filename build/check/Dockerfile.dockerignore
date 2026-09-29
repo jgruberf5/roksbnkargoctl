@@ -1,0 +1,6 @@
+*
+!go.mod
+!go.sum
+!cmd/check/
+cmd/check/**/*_test.go
+cmd/check/internal/kube/kubefake/

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + fmt + staticcheck + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download && go mod verify
+      - run: go vet ./...
+      - name: gofmt
+        run: gofmt -d -l . | tee /tmp/gofmt.diff && test ! -s /tmp/gofmt.diff
+      - uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+      - run: go test -race ./...
+      - name: check binary is standard-library only
+        # The check image must stay minimal (AGENTS.md): its import graph may
+        # not leave the standard library and this module.
+        run: |
+          # .Standard, not a "has a dot" heuristic: the standard library's own
+          # internal packages (crypto/internal/entropy/v1.0.0, vendor/golang.org/x/…)
+          # contain dots and would be false positives.
+          deps=$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/check/... | grep -v '^github.com/jgruberf5/roksbnkargoctl/' || true)
+          if [ -n "$deps" ]; then echo "cmd/check imports non-stdlib packages:"; echo "$deps"; exit 1; fi
+
+  windows:
+    name: build (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./cmd/roksbnkargoctl
+      - run: go test ./internal/config/... ./internal/render/... ./internal/gitpub/...

@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.test
+*.out
+# Workspaces and anything that could hold a key never belong in this repo.
+.roksbnkargoctl/
+*.tgz
+*.jwt
+kubeconfig*

@@ -1,0 +1,101 @@
+package argocd
+
+import (
+	"context"
+	"net/url"
+	"strings"
+)
+
+// Repo is a Git repository credential entry.
+type Repo struct {
+	URL           string
+	Username      string
+	Password      string
+	SSHPrivateKey string
+	Insecure      bool // skip TLS verification / SSH host key checking
+	Project       string
+}
+
+type repoBody struct {
+	Repo                  string `json:"repo"`
+	Type                  string `json:"type"`
+	Username              string `json:"username,omitempty"`
+	Password              string `json:"password,omitempty"`
+	SSHPrivateKey         string `json:"sshPrivateKey,omitempty"`
+	Insecure              bool   `json:"insecure,omitempty"`
+	InsecureIgnoreHostKey bool   `json:"insecureIgnoreHostKey,omitempty"`
+	Project               string `json:"project,omitempty"`
+}
+
+// RepoInfo is the subset of v1alpha1.Repository read back.
+type RepoInfo struct {
+	Repo            string `json:"repo"`
+	Type            string `json:"type,omitempty"`
+	Project         string `json:"project,omitempty"`
+	ConnectionState struct {
+		Status  string `json:"status,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"connectionState"`
+}
+
+// UpsertRepository creates or updates a repository: POST /api/v1/repositories?upsert=true.
+func (c *Client) UpsertRepository(ctx context.Context, r Repo) (*RepoInfo, error) {
+	body := repoBody{
+		Repo:                  r.URL,
+		Type:                  "git",
+		Username:              r.Username,
+		Password:              r.Password,
+		SSHPrivateKey:         r.SSHPrivateKey,
+		Insecure:              r.Insecure,
+		InsecureIgnoreHostKey: r.Insecure && r.SSHPrivateKey != "",
+		Project:               r.Project,
+	}
+	var out RepoInfo
+	if err := c.do(ctx, "add repository "+r.URL, "POST", "/api/v1/repositories?upsert=true", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetRepository finds the repository entry for repoURL by listing (Argo CD returns 403,
+// not 404, for an unknown repo on GET/DELETE). A missing repo yields IsNotFound.
+func (c *Client) GetRepository(ctx context.Context, repoURL string) (*RepoInfo, error) {
+	var list struct {
+		Items []RepoInfo `json:"items"`
+	}
+	op := "read repository " + repoURL
+	if err := c.do(ctx, op, "GET", "/api/v1/repositories", nil, &list); err != nil {
+		return nil, err
+	}
+	for i := range list.Items {
+		if sameRepoURL(list.Items[i].Repo, repoURL) {
+			return &list.Items[i], nil
+		}
+	}
+	return nil, notFound(op, "repository "+repoURL+" is not configured")
+}
+
+// DeleteRepository removes the repository entry (DELETE /api/v1/repositories/{repo},
+// the URL escaped as one path segment). A missing repo yields IsNotFound.
+func (c *Client) DeleteRepository(ctx context.Context, repoURL string) error {
+	r, err := c.GetRepository(ctx, repoURL)
+	if err != nil {
+		return err
+	}
+	path := "/api/v1/repositories/" + pathEscape(r.Repo)
+	if r.Project != "" {
+		path += "?appProject=" + url.QueryEscape(r.Project)
+	}
+	return c.do(ctx, "delete repository "+repoURL, "DELETE", path, nil, nil)
+}
+
+// sameRepoURL is a loose version of Argo CD's git.SameURL: case-insensitive, ignoring
+// a trailing "/" or ".git".
+func sameRepoURL(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimRight(s, "/")
+		return strings.TrimSuffix(s, ".git")
+	}
+	return norm(a) == norm(b)
+}

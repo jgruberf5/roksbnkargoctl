@@ -1,0 +1,128 @@
+name: Security
+
+# Layered security sweep for a credential-heavy CLI that publishes container
+# images + terraform modules. Gated checks (govulncheck, gitleaks) fail the
+# build; SARIF checks (CodeQL, Trivy) surface findings in the Security tab /
+# on the PR diff without blocking, so they can be triaged then promoted.
+#
+# The weekly schedule re-scans UNCHANGED code against newly-disclosed CVEs —
+# the point of a scheduled sweep.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * 1' # Mondays 07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Gated: Go module vulnerabilities actually reachable from our code ──
+  govulncheck:
+    name: Go vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Scan against the latest stable Go (not just the go.mod minimum) so
+      # stdlib vulns reflect a current build — they're fixed by the toolchain,
+      # not a module bump. A current Go builds the older go.mod directive fine.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ── Gated: the same scan at the go.mod FLOOR ────────────────────────────────
+  #
+  # The job above deliberately uses the newest stable Go, which is right for
+  # "is a current build clean" and structurally blind to the question "is the
+  # OLDEST toolchain we permit clean". go.mod said `go 1.26.0` while six
+  # reachable stdlib advisories were fixed in 1.26.6, and every CI job was green
+  # throughout, because setup-go always resolved something newer (#299).
+  #
+  # This installs the declared floor EXACTLY and pins GOTOOLCHAIN=local so Go
+  # cannot quietly upgrade past it. If someone lowers the directive, or an
+  # advisory lands against the floor, this goes red and the other job does not.
+  govulncheck-floor:
+    name: Go vulnerabilities (at the go.mod floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the declared floor from go.mod
+        id: floor
+        run: echo "version=$(awk '/^go [0-9]/ {print $2; exit}' go.mod)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ steps.floor.outputs.version }}
+      - name: govulncheck at ${{ steps.floor.outputs.version }}
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          echo "declared floor: ${{ steps.floor.outputs.version }}"
+          go version
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ── Gated: committed secrets (IBM API keys, COS HMAC keys, kubeconfigs, …) ──
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history on push/schedule; PRs scan the diff
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicit rather than relying on auto-discovery: a config that is
+          # silently not picked up leaves this job red while looking fixed, and
+          # the failure mode is indistinguishable from a real finding.
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # ── SARIF: GitHub-native Go SAST → code scanning alerts ──
+  codeql:
+    name: CodeQL (Go SAST)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4.38.1
+        with:
+          languages: go
+      - uses: github/codeql-action/autobuild@v4.38.1
+      - uses: github/codeql-action/analyze@v4.38.1
+        with:
+          category: "/language:go"
+
+  # ── SARIF: IaC misconfig (terraform) + dependency/secret scan (fs) ──
+  trivy:
+    name: Trivy (IaC + deps → SARIF)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+      - name: Trivy config (terraform IaC)
+        run: trivy config terraform --format sarif --output trivy-iac.sarif --exit-code 0
+      - name: Trivy fs (deps + secrets)
+        run: trivy fs . --scanners vuln,secret --format sarif --output trivy-fs.sarif --exit-code 0 --skip-dirs book/book
+      - name: Upload IaC SARIF
+        uses: github/codeql-action/upload-sarif@v4.38.1
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+      - name: Upload fs SARIF
+        uses: github/codeql-action/upload-sarif@v4.38.1
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs

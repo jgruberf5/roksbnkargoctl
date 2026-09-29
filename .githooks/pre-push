@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# pre-push — refuse to push a branch that has no PR, or a PR with no review.
+#
+# WHY THIS EXISTS. AGENTS.md has required "every PR gets a review posted as a
+# comment" for some time, and scripts/pr-review-audit.sh has existed to check it.
+# The rule was still broken three times in one session, every time the same way:
+# the work was pushed, progress was reported, and the PR was never opened.
+#
+# A rule that is broken three times is not a control. A check that is never run is
+# not a control either. This runs it at the one moment that matters — the push
+# that makes the work look finished.
+#
+# Install:  git config core.hooksPath .githooks
+# Bypass:   git push --no-verify   (for a genuine work-in-progress push)
+set -uo pipefail
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+case "$branch" in main|gh-pages|integration/*) exit 0 ;; esac
+
+root="$(git rev-parse --show-toplevel)"
+[ -x "$root/scripts/pr-review-audit.sh" ] || exit 0
+command -v gh >/dev/null 2>&1 || exit 0
+
+# Only complain about THIS branch: another branch's missing PR is not a reason to
+# block an unrelated push, and a check that blocks work it has no opinion on gets
+# disabled.
+if ! gh pr list --head "$branch" --state all --json number --jq '.[0].number' 2>/dev/null | grep -q .; then
+    # A first push cannot have a PR yet — that is how the branch reaches the
+    # remote. Allow it, and say what has to happen next.
+    if ! git rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+        echo "note: '$branch' has no PR yet. Open one and post a review before reporting this as done." >&2
+        exit 0
+    fi
+    echo "✗ '$branch' is already on the remote and still has no PR." >&2
+    echo "  Open it, post a '## Review' comment, and fix what the review finds." >&2
+    echo "  Bypass with --no-verify if this is genuinely still in progress." >&2
+    exit 1
+fi
+
+n="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)"
+[ -z "$n" ] && exit 0
+
+reviews="$(gh pr view "$n" --json comments \
+    --jq '[.comments[] | select(.body | startswith("## Review"))] | length' 2>/dev/null)"
+if [ "${reviews:-0}" -eq 0 ]; then
+    echo "note: PR #$n has no review comment yet. It is not done until it does." >&2
+fi
+exit 0
