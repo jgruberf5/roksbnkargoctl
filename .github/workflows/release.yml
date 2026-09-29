@@ -1,0 +1,77 @@
+name: Release
+
+# git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# 1. binaries: goreleaser builds linux/darwin/windows x amd64/arm64 for the BNK
+#    release this line installs, creates the GitHub Release with the
+#    CHANGELOG.md section for the tag as its notes, and attaches the archives
+#    and checksums.
+# 2. book: the book as a PDF and an HTML archive, attached to the same release.
+#
+# The check image for the tag (ghcr.io/jgruberf5/roksbnkargoctl-check:vX.Y.Z),
+# which a release binary runs, is built by check-image.yml on the same push.
+#
+# workflow_dispatch re-runs both jobs against an existing tag.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to rebuild (e.g. v0.5.0)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${TAG#v}"
+          awk -v v="$v" '
+            $0 ~ "^## \\[?" v "\\]?( |$)" {on=1; next}
+            on && /^## / {exit}
+            on {print}
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has no section for $v" >&2
+            exit 1
+          fi
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --release-notes ${{ runner.temp }}/notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ env.TAG }}
+
+  book:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build the book (PDF + HTML archive)
+        run: scripts/book-pdf.sh "$TAG"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" dist/roksbnkargoctl-book-"$TAG".pdf dist/roksbnkargoctl-book-"$TAG"-html.tar.gz --clobber

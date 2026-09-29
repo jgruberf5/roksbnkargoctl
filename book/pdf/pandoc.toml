@@ -1,0 +1,21 @@
+# Appended to a copy of book.toml by scripts/book-pdf.sh. It is kept out of
+# book.toml itself: the Pages build has no pandoc, and an optional backend it
+# cannot run would print a warning, which that build treats as a failure.
+
+[output.pandoc.profile.pdf]
+output-file = "roksbnkargoctl-book.pdf"
+to = "pdf"
+pdf-engine = "xelatex"
+toc = true
+number-sections = true
+
+[output.pandoc.profile.pdf.variables]
+documentclass = "report"
+papersize = "letter"
+geometry = ["margin=1in"]
+# Latin Modern (the default) has no box-drawing, arrow or >= glyphs, which the
+# diagrams and tables use; DejaVu has them all (0 missing characters).
+mainfont = "DejaVu Serif"
+sansfont = "DejaVu Sans"
+monofont = "DejaVu Sans Mono"
+monofontoptions = ["Scale=0.8"]

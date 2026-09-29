@@ -34,6 +34,9 @@ var (
 func Execute() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Best-effort: remove a <self>.old left by an earlier Windows self update
+	// (see installByMoveAside). A no-op elsewhere and when there is none.
+	sweepStaleBinary()
 	root := newRoot()
 	if err := root.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "roksbnkargoctl:", err)
@@ -71,7 +74,10 @@ their APIs.
 
 Optional components: cos (FAR key + JWT), registry (private mirror),
 flp (license proxy VSI for disconnected mode), argocd (a test Argo CD hub),
-agent (troubleshooting with an agentic CLI).`,
+agent (troubleshooting with an agentic CLI).
+
+The binary itself: self install (copy it onto PATH), self update (from the
+GitHub releases, for the same BNK version).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -81,7 +87,7 @@ agent (troubleshooting with an agentic CLI).`,
 	root.AddCommand(
 		newInitCmd(), newRenderCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
 		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(),
-		newWorkspacesCmd(), newVersionCmd(),
+		newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
 	)
 	return root
 }
@@ -89,9 +95,9 @@ agent (troubleshooting with an agentic CLI).`,
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the version",
+		Short: "Print the version and the BNK release this binary installs",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "roksbnkargoctl %s (commit %s, built %s)\n", Version, Commit, BuildDate)
+			fmt.Fprintf(cmd.OutOrStdout(), "roksbnkargoctl %s for BNK %s (commit %s, built %s)\n", Version, config.BNKVersion, Commit, BuildDate)
 		},
 	}
 }

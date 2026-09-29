@@ -3,9 +3,47 @@
 Install and uninstall **F5 BIG-IP Next for Kubernetes (BNK) 2.4 GA** on an existing
 IBM Cloud ROKS cluster as **one Argo CD Application** in your existing Argo CD.
 
+**Install and uninstall only.** It does not upgrade BNK. BNK supports an in-place upgrade by
+changing the manifest version in its custom resources; follow F5's BNK documentation for
+that. It is beyond the scope of this tool.
+
 No Terraform. IBM Cloud, Kubernetes, Git and Argo CD are driven through their
 APIs by one Go binary that runs natively on Linux, macOS and Windows. It is the
 slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbnkctl).
+
+**The book:** https://jgruberf5.github.io/roksbnkargoctl/ (also a PDF on every release).
+
+## Install
+
+```sh
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
+```
+
+Both install the latest release for BNK 2.4.0, verify its SHA256, and put it on `PATH`
+with `roksbnkargoctl self install`. `ROKSBNKARGOCTL_VERSION` pins a release,
+`ROKSBNKARGOCTL_BNK_VERSION` picks another BNK release and `ROKSBNKARGOCTL_INSTALL_DIR`
+the directory (see the book's install chapter). Later, `roksbnkargoctl self update`
+updates the tool in place, for the same BNK version; it does not upgrade BNK.
+
+Or build it from the repository: `make build && ./bin/roksbnkargoctl self install`
+(Go 1.26).
+
+Or download the archive for your platform from
+[Releases](https://github.com/jgruberf5/roksbnkargoctl/releases). Each binary installs
+one BNK release, and its name says which:
+`roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. Linux and macOS use `.tar.gz`,
+Windows uses `.zip`, each for amd64 and arm64. Check it against `…_checksums.txt`, put
+`roksbnkargoctl` on your `PATH`, and confirm with:
+
+```sh
+roksbnkargoctl version    # roksbnkargoctl v0.5.0 for BNK 2.4.0 (…)
+```
 
 ## What you need
 

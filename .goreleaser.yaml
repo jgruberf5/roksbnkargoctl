@@ -1,0 +1,67 @@
+# Release build: `git tag vX.Y.Z && git push origin vX.Y.Z` runs
+# .github/workflows/release.yml, which runs this.
+#
+# One binary per BNK release line. Each build targets exactly one BNK version
+# (config.BNKVersion), and the archive name carries it:
+#   roksbnkargoctl_<tool version>_bnk-<BNK version>_<os>_<arch>
+# A future BNK line adds a sibling build and archive here (built from its own
+# line), and existing asset names never change. TestReleaseNamesTheBNKVersion
+# keeps BNK_VERSION equal to config.BNKVersion.
+version: 2
+project_name: roksbnkargoctl
+
+env:
+  - BNK_VERSION=2.4.0
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: bnk-2.4
+    main: ./cmd/roksbnkargoctl
+    binary: roksbnkargoctl
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      # Version is the tag (vX.Y.Z): an exact release tag is what makes the
+      # binary run the check image of the same tag instead of :dev.
+      - -s -w
+      - -X github.com/jgruberf5/roksbnkargoctl/internal/cli.Version={{ .Tag }}
+      - -X github.com/jgruberf5/roksbnkargoctl/internal/cli.Commit={{ .ShortCommit }}
+      - -X github.com/jgruberf5/roksbnkargoctl/internal/cli.BuildDate={{ .Date }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: bnk-2.4
+    ids: [bnk-2.4]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_bnk-{{ .Env.BNK_VERSION }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+
+changelog:
+  # Release notes come from CHANGELOG.md (--release-notes in the workflow).
+  disable: true
+
+release:
+  github:
+    owner: jgruberf5
+    name: roksbnkargoctl
+  # 0.x is pre-1.0 but a real release; only -rc/-beta tags are prereleases.
+  prerelease: auto
+  # Re-running the workflow against an existing tag (workflow_dispatch) must be
+  # able to re-upload: without this goreleaser stops at the first asset that
+  # already exists (HTTP 422), and the book job, which needs it, never runs.
+  replace_existing_artifacts: true

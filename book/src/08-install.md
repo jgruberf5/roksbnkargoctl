@@ -251,8 +251,8 @@ hook, which fails the sync if BNK does not come up.
 | Nothing changed | Publishes nothing, then syncs the same commit again |
 | You changed `config.yaml` | Re-renders, commits the difference, syncs it |
 
-BNK has no in-place upgrade. A change of BNK version or mode is uninstall and install, not a
-re-run.
+Re-running `install` does not upgrade BNK. BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation. A change of mode is covered in
+[Changing modes](./11-modes.md#changing-modes).
 
 ## See also
 

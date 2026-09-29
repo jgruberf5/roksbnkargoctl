@@ -47,4 +47,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go build ./cmd/roksbnkargoctl
-      - run: go test ./internal/config/... ./internal/render/... ./internal/gitpub/...
+      # internal/cli holds self install / self update, whose replace-in-place
+      # path differs on Windows (a running .exe cannot be overwritten, only
+      # moved aside); the tests simulate that lock on Linux, so run them on
+      # Windows too.
+      - run: go test ./internal/config/... ./internal/render/... ./internal/gitpub/... ./internal/cli/... ./internal/agent/... ./internal/argocd/... ./internal/kube/...

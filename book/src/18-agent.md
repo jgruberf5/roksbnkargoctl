@@ -44,25 +44,46 @@ time.
 ## agent &lt;cli&gt;
 
 ```sh
-roksbnkargoctl agent                 # lists the supported CLIs and the workspace path
-roksbnkargoctl agent claude          # or: codex, gemini, aider
+roksbnkargoctl agent                          # lists the supported CLIs and the workspace path
+roksbnkargoctl agent agy                      # or: claude, codex, gemini, aider, pi, opencode
+roksbnkargoctl agent claude --persona operator
+roksbnkargoctl agent agy --show               # print the command instead of running it
 ```
 
 `agent <cli>` scaffolds the workspace first if `AGENTS.md` is missing, then starts
-the CLI **in the workspace directory**, attached to your terminal. The supported
-CLIs and how each is started:
+the CLI **in the workspace directory**, attached to your terminal. Its first turn tells
+it to read `AGENTS.md` and take a persona: `--persona troubleshooter` (the default) or
+`--persona operator`. The prompt is:
 
-| Name | Command run | How it picks up the knowledge base |
+```text
+Read AGENTS.md, then act as the troubleshooter persona (personas/troubleshooter.md).
+Start from `roksbnkargoctl status`; run `roksbnkargoctl diagnose` before drawing conclusions.
+```
+
+Each CLI takes that first turn in its own way:
+
+| Name | Command run | How it gets the knowledge base and persona |
 |---|---|---|
-| `claude` | `claude` | reads `CLAUDE.md`, which includes `AGENTS.md` |
-| `codex` | `codex` | reads `AGENTS.md` |
-| `gemini` | `gemini` | started in the workspace; point it at `AGENTS.md` if your configuration does not load it |
-| `aider` | `aider --read AGENTS.md --read personas/troubleshooter.md` | both files are passed as read-only context |
+| `agy` | `agy -i "<prompt>"` | `-i` runs the prompt and continues the session interactively |
+| `gemini` | `gemini -i "<prompt>"` | the same |
+| `claude` | `claude "<prompt>"` | the prompt is the first turn; `CLAUDE.md` also includes `AGENTS.md` |
+| `codex` | `codex "<prompt>"` | the prompt is the first turn; codex reads `AGENTS.md` |
+| `aider` | `aider --read AGENTS.md --read personas/<persona>.md` | both files are passed as read-only context |
+| `pi` | `pi` | reads `AGENTS.md` from the directory |
+| `opencode` | `opencode` | reads `AGENTS.md` from the directory |
 
-The CLI must already be installed and on your `PATH`; otherwise the command fails
-with `<name> is not installed or not on PATH`. Any other name fails with `unknown
-agent CLI "<name>" (supported: [aider claude codex gemini])`. You configure,
-authenticate and pay for the CLI yourself; roksbnkargoctl passes it no credentials.
+`--show` prints the exact command (`cd <workspace> && …`) instead of running it. Use it to
+see what would run, or to start the CLI yourself with extra flags.
+
+`agent <cli>` refuses to start when standard output is not a terminal:
+`refusing to start <cli>: stdout is not a terminal`. An agent session needs one, and
+capturing it (`$(roksbnkargoctl agent claude)`, or a pipe) would send whatever the model
+prints somewhere it does not belong. Use `--show` in scripts.
+
+The CLI must already be installed and on your `PATH`; otherwise the command fails with
+`<name> is not installed or not on PATH`, followed by the command it would have run.
+You configure, authenticate and pay for the CLI yourself; roksbnkargoctl passes it no
+credentials.
 
 Starting your chosen agent is the one place roksbnkargoctl runs another program. It
 is the feature, not a substitute for doing its own work in-process.
@@ -134,8 +155,8 @@ The rules are written into `AGENTS.md` for every agent to follow:
 - **Consent before change.** `install`, `uninstall`, `flp up/down`, `argocd up/down`
   and `registry replicate` change real infrastructure. The operator's consent is
   journaled before any of them runs.
-- **No in-place upgrade.** BNK has none; a version or mode change is uninstall and
-  install.
+- **Install and uninstall only.** The agent never attempts a BNK upgrade through
+  roksbnkargoctl and never recommends uninstall + install as one. BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation.
 - **Report faithfully.** Quote the check's own verdict line; say what was not
   checked.
 

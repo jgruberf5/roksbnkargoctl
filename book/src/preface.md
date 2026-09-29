@@ -17,6 +17,12 @@ the IBM Cloud APIs or the internals of BNK: where they matter, the book explains
 `roksbnkargoctl` is a single Go binary that installs and uninstalls BNK 2.4 GA on an
 existing ROKS cluster **as one Argo CD Application in your existing, external Argo CD**.
 
+> **Install and uninstall only.** roksbnkargoctl is a day-0 tool: it installs BNK and it
+> removes BNK. It does not upgrade BNK. BNK supports an in-place upgrade by changing the
+> manifest version in its custom resources; do that by following F5's BNK
+> documentation. It is beyond the scope of this tool. (`roksbnkargoctl self update`
+> updates roksbnkargoctl itself, never BNK.)
+
 - **Argo CD applies the F5 objects.** Every in-cluster BNK object is plain YAML in your
   Git repository, synced by Argo CD in ordered waves. The tool renders that YAML, pushes
   it to Git, registers the cluster with Argo CD, and creates the Application.
@@ -25,8 +31,8 @@ existing ROKS cluster **as one Argo CD Application in your existing, external Ar
   `kubectl`, `ibmcloud` or `git` to install, and the tool builds and runs natively on
   Linux, macOS and Windows.
 - **Everything runs in ROKS.** The prerequisite and lifecycle checks are a small
-  container, `check`, that Argo CD runs as hooks inside the cluster. Nothing runs on the
-  Argo CD hub.
+  container, `check`, that runs inside the cluster: as Argo CD hooks during install, and
+  as Jobs that `uninstall` runs around the delete. Nothing runs on the Argo CD hub.
 - **No secret goes to Git.** The FAR pull credential, the subscription JWT and the
   license proxy CA are written straight into the cluster by `install`. The renderer
   refuses to publish if a secret value appears in any Git object.

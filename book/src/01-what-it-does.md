@@ -63,7 +63,7 @@ do choose the number of TMM replicas (`bnk.tmm_replicas`, default `3`). See
 | Create or delete a ROKS cluster | The cluster already exists. `install` never creates it and `uninstall` never deletes it. |
 | Create or delete a transit gateway | Same. `install` only adds a VPC connection when the cluster's VPC is not attached, and `uninstall --detach-tgw` removes only a connection that `install` itself created. |
 | Install or run Argo CD for you in production | Argo CD is yours. (`roksbnkargoctl argocd up` builds a **test** hub for trying the tool; see [chapter 15](./15-test-hub.md).) |
-| Upgrade BNK | BNK has no in-place upgrade. Moving to a later release is an uninstall and a fresh install. |
+| Upgrade BNK | roksbnkargoctl does **install and uninstall only**. BNK itself supports an in-place upgrade by changing the manifest version in its custom resources; follow F5's BNK documentation for that. It is beyond the scope of this tool. (`roksbnkargoctl self update` updates the tool, not BNK.) |
 | Configure gateways or traffic | No `Infra`, `GatewaySettings` or `Gateway` objects and no traffic tests. The install ends when BNK is licensed and its `CNEInstance` is available. |
 | Install BNK 2.3 | Only 2.4 GA. 2.4 replaces the 2.3 object model, and the tool is built for 2.4 alone. |
 | Store secrets | No secret value is written to Git or to the workspace. The IBM API key, Argo CD token, Git token and mirror password are read from environment variables each time. |
