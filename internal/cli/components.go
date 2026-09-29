@@ -288,13 +288,7 @@ install from it.
 
 // checkImageSource is the upstream check image for this build (before any
 // mirror redirect).
-func checkImageSource() string {
-	tag := Version
-	if tag == "" || strings.HasPrefix(tag, "dev") || strings.Contains(tag, "-dirty") {
-		tag = "dev"
-	}
-	return CheckImageRepo + ":" + tag
-}
+func checkImageSource() string { return CheckImageRepo + ":" + checkImageTag(Version) }
 
 // ---- agent -----------------------------------------------------------------------
 

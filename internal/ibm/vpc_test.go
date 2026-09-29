@@ -398,3 +398,34 @@ func TestGatewayAttachedPrefixesUsesCRNRegion(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+// Found live: IBM's next.href carries no version parameter, and the VPC API
+// answers a version-less page two with 400 missing_version. The fake behaves
+// the same way, so this fails if paging stops carrying version/generation.
+func TestPagingCarriesVersionToNextPage(t *testing.T) {
+	f, c := newFake(t)
+	f.mux.HandleFunc("GET /vpc/images", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("version") == "" || q.Get("generation") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"errors": []map[string]any{{"code": "missing_version"}}})
+			return
+		}
+		if q.Get("start") == "" {
+			writeJSON(w, map[string]any{
+				"images": []map[string]any{{"id": "p1", "name": "ibm-ubuntu-24-04-1-minimal-amd64-1", "status": "available", "created_at": "2025-01-01T00:00:00Z"}},
+				"next":   map[string]any{"href": f.URL + "/vpc/images?limit=100&start=page2"},
+			})
+			return
+		}
+		writeJSON(w, map[string]any{"images": []map[string]any{
+			{"id": "p2", "name": "ibm-ubuntu-24-04-5-minimal-amd64-1", "status": "available", "created_at": "2026-05-01T00:00:00Z"}}})
+	})
+	im, err := c.LatestPublicImage(context.Background(), UbuntuMinimalAMD64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if im.ID != "p2" {
+		t.Fatalf("page two was not read: picked %s", im.ID)
+	}
+}

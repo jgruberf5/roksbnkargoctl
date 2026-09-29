@@ -112,10 +112,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install trivy
         run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-      - name: Trivy config (terraform IaC)
-        run: trivy config terraform --format sarif --output trivy-iac.sarif --exit-code 0
+      - name: Trivy config (Dockerfile)
+        run: trivy config build --format sarif --output trivy-iac.sarif --exit-code 0
       - name: Trivy fs (deps + secrets)
-        run: trivy fs . --scanners vuln,secret --format sarif --output trivy-fs.sarif --exit-code 0 --skip-dirs book/book
+        run: trivy fs . --scanners vuln,secret --format sarif --output trivy-fs.sarif --exit-code 0
       - name: Upload IaC SARIF
         uses: github/codeql-action/upload-sarif@v4.38.1
         with:
