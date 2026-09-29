@@ -191,7 +191,7 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 		m.CAFile = ask("  Mirror CA PEM file (empty if publicly trusted)", m.CAFile)
 	}
 	c.BNK.TMMReplicas = askInt("TMM replicas", c.BNK.TMMReplicas)
-	c.BNK.StorageClass = ask("StorageClass for TMM (ReadWriteMany when replicas > 1; empty = cluster default)", c.BNK.StorageClass)
+	c.BNK.StorageClass = ask("StorageClass for BNK volumes (empty = cluster default; any class works for any TMM replica count)", c.BNK.StorageClass)
 
 	// Supply chain.
 	c.COS.Instance = ask("COS instance holding the FAR key and JWT", c.COS.Instance)
