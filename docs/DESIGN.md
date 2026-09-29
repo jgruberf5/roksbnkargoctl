@@ -70,7 +70,8 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −20 | Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (`Delete=false`: `check post-uninstall` deletes them) |
 | −19 | ConfigMap `registry-ca` + DaemonSet `registry-ca-trust` (private-CA mirror only) |
 | −18 | DaemonSet `check-node-probe` (`check node-probe` on every node, host network); hook `check pre-install` (Sync) |
-| −12 | cert-manager chart (CRDs `Delete=false`; `startupapicheck` disabled — Argo CD's Deployment health is the gate) |
+| −12 | cert-manager chart (CRDs `Delete=false`; `startupapicheck` disabled) |
+| −11 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it — Deployment health is not webhook readiness (a reinstall raced the cainjector live) |
 | −10 / −9 / −8 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer` |
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
 | −5 | FLO chart (its 26 `k8s.f5.com` CRDs, `Delete=false`) |
@@ -109,6 +110,7 @@ It only ever runs in ROKS.
 | `pre-install` | Sync −18 | OpenShift ≥ 4.16; 3 zones; ≥ 3 schedulable workers; no pre-existing BNK not owned by this Application (`--argocd-app`, so re-syncs pass); required Secrets present; with `tmm_replicas` > 1 a ReadWriteMany (`vpc.file.csi.ibm.io`) StorageClass, since TMM replicas share one volume; then deletes every `check-node-probe` pod and waits for fresh verdicts from all nodes (a re-sync never reads a stale one — roksbnkctl #57), failing on any unreachable target |
 | `node-probe` | DaemonSet | From each node: DNS + TCP (+TLS handshake) to FAR or the mirror (`:443`), FLP (`:8443`) in disconnected mode, F5 licensing endpoints in connected mode; writes the result to its pod annotation; sleeps |
 | `gateway-api-sweep` | Sync −6 | Deletes OpenShift's `openshift-ingress-operator-gatewayapi-crd-admission` VAP + binding every 5 s until `gateways.gateway.networking.k8s.io` and `gatewaysettings.gateway.k8s.f5.com` exist (timeout 20 min) |
+| `cert-manager-ready` | Sync −11 | Server-side dry-run `ClusterIssuer` create, retried on webhook/x509/5xx/404 until admitted (10 min); fails fast on anything else (e.g. RBAC) |
 | `license` | Sync 0 | Builds `License` from Secret `bnk-license-jwt` (+ FLP URLs/CA path in disconnected mode); waits `Active` (15 min) then `CNEInstance Available` (15 min) |
 | `post-install` | PostSync | FLO Ready; `CNEInstance` Available; `License` Active; TMM replicas Ready and spread across zones; no `ImagePullBackOff`; reports |
 | `pre-uninstall` | PreDelete | Sweeps `f5validate-*` webhooks; drains `gateway.k8s.f5.com` and `fic.f5.com` (not FLO-managed `k8s.f5.com` components, which FLO re-creates while the CNEInstance lives, nor `k8s.f5net.com` product defaults the webhook refuses — roksbnkctl #266); waits for IPAM to be gone; deletes `License`, then `CNEInstance`, **while FLO still runs** (roksbnkctl #217). A failed drain leaves the CNEInstance and fails the hook |
@@ -140,6 +142,29 @@ It only ever runs in ROKS.
   treats F5 CRs as healthy on creation; the `check license` hook (which waits for `License`
   Active and `CNEInstance` Available) is the real gate, and fails the sync if BNK does not come
   up. `install` prints an optional Lua snippet for operators who want CR health in the UI.
+
+## Findings from the live runs (bnkargo, OpenShift 4.21.31; Argo CD 3.5.1)
+
+These shaped the implementation; each has a regression test that fails against it.
+
+- **The ROKS private endpoint is not publicly trusted.** It chains to the cluster's own root
+  CA (the same CA as a ServiceAccount token Secret's `ca.crt`); the public endpoint chains to
+  public roots. Registration sends the CA only for the private endpoint.
+- **Never apply `annotations: {}`.** A Namespace server-side-applied with an empty annotations
+  map never receives OpenShift's `openshift.io/sa.scc.*` annotations, and every pod in it is
+  rejected. Empty metadata maps are pruned in the renderer and in `kube.Apply`.
+- **Render the check image by digest.** With a mutable tag and `IfNotPresent`, nodes keep
+  running whatever they cached; a re-sync after a check fix would run the old check.
+- **Argo CD rejects a body-less DELETE without `Content-Type`** (415). Every non-GET request
+  declares JSON.
+- **IBM VPC paging drops `version`** from `next.href`; it is carried onto every page.
+- **The 2.4.0 GA manifest no longer lists the license proxy** (2.3.x did): its version is
+  pinned (roksbnkctl#327).
+- **cert-manager's webhook can lag its Deployment**: gated by `cert-manager-ready`.
+
+Proven live: connected install, re-sync, uninstall, reinstall on a used cluster, and
+disconnected (FLP) install and uninstall; `argocd up` and `flp up/down`. Not yet run live:
+mirror mode, `tmm_replicas` > 1 on RWX storage.
 
 ## Uninstall order
 
