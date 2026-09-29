@@ -134,7 +134,7 @@ func TestPreInstallClusterShape(t *testing.T) {
 	}
 }
 
-func TestPreInstallSecretsAndRWX(t *testing.T) {
+func TestPreInstallSecretsAndStorage(t *testing.T) {
 	s, env, res := newFake(t)
 	healthyCluster(s)
 	sec := obj("v1", "Secret", "f5-bnk", "far-secret")
@@ -142,7 +142,10 @@ func TestPreInstallSecretsAndRWX(t *testing.T) {
 	s.Put("", "v1", "secrets", sec)
 	cfg := baseCfg()
 	cfg.RequiredSecrets = []string{"f5-bnk/far-secret", "roksbnkargoctl-check/bnk-license-jwt"}
-	cfg.TMMReplicas = 2 // default class is block: must fail naming the add-on
+	// F5's reference: 3 TMM replicas on a stock ROKS cluster, whose default
+	// class is VPC block storage. At Tiny TMM mounts no PVC (roksbnkctl#197),
+	// so this must NOT fail — an earlier gate refused it.
+	cfg.TMMReplicas = 3
 	_ = PreInstall(context.Background(), env, cfg, res)
 	if !hasSev(res, "secrets", SevFail) || !strings.Contains(detail(res, "secrets"), "roksbnkargoctl-check/bnk-license-jwt") {
 		t.Errorf("missing secret not reported: %s", detail(res, "secrets"))
@@ -150,15 +153,20 @@ func TestPreInstallSecretsAndRWX(t *testing.T) {
 	if strings.Contains(detail(res, "secrets"), "f5-bnk/far-secret") {
 		t.Errorf("present secret reported missing: %s", detail(res, "secrets"))
 	}
-	if !hasSev(res, "storageclass-rwx", SevFail) || !strings.Contains(detail(res, "storageclass-rwx"), "vpc-file-csi-driver") {
-		t.Errorf("block class with 2 TMM replicas not refused: %s", detail(res, "storageclass-rwx"))
+	for _, f := range res.Findings {
+		if f.Severity == SevFail && f.Check != "secrets" {
+			t.Errorf("3 TMM replicas on block storage must not fail: %s: %s", f.Check, f.Detail)
+		}
 	}
-	// Named file class passes.
+	if !hasSev(res, "tmm-storage", SevInfo) {
+		t.Errorf("expected an info note for multiple replicas")
+	}
+	// A named class that does not exist still fails.
 	res2 := NewResult("x", env.Log)
-	cfg.StorageClass = "ibmc-vpc-file-500-iops"
+	cfg.StorageClass = "no-such-class"
 	_ = PreInstall(context.Background(), env, cfg, res2)
-	if !hasSev(res2, "storageclass-rwx", SevPass) {
-		t.Errorf("file class refused: %s", detail(res2, "storageclass-rwx"))
+	if !hasSev(res2, "storageclass", SevFail) {
+		t.Errorf("missing named class not refused: %s", detail(res2, "storageclass"))
 	}
 }
 

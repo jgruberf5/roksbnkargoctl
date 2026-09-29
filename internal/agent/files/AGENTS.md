@@ -60,9 +60,9 @@ diagnosis, not a symptom.
 - **pre-install: FLP `:8443` unreachable** — the transit gateway connection for the
   FLP VPC or the cluster VPC is missing, or the FLP security group does not allow
   the cluster's CIDRs on 8443. `roksbnkargoctl flp status`.
-- **pre-install: StorageClass is block (RWO) with tmm_replicas > 1** — TMM's replicas
-  share one volume; install the IBM `vpc-file-csi-driver` add-on and set
-  `bnk.storage_class` to an `ibmc-vpc-file-*` class, or set `tmm_replicas: 1`.
+- **TMM pods Pending, `Insufficient hugepages-2Mi`** — the CNEInstance is not
+  `deploymentSize: Tiny` (someone edited Git). ROKS runs only Tiny; `check post-install`
+  names this. Multiple TMM replicas do NOT need ReadWriteMany storage at Tiny.
 - **pre-install: existing BNK found** — a previous install (roksbnkctl or this tool)
   left FLO, CRs or license secrets. Uninstall it properly; do not delete namespaces
   by hand while F5 finalizers are pending.
@@ -73,8 +73,7 @@ diagnosis, not a symptom.
 - **License never Active, connected mode** — nodes cannot reach
   `product.apis.f5.com` / `product-s.apis.f5.com`, or the JWT is expired/wrong.
 - **CNEInstance never `Available`** — on 2.4 the controller runs no resource
-  controllers until the License is Active; check License first. Then TMM pods:
-  `Pending` with `Insufficient hugepages-2Mi` means `deploymentSize` is not Tiny.
+  controllers until the License is Active; check License first.
 - **Gateway API CRDs rejected by admission** — the `check-gateway-api-sweep`
   Deployment was not running when FLO's crd-installer ran. Check its log.
 - **Argo CD: `the server could not find the requested resource` on CNEInstance** —

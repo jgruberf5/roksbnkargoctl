@@ -29,7 +29,8 @@ func installedHealthy(s *kubefake.Server) {
 	with(flo, []string{"status", "availableReplicas"}, float64(1))
 	with(flo, []string{"status", "conditions"}, conditions("Available", "True"))
 	s.Put("apps", "v1", "deployments", flo)
-	s.Put("k8s.f5.com", "v1", "cneinstances", with(obj("k8s.f5.com/v1", "CNEInstance", "f5-bnk", "f5-bnk-f5-cne-controller"), []string{"status", "conditions"}, conditions("Available", "True")))
+	s.Put("k8s.f5.com", "v1", "cneinstances", with(with(obj("k8s.f5.com/v1", "CNEInstance", "f5-bnk", "f5-bnk-f5-cne-controller"),
+		[]string{"status", "conditions"}, conditions("Available", "True")), []string{"spec", "deploymentSize"}, "Tiny"))
 	s.Put("k8s.f5net.com", "v1", "licenses", with(obj("k8s.f5net.com/v1", "License", "f5-utils", "bnk-license"), []string{"status", "state"}, "Active"))
 	tmmPod(s, "tmm-a", "10.0.0.4", true)
 	tmmPod(s, "tmm-b", "10.0.1.4", true)
@@ -60,5 +61,23 @@ func TestPostInstallFindsProblems(t *testing.T) {
 	}
 	if !strings.Contains(detail(res, "pods"), "f5-utils/f5-spk-cwc-0 cwc: ImagePullBackOff") {
 		t.Errorf("pod problem not named: %s", detail(res, "pods"))
+	}
+}
+
+// Only Tiny runs on ROKS; a hand-edited size in Git must fail post-install and
+// say why, not sit Pending on hugepages.
+func TestPostInstallRequiresTiny(t *testing.T) {
+	for _, size := range []string{"Tiny", "Small", "Max", ""} {
+		res := NewResult("post-install", nil)
+		o := obj("k8s.f5.com/v1", "CNEInstance", "f5-bnk", "f5-bnk-f5-cne-controller")
+		o["spec"] = map[string]any{"deploymentSize": size}
+		checkDeploymentSize(o, res)
+		wantFail := size != "Tiny"
+		if hasSev(res, "deployment-size", SevFail) != wantFail {
+			t.Errorf("deploymentSize %q: fail=%v, want %v (%s)", size, !wantFail, wantFail, detail(res, "deployment-size"))
+		}
+		if wantFail && !strings.Contains(detail(res, "deployment-size"), "hugepages") {
+			t.Errorf("deploymentSize %q: the failure must name the hugepages reason: %s", size, detail(res, "deployment-size"))
+		}
 	}
 }

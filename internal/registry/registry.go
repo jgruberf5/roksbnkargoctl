@@ -49,10 +49,10 @@ func BOM(m *far.Manifest, farHost, certManagerVersion, checkImage string, includ
 	var out []Artifact
 	out = append(out, Artifact{Source: far.ManifestChartRef(farHost, m.Version), Kind: "chart"})
 	for _, c := range m.Charts {
-		out = append(out, Artifact{Source: fmt.Sprintf("%s/%s:%s", farHost, c.Name, c.Version), Kind: "chart"})
+		out = append(out, Artifact{Source: fmt.Sprintf("%s/%s:%s", farHost, c.Name, ociTag(c.Version)), Kind: "chart"})
 	}
 	for _, i := range m.Images {
-		out = append(out, Artifact{Source: fmt.Sprintf("%s/%s:%s", farHost, i.Name, i.Version), Kind: "image"})
+		out = append(out, Artifact{Source: fmt.Sprintf("%s/%s:%s", farHost, i.Name, ociTag(i.Version)), Kind: "image"})
 	}
 	if includeCertManager {
 		out = append(out, Artifact{Source: "quay.io/jetstack/charts/cert-manager:" + certManagerVersion, Kind: "chart"})
@@ -65,6 +65,11 @@ func BOM(m *far.Manifest, farHost, certManagerVersion, checkImage string, includ
 	}
 	return out
 }
+
+// ociTag maps a version to the OCI tag it is stored under. "+" is illegal in an
+// OCI tag, so Helm stores a chart version like 14.91.12+0.4.7 as 14.91.12_0.4.7
+// (the manifest lists utils/log-doc-f5ingress that way; found replicating 2.4 GA).
+func ociTag(v string) string { return strings.ReplaceAll(v, "+", "_") }
 
 // Result is one artifact's outcome.
 type Result struct {

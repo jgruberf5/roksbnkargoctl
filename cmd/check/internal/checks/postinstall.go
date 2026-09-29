@@ -64,7 +64,11 @@ func PostInstall(ctx context.Context, env *Env, cfg PostInstallConfig, res *Resu
 
 	// CNEInstance.
 	cne := CNEInstanceName(cfg.BNKNamespace)
-	if o, err := env.Kube.Get(ctx, GVRCNEInstance.Path(cfg.BNKNamespace, cne)); err != nil {
+	o, err := env.Kube.Get(ctx, GVRCNEInstance.Path(cfg.BNKNamespace, cne))
+	if err == nil {
+		checkDeploymentSize(o, res)
+	}
+	if err != nil {
 		res.Fail("cneinstance", "reading CNEInstance %s/%s: %v", cfg.BNKNamespace, cne, err)
 	} else if o.ConditionTrue("Available") {
 		res.Pass("cneinstance", "%s/%s Available", cfg.BNKNamespace, cne)
@@ -184,4 +188,20 @@ func checkBadPods(ctx context.Context, env *Env, nss []string, res *Result) {
 		return
 	}
 	res.Pass("pods", "no ImagePullBackOff/ErrImagePull/CrashLoopBackOff in %s", strings.Join(nss, ", "))
+}
+
+// SupportedDeploymentSize is the only CNEInstance size ROKS can run. Every larger
+// size requests hugepages; ROKS workers report hugepages-2Mi = 0 and have no
+// Machine Config Operator to allocate them (roksbnkctl#203, and bnkargo live).
+// roksbnkargoctl always renders Tiny; this catches a hand edit in the Git repo,
+// which Argo CD would otherwise sync without complaint.
+const SupportedDeploymentSize = "Tiny"
+
+func checkDeploymentSize(cne interface{ String(path ...string) string }, res *Result) {
+	got := cne.String("spec", "deploymentSize")
+	if got == SupportedDeploymentSize {
+		res.Pass("deployment-size", "CNEInstance deploymentSize is %s (the only size IBM ROKS supports)", got)
+		return
+	}
+	res.Fail("deployment-size", "CNEInstance deploymentSize is %q; IBM ROKS supports only %s: larger sizes request hugepages that ROKS workers cannot allocate (hugepages-2Mi = 0, no Machine Config Operator). Restore deploymentSize: %s in the Git repo", got, SupportedDeploymentSize, SupportedDeploymentSize)
 }

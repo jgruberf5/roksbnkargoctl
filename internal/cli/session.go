@@ -161,9 +161,11 @@ func (s *session) MirrorPassword() string {
 	return strings.TrimSpace(os.Getenv(s.cfg.Registry.Mirror.PasswordEnv))
 }
 
-// MirrorCA returns the mirror's CA PEM when configured.
+// MirrorCA returns the mirror's CA PEM when one is configured — whatever
+// registry.source says: `registry replicate` fills the mirror while the install
+// still pulls from FAR.
 func (s *session) MirrorCA() (string, error) {
-	if s.cfg.Registry.Source != config.SourceMirror || s.cfg.Registry.Mirror.CAFile == "" {
+	if s.cfg.Registry.Mirror.Host == "" || s.cfg.Registry.Mirror.CAFile == "" {
 		return "", nil
 	}
 	b, err := os.ReadFile(s.cfg.Registry.Mirror.CAFile)
@@ -184,14 +186,24 @@ func (s *session) Puller(ctx context.Context, needFAR bool) (*far.Puller, error)
 		}
 		creds = append(creds, far.Credential{Host: s.cfg.Registry.FARHost, Username: far.FARUsername, Password: sa})
 	}
-	if s.cfg.Registry.Source == config.SourceMirror && s.cfg.Registry.Mirror.Username != "" {
-		creds = append(creds, far.Credential{Host: mirrorRegistryHost(s.cfg), Username: s.cfg.Registry.Mirror.Username, Password: s.MirrorPassword()})
-	}
+	creds = append(creds, mirrorCredentials(s.cfg, s.MirrorPassword())...)
 	ca, err := s.MirrorCA()
 	if err != nil {
 		return nil, err
 	}
 	return far.NewPuller(creds, []byte(ca))
+}
+
+// mirrorCredentials is the mirror login, scoped to its host, whenever a mirror
+// with a username is configured. It must not depend on registry.source: the
+// mirror is replicated BEFORE the install switches to it, and gating on the
+// source sent every push anonymously ("Authentication is required", found live
+// against Artifactory).
+func mirrorCredentials(c *config.Config, password string) []far.Credential {
+	if c.Registry.Mirror.Host == "" || c.Registry.Mirror.Username == "" {
+		return nil
+	}
+	return []far.Credential{{Host: mirrorRegistryHost(c), Username: c.Registry.Mirror.Username, Password: password}}
 }
 
 // mirrorRegistryHost is the mirror's host[:port] (kubelet matches pull secrets
