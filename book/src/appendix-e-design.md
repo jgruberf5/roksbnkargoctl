@@ -170,9 +170,9 @@ Several of its checks encode roksbnkctl issues directly:
 
 ## Not in scope
 
-Cluster or transit gateway creation, BNK upgrades (BNK has no in-place upgrade: a
-version or mode change is uninstall and install), the gateway phase (Infra,
-GatewaySettings, Gateway), traffic tests, and BNK 2.3.
+Cluster or transit gateway creation, the gateway phase (Infra, GatewaySettings, Gateway),
+traffic tests, BNK 2.3, and BNK upgrades. The tool is day-0 install and uninstall only.
+BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation.
 
 ## See also
 

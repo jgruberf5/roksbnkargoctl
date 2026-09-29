@@ -65,7 +65,7 @@ hub](./15-test-hub.md).
 | Command | Flags | Purpose |
 |---|---|---|
 | `agent` | — | With no argument, list the supported CLIs and the workspace path |
-| `agent <cli>` | — | Start one of the supported CLIs in the workspace, scaffolding it first if needed (the list is in [chapter 18](./18-agent.md)) |
+| `agent <cli>` | `--persona troubleshooter\|operator` — the persona its first turn takes (default `troubleshooter`); `--show` — print the command instead of running it | Start `agy`, `claude`, `codex`, `gemini`, `aider`, `pi` or `opencode` in the workspace, scaffolding it first if needed. Refuses when stdout is not a terminal ([chapter 18](./18-agent.md)) |
 | `agent init` | `--force` — overwrite existing files | Scaffold the troubleshooting guide, personas and a journal directory into the workspace ([chapter 18](./18-agent.md)) |
 | `workspaces list` (alias `ws list`) | — | List workspaces; the current one is marked `*` |
 | `workspaces use <name>` (alias `ws use`) | — | Make a workspace current |

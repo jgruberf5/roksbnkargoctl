@@ -3,6 +3,10 @@
 Install and uninstall **F5 BIG-IP Next for Kubernetes (BNK) 2.4 GA** on an existing
 IBM Cloud ROKS cluster as **one Argo CD Application** in your existing Argo CD.
 
+**Install and uninstall only.** It does not upgrade BNK. BNK supports an in-place upgrade by
+changing the manifest version in its custom resources; follow F5's BNK documentation for
+that. It is beyond the scope of this tool.
+
 No Terraform. IBM Cloud, Kubernetes, Git and Argo CD are driven through their
 APIs by one Go binary that runs natively on Linux, macOS and Windows. It is the
 slim, Argo-CD-only successor to [roksbnkctl](https://github.com/jgruberf5/roksbnkctl).

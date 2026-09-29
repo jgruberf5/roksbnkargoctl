@@ -92,9 +92,9 @@ on a live cluster.
 
 ## Changing modes
 
-`bnk.mode` and `registry.source` are ordinary configuration keys, but BNK has no in-place
-upgrade and a mode change alters the `License`, the CNEInstance and the Secrets. Treat a
-change of mode as uninstall and install:
+`bnk.mode` and `registry.source` are ordinary configuration keys, but a mode change alters
+the `License`, the CNEInstance and the Secrets, and re-running `install` over a different
+mode has not been tested. With this tool, treat a change of mode as uninstall and install:
 
 ```sh
 roksbnkargoctl uninstall --yes
