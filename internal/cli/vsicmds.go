@@ -313,14 +313,21 @@ func runHubUp(ctx context.Context, s *session, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	c.ArgoCD.Server, c.ArgoCD.Insecure = out.URL, true
-	if err := s.save(); err != nil {
+	if err := recordTestHub(s, out.URL); err != nil {
 		return err
 	}
 	p.ok("test Argo CD %s at %s; argocd.server updated", h.Version, out.URL)
 	p.info("UI login: admin / (admin_password in %s)", s.ws.HubOutputsPath())
 	fmt.Fprintf(cmd.OutOrStdout(), "export %s=%s\n", c.ArgoCD.TokenEnv, tok)
 	return nil
+}
+
+// recordTestHub points the workspace's Argo CD at the test hub: a change to
+// saved settings, made through update so that save writes it (and nothing an
+// override supplied).
+func recordTestHub(s *session, url string) error {
+	s.update(func(c *config.Config) { c.ArgoCD.Server, c.ArgoCD.Insecure = url, true })
+	return s.save()
 }
 
 // ---- small JSON file helpers -----------------------------------------------------------

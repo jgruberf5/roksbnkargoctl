@@ -150,7 +150,9 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 		return fmt.Errorf("publishing to Git: %w", err)
 	}
 	r.LastPublishedCommitSHA = sha
-	_ = s.save()
+	if err := s.save(); err != nil {
+		p.warn("%v", err)
+	}
 	if changed {
 		p.ok("published commit %s", short(sha))
 	} else {
@@ -621,7 +623,9 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 			errs = append(errs, fmt.Errorf("purging Git: %w", err))
 		}
 	}
-	_ = s.save()
+	if err := s.save(); err != nil {
+		p.warn("%v", err)
+	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
