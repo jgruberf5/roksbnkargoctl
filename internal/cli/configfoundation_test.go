@@ -568,7 +568,7 @@ func TestNoWorkspaceFlagIgnoresTheCurrentWorkspace(t *testing.T) {
 // Workspace commands keep requiring one, with the message they always had.
 func TestWorkspaceCommandsStillRequireAWorkspace(t *testing.T) {
 	home := isolate(t)
-	for _, args := range [][]string{{"status"}, {"render"}, {"install"}, {"uninstall"}, {"flp", "up"}, {"cos", "list"}, {"registry", "bom"}} {
+	for _, args := range [][]string{{"status"}, {"render"}, {"install"}, {"uninstall"}, {"flp", "up"}, {"cos", "list"}, {"export"}} {
 		root := newRoot()
 		var out bytes.Buffer
 		root.SetOut(&out)

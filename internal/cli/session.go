@@ -264,7 +264,44 @@ func (s *session) ibmLookup() (ibmLookup, error) {
 	if s.lookup != nil {
 		return s.lookup, nil
 	}
-	return s.IBM()
+	return newIBMLookup(s)
+}
+
+// newIBMLookup is the lookup a session uses when none is set on it. A variable
+// so a test driving a command through the root command can fake IBM Cloud.
+var newIBMLookup = defaultIBMLookup
+
+func defaultIBMLookup(s *session) (ibmLookup, error) { return s.IBM() }
+
+// cosObjectReader is the part of the COS client the FAR key and JWT are read with.
+type cosObjectReader interface {
+	GetObject(ctx context.Context, bucket, key string) ([]byte, error)
+}
+
+// openCOSReader opens COS for reading. A variable so a test driving a command
+// through the root command can serve the objects without IBM Cloud; the
+// instance lookup (COSInstanceCRN) is still the session's.
+var openCOSReader = defaultOpenCOSReader
+
+func defaultOpenCOSReader(ctx context.Context, apiKey, instanceCRN, region string) (cosObjectReader, error) {
+	return cos.New(ctx, apiKey, instanceCRN, region)
+}
+
+// cosObject reads one object from cos.bucket in the supply-chain instance.
+func (s *session) cosObject(ctx context.Context, key string) ([]byte, error) {
+	apiKey, err := s.cfg.APIKey()
+	if err != nil {
+		return nil, err
+	}
+	crn, err := s.COSInstanceCRN(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cc, err := openCOSReader(ctx, apiKey, crn, s.cfg.COS.Region)
+	if err != nil {
+		return nil, err
+	}
+	return cc.GetObject(ctx, s.cfg.COS.Bucket, key)
 }
 
 // COSInstanceCRN is the supply-chain COS instance's CRN: the one `init`
@@ -390,10 +427,7 @@ func (s *session) FARServiceAccount(ctx context.Context) (string, error) {
 	if f := s.cfg.COS.LocalFARAuthFile; f != "" {
 		tgz, err = os.ReadFile(f)
 	} else {
-		var cc *cos.Client
-		if cc, err = s.COS(ctx); err == nil {
-			tgz, err = cc.GetObject(ctx, s.cfg.COS.Bucket, s.cfg.COS.FARAuthObject)
-		}
+		tgz, err = s.cosObject(ctx, s.cfg.COS.FARAuthObject)
 	}
 	if err != nil {
 		return "", fmt.Errorf("FAR auth tarball: %w", err)
@@ -413,10 +447,7 @@ func (s *session) JWT(ctx context.Context) (string, error) {
 	if f := s.cfg.COS.LocalJWTFile; f != "" {
 		b, err = os.ReadFile(f)
 	} else {
-		var cc *cos.Client
-		if cc, err = s.COS(ctx); err == nil {
-			b, err = cc.GetObject(ctx, s.cfg.COS.Bucket, s.cfg.COS.JWTObject)
-		}
+		b, err = s.cosObject(ctx, s.cfg.COS.JWTObject)
 	}
 	if err != nil {
 		return "", fmt.Errorf("subscription JWT: %w", err)
