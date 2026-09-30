@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
+	"github.com/jgruberf5/roksbnkargoctl/internal/gitpub"
 )
 
 func newInitCmd() *cobra.Command {
@@ -106,6 +108,9 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 		return err
 	}
 	if err := s.cfg.Validate(); err != nil {
+		return err
+	}
+	if err := initRemoteChecks(ctx, s); err != nil {
 		return err
 	}
 	if err := resolveWorkspace(ctx, s); err != nil {
@@ -221,9 +226,20 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 	c.COS.JWTObject = ask("  subscription JWT object", c.COS.JWTObject)
 
 	// Argo CD and Git.
-	c.ArgoCD.Server = ask("Argo CD server URL (https://…)", c.ArgoCD.Server)
-	c.ArgoCD.Insecure = askYesNo("  Skip TLS verification (self-signed Argo CD)?", c.ArgoCD.Insecure)
-	c.ArgoCD.Project = ask("  Argo CD project", c.ArgoCD.Project)
+	if askYesNo("Use an existing Argo CD instance (3.3 or later)?", !usesTestHub(c)) {
+		if usesTestHub(c) {
+			c.ArgoCD.Server = ""
+		}
+		c.ArgoCD.Server = ask("  Argo CD server URL (https://…)", c.ArgoCD.Server)
+		c.ArgoCD.Insecure = askYesNo("  Skip TLS verification (self-signed Argo CD)?", c.ArgoCD.Insecure)
+		c.ArgoCD.Project = ask("  Argo CD project", c.ArgoCD.Project)
+		fmt.Printf("  init checks $%s against it next: an API token for an account that can manage clusters, repositories and applications\n", c.ArgoCD.TokenEnv)
+	} else {
+		fmt.Println("  `roksbnkargoctl argocd up` builds a TEST Argo CD on a VSI after init; it is not for production")
+		c.TestHub.CIDR = ask("  Address range for its VPC (a free /24–/28 on the transit gateway)", firstOf(c.TestHub.CIDR, "10.248.1.0/28"))
+		c.TestHub.AllowedCIDR = ask("  Who may reach its UI and API (your address, e.g. 203.0.113.7/32)", firstOf(c.TestHub.AllowedCIDR, "0.0.0.0/0"))
+		c.ArgoCD.Server, c.ArgoCD.Insecure = testHubPlaceholder, true
+	}
 	c.ArgoCD.ClusterEndpoint = choose("  Endpoint Argo CD uses to reach ROKS", []string{"private", "public"}, c.ArgoCD.ClusterEndpoint)
 	c.Git.URL = ask("Git repo Argo CD syncs from (https://… or git@…)", c.Git.URL)
 	c.Git.Branch = ask("  branch", c.Git.Branch)
@@ -348,5 +364,82 @@ func resolve(ctx context.Context, s *session) error {
 		p.ok("COS %s/%s has %s and %s", c.COS.Instance, c.COS.Bucket, c.COS.FARAuthObject, c.COS.JWTObject)
 	}
 	c.Resolved = r
+	return nil
+}
+
+// testHubPlaceholder is argocd.server until `argocd up` builds the test hub
+// and records its URL. .invalid is reserved (RFC 2606): it never resolves.
+const testHubPlaceholder = "https://argocd.placeholder.invalid"
+
+// usesTestHub reports a workspace waiting for `argocd up`: a placeholder
+// server, or none with a test_hub range set.
+func usesTestHub(c *config.Config) bool {
+	srv := strings.TrimSpace(c.ArgoCD.Server)
+	if srv == "" {
+		return c.TestHub.CIDR != ""
+	}
+	u, err := url.Parse(srv)
+	return err == nil && strings.HasSuffix(strings.ToLower(u.Hostname()), ".invalid")
+}
+
+// checkArgoCDAtInit fails init early when the existing Argo CD it names cannot
+// be used: no token in the environment, a token it rejects, or a version older
+// than MinArgoCD. The same check runs first in install; finding out at init
+// saves a half-configured workspace.
+func checkArgoCDAtInit(ctx context.Context, s *session) error {
+	c, p := s.cfg, s.p
+	if usesTestHub(c) {
+		p.info("argocd.server is the placeholder for a test hub: run `roksbnkargoctl argocd up` before install")
+		return nil
+	}
+	if _, err := config.Env(c.ArgoCD.TokenEnv, "Argo CD API token"); err != nil {
+		return fmt.Errorf("%w: an API token for the Argo CD at %s (Argo CD UI: Settings → Accounts → <account> → Tokens → Generate New)", err, c.ArgoCD.Server)
+	}
+	ac, err := s.ArgoCD()
+	if err != nil {
+		return err
+	}
+	if err := ac.CheckServer(ctx, MinArgoCD); err != nil {
+		return fmt.Errorf("checking the Argo CD at %s: %w", c.ArgoCD.Server, err)
+	}
+	v, _ := ac.Version(ctx)
+	p.ok("Argo CD %s at %s accepts the token in $%s", v, c.ArgoCD.Server, c.ArgoCD.TokenEnv)
+	return nil
+}
+
+// initRemoteChecks are init's checks against Argo CD and Git. A variable so a
+// test driving init through the root command need not reach either.
+var initRemoteChecks = defaultInitRemoteChecks
+
+func defaultInitRemoteChecks(ctx context.Context, s *session) error {
+	if err := checkArgoCDAtInit(ctx, s); err != nil {
+		return err
+	}
+	return checkGitAtInit(ctx, s)
+}
+
+// checkGitAtInit (#18): the repository must be readable. Push rights are only
+// warned about: with export + install --no-publish nothing is pushed.
+func checkGitAtInit(ctx context.Context, s *session) error {
+	c, p := s.cfg, s.p
+	o, err := gitOptions(c, p.warn)
+	switch {
+	case missingGitCredential(err):
+		p.warn("no Git credential ($%s or git.ssh_key_file): install needs one to push, unless you commit `roksbnkargoctl export` yourself and run install --no-publish", c.Git.TokenEnv)
+		if _, err := gitpub.Check(ctx, o, false); err != nil {
+			p.warn("%v (Argo CD needs to read it; it may have its own credential)", err)
+		}
+		return nil
+	case err != nil:
+		return err
+	}
+	if err := checkGitAccess(ctx, p, c, o, false, false); err != nil {
+		return err
+	}
+	if _, err := gitpub.Check(ctx, o, true); err != nil {
+		p.warn("%v: install will fail at the push; fix the credential, or commit `roksbnkargoctl export` yourself and run install --no-publish", err)
+		return nil
+	}
+	p.ok("Git %s: the credential can push", c.Git.URL)
 	return nil
 }

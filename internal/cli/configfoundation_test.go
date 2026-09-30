@@ -224,7 +224,8 @@ git: {url: "https://git.example/r.git"}
 		s.cfg.Resolved = &config.Resolved{ClusterID: "id-1", ClusterName: s.cfg.Cluster, TransitGatewayID: "tg-1", TransitGatewayName: "tgw"}
 		return nil
 	}
-	t.Cleanup(func() { resolveWorkspace = resolve })
+	initRemoteChecks = func(context.Context, *session) error { return nil }
+	t.Cleanup(func() { resolveWorkspace, initRemoteChecks = resolve, defaultInitRemoteChecks })
 	t.Setenv("ROKSBNKARGOCTL_CLUSTER", "env-cluster")
 	t.Setenv("ROKSBNKARGOCTL_BNK_TMM_REPLICAS", "7")
 	t.Setenv("ROKSBNKARGOCTL_GIT_BRANCH", "env-branch")

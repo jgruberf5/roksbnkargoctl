@@ -91,6 +91,11 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	}
 	v, _ := ac.Version(ctx)
 	p.ok("Argo CD %s at %s", v, c.ArgoCD.Server)
+	// Git access, before anything changes (#18): push rights for a normal
+	// install, read access and the branch for --no-publish.
+	if err := checkGitAccess(ctx, p, c, gitOpts, !noPublish, noPublish); err != nil {
+		return err
+	}
 
 	ibmc, err := s.IBM()
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/argocd"
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
+	"github.com/jgruberf5/roksbnkargoctl/internal/gitpub"
 	"github.com/jgruberf5/roksbnkargoctl/internal/render"
 )
 
@@ -146,4 +148,26 @@ func checkGitMatchesRender(ctx context.Context, s *session, ac *argocd.Client) (
 	}
 	p.ok("Git at %s matches this render (%d objects)", short(rev), len(rendered))
 	return rev, nil
+}
+
+// checkGitAccess is the Git pre-flight shared by install and init (#18).
+// write checks push rights (the receive-pack advertisement). needBranch
+// requires git.branch to exist: --no-publish syncs what is already there.
+func checkGitAccess(ctx context.Context, p printer, c *config.Config, o gitpub.Options, write, needBranch bool) error {
+	a, err := gitpub.Check(ctx, o, write)
+	if err != nil {
+		return err
+	}
+	branch := firstOf(c.Git.Branch, "main")
+	switch {
+	case needBranch && !a.HasBranch:
+		return fmt.Errorf("git: %s has no branch %s: push the export there first (roksbnkargoctl export)", c.Git.URL, branch)
+	case write && a.Empty:
+		p.ok("Git %s is empty; the first push creates %s", c.Git.URL, branch)
+	case write:
+		p.ok("Git %s: the credential can push", c.Git.URL)
+	default:
+		p.ok("Git %s: readable, branch %s present", c.Git.URL, branch)
+	}
+	return nil
 }
