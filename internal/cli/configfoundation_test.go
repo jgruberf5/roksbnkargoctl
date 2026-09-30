@@ -322,7 +322,13 @@ func TestSaveRefusesASettingChangedWithoutUpdate(t *testing.T) {
 
 type fakeLookup struct {
 	calls map[string]int
+	// instances are the COS instances; nil is one per name in
+	// defaultFakeInstances, with CRN "crn-<name>" and GUID "guid-<name>".
+	instances []ibm.ServiceInstance
+	groups    []ibm.ResourceGroup
 }
+
+var defaultFakeInstances = []string{"my-cos", "other-cos", "ci"}
 
 func (f *fakeLookup) ResolveResourceGroup(_ context.Context, n string) (string, string, error) {
 	f.calls["rg:"+n]++
@@ -334,9 +340,21 @@ func (f *fakeLookup) ResolveTransitGateway(_ context.Context, n string) (*ibm.Tr
 	return &ibm.TransitGateway{ID: "tgw-id-" + n, Name: n}, nil
 }
 
-func (f *fakeLookup) FindServiceInstance(_ context.Context, n, svc, _ string) (*ibm.ServiceInstance, error) {
-	f.calls["si:"+n+":"+svc]++
-	return &ibm.ServiceInstance{CRN: "crn-" + n}, nil
+func (f *fakeLookup) ListServiceInstances(_ context.Context, svc string) ([]ibm.ServiceInstance, error) {
+	f.calls["si:"+svc]++
+	if f.instances != nil {
+		return f.instances, nil
+	}
+	var out []ibm.ServiceInstance
+	for _, n := range defaultFakeInstances {
+		out = append(out, ibm.ServiceInstance{Name: n, GUID: "guid-" + n, CRN: "crn-" + n})
+	}
+	return out, nil
+}
+
+func (f *fakeLookup) ListResourceGroups(context.Context) ([]ibm.ResourceGroup, error) {
+	f.calls["rgs"]++
+	return f.groups, nil
 }
 
 func farTarball(t *testing.T, sa string) []byte {
@@ -568,7 +586,7 @@ func TestNoWorkspaceFlagIgnoresTheCurrentWorkspace(t *testing.T) {
 // Workspace commands keep requiring one, with the message they always had.
 func TestWorkspaceCommandsStillRequireAWorkspace(t *testing.T) {
 	home := isolate(t)
-	for _, args := range [][]string{{"status"}, {"render"}, {"install"}, {"uninstall"}, {"flp", "up"}, {"cos", "list"}, {"registry", "bom"}} {
+	for _, args := range [][]string{{"status"}, {"render"}, {"install"}, {"uninstall"}, {"flp", "up"}, {"registry", "bom"}} {
 		root := newRoot()
 		var out bytes.Buffer
 		root.SetOut(&out)

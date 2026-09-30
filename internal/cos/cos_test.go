@@ -3,115 +3,26 @@ package cos
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"sort"
 	"strings"
-	"sync"
 	"testing"
-	"time"
+
+	"github.com/jgruberf5/roksbnkargoctl/internal/cos/costest"
 )
 
-// fakeS3 is a minimal path-style S3 + IAM token server: enough of the wire
-// protocol for the SDK's real request/response path to run end to end.
-type fakeS3 struct {
-	mu        sync.Mutex
-	buckets   map[string]map[string][]byte
-	created   []string // LocationConstraint bodies of CreateBucket
-	authSeen  []string
-	instances []string
-}
+const testInstance = "crn:v1:bluemix:public:cloud-object-storage:global:a/acct:guid::"
 
-func newFakeS3(t *testing.T) (*fakeS3, *Client) {
+// newFakeS3 is a fake COS serving regions (us-south when none), with a bucket
+// "existing" in us-south, and a client for it in us-south.
+func newFakeS3(t *testing.T, regions ...string) (*costest.Fake, *Client) {
 	t.Helper()
-	f := &fakeS3{buckets: map[string]map[string][]byte{"existing": {}}}
-	srv := httptest.NewServer(http.HandlerFunc(f.serve))
-	t.Cleanup(srv.Close)
-	c, err := newClient(context.Background(), "key", "crn:v1:bluemix:public:cloud-object-storage:global:a/acct:guid::", "us-south", srv.URL, srv.URL+"/identity/token")
+	f := costest.New(t, regions...)
+	f.AddBucket(testInstance, "existing", "us-south-smart", nil)
+	c, err := NewWith(context.Background(), "key", testInstance, "us-south", Options{EndpointFor: f.Endpoint, TokenURL: f.TokenURL()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f, c
-}
-
-func (f *fakeS3) serve(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if r.URL.Path == "/identity/token" {
-		exp := time.Now().Add(time.Hour).Unix()
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"access_token":"tok","refresh_token":"r","token_type":"Bearer","expires_in":3600,"expiration":%d}`, exp)
-		return
-	}
-	f.authSeen = append(f.authSeen, r.Header.Get("Authorization"))
-	f.instances = append(f.instances, r.Header.Get("ibm-service-instance-id"))
-	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)
-	bucket := parts[0]
-	key := ""
-	if len(parts) == 2 {
-		key = parts[1]
-	}
-	notFound := func(code string) {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `<Error><Code>%s</Code><Message>nope</Message></Error>`, code)
-	}
-	switch {
-	case bucket == "" && r.Method == http.MethodGet:
-		var names []string
-		for b := range f.buckets {
-			names = append(names, b)
-		}
-		sort.Strings(names)
-		fmt.Fprint(w, `<ListAllMyBucketsResult><Buckets>`)
-		for _, n := range names {
-			fmt.Fprintf(w, `<Bucket><Name>%s</Name><CreationDate>2026-01-01T00:00:00.000Z</CreationDate></Bucket>`, n)
-		}
-		fmt.Fprint(w, `</Buckets></ListAllMyBucketsResult>`)
-	case key == "" && r.Method == http.MethodHead:
-		if _, ok := f.buckets[bucket]; !ok {
-			w.WriteHeader(http.StatusNotFound)
-		}
-	case key == "" && r.Method == http.MethodPut:
-		body, _ := io.ReadAll(r.Body)
-		f.created = append(f.created, string(body))
-		f.buckets[bucket] = map[string][]byte{}
-	case key == "" && r.Method == http.MethodGet:
-		objs, ok := f.buckets[bucket]
-		if !ok {
-			notFound("NoSuchBucket")
-			return
-		}
-		prefix := r.URL.Query().Get("prefix")
-		var keys []string
-		for k := range objs {
-			if strings.HasPrefix(k, prefix) {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		fmt.Fprintf(w, `<ListBucketResult><Name>%s</Name><KeyCount>%d</KeyCount><IsTruncated>false</IsTruncated>`, bucket, len(keys))
-		for _, k := range keys {
-			fmt.Fprintf(w, `<Contents><Key>%s</Key><Size>%d</Size><LastModified>2026-09-01T10:00:00.000Z</LastModified></Contents>`, k, len(objs[k]))
-		}
-		fmt.Fprint(w, `</ListBucketResult>`)
-	case r.Method == http.MethodPut:
-		body, _ := io.ReadAll(r.Body)
-		f.buckets[bucket][key] = body
-	case r.Method == http.MethodGet:
-		b, ok := f.buckets[bucket][key]
-		if !ok {
-			notFound("NoSuchKey")
-			return
-		}
-		_, _ = w.Write(b)
-	case r.Method == http.MethodDelete:
-		delete(f.buckets[bucket], key)
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
 }
 
 func TestObjectRoundTrip(t *testing.T) {
@@ -122,8 +33,8 @@ func TestObjectRoundTrip(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("EnsureBucket new: created=%v err=%v", created, err)
 	}
-	if len(f.created) != 1 || !strings.Contains(f.created[0], "<LocationConstraint>us-south-smart</LocationConstraint>") {
-		t.Errorf("create body = %q", f.created)
+	if len(f.Created) != 1 || !strings.Contains(f.Created[0], "<LocationConstraint>us-south-smart</LocationConstraint>") {
+		t.Errorf("create body = %q", f.Created)
 	}
 	if created, err := c.EnsureBucket(ctx, "existing"); err != nil || created {
 		t.Errorf("EnsureBucket existing: created=%v err=%v", created, err)
@@ -157,9 +68,9 @@ func TestObjectRoundTrip(t *testing.T) {
 	if _, err := c.GetObject(ctx, "bnk", "far/jwt.txt"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("after delete err = %v, want ErrNotFound", err)
 	}
-	for i, a := range f.authSeen {
-		if a != "Bearer tok" {
-			t.Fatalf("request %d Authorization = %q", i, a)
+	for i, r := range f.Requests {
+		if r.Authorization != "Bearer tok" {
+			t.Fatalf("request %d Authorization = %q", i, r.Authorization)
 		}
 	}
 }
@@ -173,5 +84,95 @@ func TestNewValidates(t *testing.T) {
 	}
 	if got := Endpoint("eu-de"); got != "https://s3.eu-de.cloud-object-storage.appdomain.cloud" {
 		t.Errorf("Endpoint = %s", got)
+	}
+}
+
+func TestRegionOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"us-south-smart": "us-south", "eu-de-standard": "eu-de", "us-standard": "us", "eu-cold": "eu",
+		"ams03-vault": "ams03", "jp-tok-flex": "jp-tok", "au-syd-onerate_active": "au-syd",
+		"us-south": "us-south", "ca-tor": "ca-tor", "": "", " br-sao-smart ": "br-sao",
+	} {
+		if got := RegionOf(in); got != want {
+			t.Errorf("RegionOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A bucket in another region is found from the us-south endpoint, with its
+// region; a client for that region then reaches it, and the us-south client
+// does not (COS, and the fake, answer a wrong-region request NoSuchBucket).
+func TestFindBucketAndInRegion(t *testing.T) {
+	f, c := newFakeS3(t, "us-south", "eu-de")
+	f.AddBucket(testInstance, "far", "eu-de-smart", map[string][]byte{"k": []byte("v")})
+	f.AddBucket("someone-else", "theirs", "us-south-smart", nil)
+	ctx := context.Background()
+
+	all, err := c.ListBucketsExtended(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, b := range all {
+		got = append(got, b.Name+"@"+b.Region+"/"+b.LocationConstraint)
+	}
+	if strings.Join(got, " ") != "existing@us-south/us-south-smart far@eu-de/eu-de-smart" {
+		t.Errorf("buckets %v", got)
+	}
+	b, err := c.FindBucket(ctx, "far")
+	if err != nil || b.Region != "eu-de" {
+		t.Fatalf("FindBucket: %+v %v", b, err)
+	}
+	if _, err := c.GetObject(ctx, "far", "k"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the us-south client must not reach an eu-de bucket: %v", err)
+	}
+	eu, err := c.InRegion(b.Region)
+	if err != nil || eu.Region() != "eu-de" || eu.InstanceCRN() != testInstance {
+		t.Fatalf("InRegion: %v", err)
+	}
+	if v, err := eu.GetObject(ctx, "far", "k"); err != nil || string(v) != "v" {
+		t.Errorf("eu-de client: %q %v", v, err)
+	}
+	if same, _ := c.InRegion("us-south"); same != c {
+		t.Error("InRegion(own region) must return the client itself")
+	}
+	_, err = c.FindBucket(ctx, "theirs")
+	if !errors.Is(err, ErrBucketNotFound) || !strings.Contains(err.Error(), "existing, far") {
+		t.Errorf("another instance's bucket: %v", err)
+	}
+	for _, r := range f.Requests {
+		if r.Method == http.MethodGet && r.Path == "/" && r.Instance != testInstance {
+			t.Errorf("ListBuckets sent instance %q", r.Instance)
+		}
+	}
+}
+
+func TestExists(t *testing.T) {
+	f, c := newFakeS3(t)
+	f.AddBucket(testInstance, "b", "us-south-smart", map[string][]byte{"here": []byte("x")})
+	ctx := context.Background()
+	if ok, err := c.Exists(ctx, "b", "here"); !ok || err != nil {
+		t.Errorf("here: %v %v", ok, err)
+	}
+	if ok, err := c.Exists(ctx, "b", "gone"); ok || err != nil {
+		t.Errorf("gone: %v %v", ok, err)
+	}
+}
+
+func TestParseBucketCRN(t *testing.T) {
+	g, b, ok := ParseBucketCRN("crn:v1:bluemix:public:cloud-object-storage:global:a/acct:1234-guid:bucket:my-bucket")
+	if !ok || g != "1234-guid" || b != "my-bucket" {
+		t.Errorf("got %q %q %v", g, b, ok)
+	}
+	for _, bad := range []string{
+		"my-bucket",
+		"crn:v1:bluemix:public:cloud-object-storage:global:a/acct:1234-guid::",
+		"crn:v1:bluemix:public:kms:global:a/acct:1234-guid:bucket:my-bucket",
+		"crn:v1:bluemix:public:cloud-object-storage:global:a/acct::bucket:my-bucket",
+		"crn:v1:bluemix:public:cloud-object-storage:global:a/acct:g:object:my-bucket",
+	} {
+		if _, _, ok := ParseBucketCRN(bad); ok {
+			t.Errorf("%q parsed as a bucket CRN", bad)
+		}
 	}
 }
