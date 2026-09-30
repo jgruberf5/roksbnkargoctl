@@ -75,6 +75,12 @@ Each CLI takes that first turn in its own way:
 `--show` prints the exact command (`cd <workspace> && …`) instead of running it. Use it to
 see what would run, or to start the CLI yourself with extra flags.
 
+In the container image (`ghcr.io/jgruberf5/roksbnkargoctl`), no agent CLI is installed, so
+`agent <cli>` refuses before it scaffolds anything and points at `agent <cli> --show`,
+which works there. The printed `cd` path is the one inside the container
+(`/work/.roksbnkargoctl/<workspace>`); on the host it is `./.roksbnkargoctl/<workspace>`
+in the directory you mounted. `agent init` works in the image.
+
 `agent <cli>` refuses to start when standard output is not a terminal:
 `refusing to start <cli>: stdout is not a terminal`. An agent session needs one, and
 capturing it (`$(roksbnkargoctl agent claude)`, or a pipe) would send whatever the model

@@ -3,19 +3,46 @@
 In disconnected mode BNK licenses through an F5 License Proxy (FLP) instead of reaching F5
 directly. This chapter describes `roksbnkargoctl flp up`, `flp status` and `flp down`: what
 they build in IBM Cloud, what runs on the VSI, how its CA is handled, and how `install`
-connects BNK to it. After reading it you will be able to stand up an FLP, point an install
-at it (or at one you already run), and remove it.
+connects BNK to it. After reading it you will be able to stand up an FLP, with or without a
+workspace, point an install at it (or at one you already run), and remove it, even after
+its state file is lost.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `roksbnkargoctl flp up` | Builds the FLP VSI and its network, records everything in `flp-outputs.json` |
-| `roksbnkargoctl flp status` | Shows the instance, its status, the URL BNK uses, the floating IP and the proxy version |
-| `roksbnkargoctl flp down [-y]` | Deletes exactly what `flp up` recorded, then removes `flp-outputs.json` |
+| `roksbnkargoctl flp up` | Builds the FLP VSI and its network, and records everything in the state file (`flp-outputs.json` in the workspace) |
+| `roksbnkargoctl flp status` | Shows the instance, its status, the URL BNK uses, the floating IP, the proxy version and the state file |
+| `roksbnkargoctl flp down [-y]` | Deletes exactly what the state file records, then removes it; with the state lost, finds the resources by their exact names |
 
-None of them take command-specific flags. `flp down` asks for confirmation; pass `--yes`
-when there is no terminal.
+`flp down` asks for confirmation; pass `--yes` when there is no terminal.
+
+### Flags
+
+Every `flp.vsi` key is a flag of `flp up`, and so are where the FLP goes and where the F5
+files come from. Each overrides its key (and the key's `ROKSBNKARGOCTL_*` variable) for the
+run; none is saved.
+
+| Flag | Key it overrides | `up` | `down` | `status` |
+|---|---|---|---|---|
+| `--name` | none: the base name, default the workspace name | yes | yes | yes |
+| `--state` | none: the state file (below) | yes | yes | yes |
+| `--ca-out` | none: write the CA certificate alone to this file | yes | | |
+| `--region` | `ibmcloud.region` | yes | yes | |
+| `--resource-group` | `ibmcloud.resource_group` | yes | yes | |
+| `--transit-gateway` | `transit_gateway` | yes | yes | |
+| `--zone` | `flp.vsi.zone` | yes | yes | |
+| `--vpc` | `flp.vsi.vpc` | yes | yes | |
+| `--cidr` | `flp.vsi.cidr` | yes | | |
+| `--profile` | `flp.vsi.profile` | yes | | |
+| `--allowed-cidrs` | `flp.vsi.allowed_cidrs` (comma-separated) | yes | | |
+| `--ssh-key` | `flp.vsi.ssh_key` | yes | | |
+| `--floating-ip` | `flp.vsi.floating_ip` | yes | | |
+| `--far-auth-file`, `--jwt-file` | `cos.local_far_auth_file`, `cos.local_jwt_file` | yes | | |
+| `--cos-instance`, `--cos-bucket`, `--cos-region` | `cos.instance`, `cos.bucket`, `cos.region` | yes | | |
+| `--far-auth-object`, `--jwt-object` | `cos.far_auth_object`, `cos.jwt_object` | yes | | |
+
+`flp status` reads the region from the state file, so it needs only `--name` or `--state`.
 
 ## Configuration
 
@@ -31,14 +58,18 @@ when there is no terminal.
 | `flp.external.url` | empty | Use an FLP you already run, for example `https://10.0.0.5:8443` |
 | `flp.external.root_ca_file` | empty | PEM file of that FLP's root CA; required with `flp.external.url` |
 
-`flp up` also needs the FAR auth key and the subscription JWT (from COS or the local files
-in `cos.*`), because the VSI logs in to FAR to pull the proxy images and the proxy licenses
-with the JWT.
+`flp up` also needs the FAR auth key and the subscription JWT, because the VSI logs in to
+FAR to pull the proxy images and the proxy licenses with the JWT. Give them as local files
+(`--far-auth-file`, `--jwt-file`) or from COS (`--cos-bucket`, with `--cos-instance` unless
+it is the default `bnk-supply-chain`); see [The COS supply chain](./14-cos.md).
 
 ## What `flp up` builds
 
-All names derive from `<workspace>-flp`. Each piece is found by name before it is created,
-so a re-run after a failure reuses what exists.
+All names derive from `<name>-flp`, where `<name>` is `--name` or, by default, the
+workspace name (shown as `<ws>` below). It must be lowercase letters, digits and hyphens,
+start with a letter and be at most 42 characters, so that every resource name is valid in
+IBM Cloud. Each piece is found by name before it is created, so a re-run after a failure
+reuses what exists.
 
 | Resource | Name | Details |
 |---|---|---|
@@ -52,8 +83,12 @@ so a re-run after a failure reuses what exists.
 | Transit gateway connection | `<ws>-flp` | Attaches the FLP VPC to the cluster's transit gateway so the ROKS workers reach the FLP privately |
 
 If a step fails, the partial record is still written and `flp up` ends with
-`(partial state saved; `flp down` cleans it up)`. On success it prints the URL and notes
-that the pod takes about 5 minutes to come up.
+`(partial state saved in <state file>; `flp down` cleans it up)`. On success it prints the
+URL, the state file, and that the pod takes about 5 minutes to come up.
+
+`flp up` refuses a state file that records a different FLP (another name or region),
+rather than overwrite it and orphan that FLP's resources:
+`<state file> records license proxy <a>-flp in <region>, not <b>-flp in <region>: pass another --state, or `flp down` that one first`.
 
 ### On the VSI
 
@@ -98,13 +133,14 @@ base64 value under `prod_jwks.txt:` from its templates, checks it is a JWKS (it 
 |---|---|
 | Generated by | `flp up`, on your host |
 | Key and certificate | ECDSA P-256, CN `flp.ca`, O `F5`, valid 10 years |
-| Stored in | `<workspace>/flp-outputs.json` (`root_ca_pem`, `root_ca_key_pem`), mode 0600 |
+| Stored in | The state file (`root_ca_pem`, `root_ca_key_pem`), mode 0600 |
+| Certificate alone | Also written to `--ca-out` (default `./<name>-flp-ca.pem` without a workspace), mode 0600, for `flp.external.root_ca_file` |
 | On re-run | Reused (`keeping the CA from the previous flp up`), because BNK may already trust it |
-| After `flp down` | Gone with `flp-outputs.json`; the next `flp up` generates a new one |
+| After `flp down` | Gone with the state file (and the `--ca-out` file it recorded); the next `flp up` generates a new one |
 
-`flp-outputs.json` also records the instance, private and floating IPs, the URL
-(`https://<private-ip>:8443`), the proxy version and the id of every resource created. Treat
-it as a secret: it holds the CA private key.
+The state file also records the instance, private and floating IPs, the URL
+(`https://<private-ip>:8443`), the proxy version, the `--ca-out` path and the id of every
+resource created. Treat it as a secret: it holds the CA private key.
 
 ## How install uses the FLP
 
@@ -131,19 +167,90 @@ Instance:   <ws>-flp (0717_…) running
 URL:        https://10.248.0.4:8443   (what BNK uses)
 Floating:   <floating-ip>
 Version:    1.29.0-0.10.40
+State:      /home/you/.roksbnkargoctl/<ws>/flp-outputs.json
 Reachability from the ROKS nodes is checked by `check pre-install` on every sync.
 ```
+
+A `CA:` line follows `State:` when the CA certificate was written to a file (`--ca-out`).
 
 A disconnected install on a live cluster reached `License` state `Active` through an FLP at
 a private IP on the transit gateway.
 
+## Without a workspace
+
+Every `flp` command runs without a workspace: with `--no-workspace`, or when no workspace
+is selected. Pass `--name`, and the settings as flags or `ROKSBNKARGOCTL_*` variables:
+
+```sh
+export IBMCLOUD_API_KEY=…
+roksbnkargoctl flp up --no-workspace --name edge1 \
+  --region us-south --transit-gateway my-tgw --cidr 10.248.0.0/28 \
+  --far-auth-file f5-far-auth-key.tgz --jwt-file subscription.jwt
+```
+
+| File | Default without a workspace | With a workspace |
+|---|---|---|
+| State (`--state`): resource ids, URL, CA and CA key, mode 0600 | `./<name>-flp.json` | `<workspace>/flp-outputs.json` |
+| CA certificate (`--ca-out`), mode 0600 | `./<name>-flp-ca.pem` | none, unless `--ca-out` is given: `install` reads the CA from the state |
+
+Without a workspace, `--name` is required (`flp status` and `flp down` also accept
+`--state` alone). Keep the state file: it holds the CA private key, a re-run of `flp up`
+reuses that CA, and `flp down` deletes what it records.
+
+When `flp up` writes the CA certificate to a file, it ends by printing, on standard output,
+the settings that point an install at this FLP, with the CA file's absolute path:
+
+```text
+# To install against this license proxy (bnk.mode: disconnected), set in config.yaml:
+flp:
+  external:
+    url: https://10.248.0.4:8443
+    root_ca_file: /home/you/edge1-flp-ca.pem
+# or in the environment:
+export ROKSBNKARGOCTL_FLP_EXTERNAL_URL=https://10.248.0.4:8443
+export ROKSBNKARGOCTL_FLP_EXTERNAL_ROOT_CA_FILE=/home/you/edge1-flp-ca.pem
+```
+
+On Windows the last two lines are PowerShell, `$env:ROKSBNKARGOCTL_FLP_EXTERNAL_URL = '…'`,
+with the value quoted literally. An install then uses the FLP as an existing one, through
+`flp.external`.
+
 ## Teardown
 
-`flp down` reads `flp-outputs.json` and deletes, in order, waiting for each: the transit
+`flp down` reads the state file and deletes, in order, waiting for each: the transit
 gateway connection (only if `flp up` created the VPC), the instance, the floating IP, the
 subnet, the security group, the public gateway (if created) and the VPC (if created, and
-only if everything before it succeeded). It is safe to re-run. If a disconnected install still licenses
-through this FLP, uninstall it first.
+only if everything before it succeeded). Then it removes the state file and the CA file it
+recorded. It is safe to re-run. If a disconnected install still licenses through this FLP,
+uninstall it first.
+
+### When the state file is lost
+
+If the state file does not exist and you did not name one with `--state`, `flp down`
+looks the resources up by the names `flp up` gives them:
+
+```sh
+roksbnkargoctl flp down --no-workspace --name edge1 --region us-south --transit-gateway my-tgw
+```
+
+```text
+⚠ edge1-flp.json does not exist; looking for the resources `flp up` names edge1-flp*
+Found, by exact name:
+  …
+Delete these <n> resources? [y/N]:
+```
+
+It matches only the exact names (`<name>-flp-vpc`, `-subnet`, `-pgw`, `-sg`, `-fip`, the
+instance `<name>-flp` and the transit gateway connection `<name>-flp`), never a prefix or a
+near miss, in `--region` (required) and the zone (`--zone`, default `<region>-1`). The
+connection is searched on `--transit-gateway`, or on every gateway in the account when
+none is set. With `--vpc`, the FLP was built in your VPC: its subnet, security group,
+floating IP and instance are searched there, and the VPC and its gateway connection, not
+being the FLP's, are never taken. It lists what it found and asks before deleting;
+nothing found is success (`nothing named <name>-flp* in <region>`).
+
+A `--state` you named that does not exist is an error instead, since the file may simply
+be elsewhere.
 
 ## See also
 

@@ -31,23 +31,28 @@ You can confirm the whole of what Git will contain before anything is published:
 
 | Secret | Source | On the operator host | In ROKS | Elsewhere |
 |---|---|---|---|---|
-| IBM Cloud API key | you | environment only (`IBMCLOUD_API_KEY` or `IC_API_KEY`); never written | — | — |
+| IBM Cloud API key | you | environment only (`IBMCLOUD_API_KEY` or `IC_API_KEY`); never written | — | BNK Forge credential template, only if you run `forge register` |
 | Argo CD API token | you (or `argocd up`) | environment only (`ARGOCD_AUTH_TOKEN`) | — | — |
 | Git token | you | environment only (`ROKSBNKARGOCTL_GIT_TOKEN`) | — | Argo CD repository credential (`install` registers the repo) |
 | Git SSH key | you | the file at `git.ssh_key_file` (yours) | — | Argo CD repository credential |
 | Mirror password | you | environment only (`ROKSBNKARGOCTL_MIRROR_PASSWORD`) | pull Secret `mirror-secret` | — |
 | FAR auth key | MyF5 | read from COS (or `cos.local_far_auth_file`) at run time | pull Secret `far-secret` (`kubernetes.io/dockerconfigjson`) | COS object `f5-far-auth-key.tgz` |
 | Subscription JWT | MyF5 | read from COS (or `cos.local_jwt_file`) at run time | Secret `roksbnkargoctl-check/bnk-license-jwt`; `License.spec.jwt` (built in-cluster) | COS object `subscription.jwt` |
-| FLP root CA and key | `flp up` | `flp-outputs.json` (mode 0600; holds the CA private key so a re-run reuses the CA) | Secret `f5-utils/licenseserver-rootca` (certificate only) | the proxy VSI |
+| FLP root CA and key | `flp up` | the state file: `flp-outputs.json` in the workspace, or `./<name>-flp.json` without one (mode 0600; holds the CA private key so a re-run reuses the CA). The certificate alone may also be in the `--ca-out` file | Secret `f5-utils/licenseserver-rootca` (certificate only) | the proxy VSI |
 | Argo CD cluster credential | `install` | — | Secret `kube-system/roksbnkargoctl-argocd-manager-token` | Argo CD's cluster Secret on the hub |
 | Test hub admin password | `argocd up` | `argocd-hub.json` (mode 0600) | — | the test hub |
+| BNK Forge password | you | environment only (`BNK_FORGE_PASSWORD`) or a no-echo prompt; never a flag, never written | — | — |
+| ROKS admin client certificate and key | IBM Cloud | fetched in memory by `forge register` | — | the BNK Forge cluster registration |
 
 The pull Secret is created in the BNK and utils namespaces, and additionally in
 `roksbnkargoctl-check` and (when the tool installs cert-manager) `cert-manager` in
 mirror mode, because those images then come from the mirror too.
 
 Secrets are read from environment variables whose **names** are in `config.yaml`
-(`*_env` keys); an error names the variable, never the value.
+(`*_env` keys); an error names the variable, never the value. No secret has a flag or a
+`ROKSBNKARGOCTL_*` override: the overrides set the `*_env` names, never a value.
+`show` prints the variable names only. The zip `export` writes holds no Secret: it
+refuses any file of `kind: Secret`.
 
 ## Redaction
 
@@ -201,7 +206,10 @@ re-sync after a check fix would silently run the old check.
 Everything the tool writes into a workspace is owner-only: files mode `0600`,
 directories `0700`. That covers `config.yaml`, `manifests/`, `diagnostics/`,
 `flp-outputs.json`, `argocd-hub.json`, the agent scaffold, and the `current`
-workspace pointer. `config.yaml` and the output records are written atomically
+workspace pointer. Outside a workspace the same holds for the files the workspace-less
+commands write in the current directory: the FLP state and CA files, the
+`registry replicate --state` record and the `export` zip. `config.yaml` and the output
+records are written atomically
 (temporary file and rename), so a crash never leaves a half-written file. On
 Windows, POSIX modes do not apply; protect the workspace home with the directory's
 own access control.

@@ -8,12 +8,13 @@ running the same command again.
 ## Usage
 
 ```sh
-roksbnkargoctl install [--no-sync] [--timeout 1h15m0s] [-w <workspace>]
+roksbnkargoctl install [--no-sync] [--no-publish] [--timeout 1h15m0s] [-w <workspace>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--no-sync` | `false` | Create the Application but do not sync it. Sync it from the Argo CD UI, or run `install` again without the flag |
+| `--no-publish` | `false` | Do everything except push to Git (step 7). The Application syncs what you pushed yourself; see [below](#without-letting-roksbnkargoctl-push-to-git) |
 | `--timeout` | `1h15m0s` | How long to wait for the sync to finish |
 | `-w`, `--workspace` | the current workspace | Which workspace to install |
 
@@ -241,6 +242,24 @@ hook, which fails the sync if BNK does not come up.
 ![Argo CD Settings, Repositories](images/argocd/settings-repositories.png)
 
 *Settings → Repositories after step 8: the Git repository `install` added, with its connection status.*
+
+## Without letting roksbnkargoctl push to Git
+
+If roksbnkargoctl must not push to your repository, publish the Git content yourself and
+skip step 7:
+
+1. `roksbnkargoctl render`, then `roksbnkargoctl export`, which writes
+   `roksbnkargoctl-<workspace>.zip` with the files under `git.path`
+   ([chapter 7](./07-the-application.md#without-letting-roksbnkargoctl-push-to-git)).
+2. Unzip it at the root of your repository, replacing that directory's previous contents,
+   then review, commit and push to `git.branch`, through whatever process your team uses.
+3. `roksbnkargoctl install --no-publish`.
+
+`install --no-publish` runs every step except the push to Git. The Application syncs
+whatever is at `git.url`, `git.branch` and `git.path` at that moment, so the export must be
+pushed first; `install` does not compare the repository with its own render. Repeat the
+three steps after every change to `config.yaml`, or after upgrading roksbnkargoctl, since
+either can change the rendered files.
 
 ## Re-running install
 
