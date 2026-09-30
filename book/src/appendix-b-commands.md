@@ -132,6 +132,7 @@ hub](./15-test-hub.md) and [Registering with BNK Forge](./15a-forge.md).
 | `agent init` | `--force` — overwrite existing files | Scaffold the troubleshooting guide, personas and a journal directory into the workspace ([chapter 18](./18-agent.md)) |
 | `workspaces list` (alias `ws list`) | — | List workspaces; the current one is marked `*` |
 | `workspaces use <name>` (alias `ws use`) | — | Make a workspace current |
+| `workspaces delete <name>` (alias `ws delete`, `ws rm`) | `--force` | Delete a workspace's directory; refuses while it records an install, an FLP or a test hub ([Deleting a workspace](./05-workspaces-and-init.md#deleting-a-workspace)) |
 | `version` | — | Print the version and the BNK release this binary installs |
 | `self install` | `--dir <dir>` — where to copy it (default: see [chapter 4](./04-installation.md#where-it-goes-self-install)); `--force` — copy even if the running binary is already the installed one | Copy the running binary onto `PATH`. Not the BNK `install`. Refuses in the container image |
 | `self update` | `--version <vX.Y.Z>` — install that release (may go back, reinstall or take a prerelease); `--check` — list newer releases and change nothing; honours `--yes` | Replace the running binary with a release's, verified against the release's checksums. Only the archive for its own BNK release; never switches BNK releases. Updates the tool, not BNK. In the container image it refuses and names the image tag to pull; `--check` still works |

@@ -268,6 +268,9 @@ var resolveWorkspace = resolve
 
 // resolve looks everything up and records it, so render and install work from
 // recorded facts and a typo fails here rather than mid-install.
+//
+// resolve starts from a fresh record: only what install created survives a
+// re-resolve (carriedOver).
 func resolve(ctx context.Context, s *session) error {
 	c := s.cfg
 	p := s.p
@@ -275,10 +278,7 @@ func resolve(ctx context.Context, s *session) error {
 	if err != nil {
 		return err
 	}
-	r := &config.Resolved{}
-	if old := c.Resolved; old != nil {
-		r.TrustedProfileID, r.ArgoCDClusterServer, r.LastPublishedCommitSHA = old.TrustedProfileID, old.ArgoCDClusterServer, old.LastPublishedCommitSHA
-	}
+	r := carriedOver(c.Resolved)
 
 	p.step("resolving cluster %s", c.Cluster)
 	cl, err := ibmc.GetCluster(ctx, c.Cluster)
@@ -442,4 +442,17 @@ func checkGitAtInit(ctx context.Context, s *session) error {
 	}
 	p.ok("Git %s: the credential can push", c.Git.URL)
 	return nil
+}
+
+// carriedOver is what a re-resolve keeps from the old record: what install
+// created, which init cannot look up again. The transit gateway connection
+// install made was dropped before, so after `init --refresh` neither
+// `uninstall --detach-tgw` nor `workspaces delete` knew about it.
+func carriedOver(old *config.Resolved) *config.Resolved {
+	r := &config.Resolved{}
+	if old != nil {
+		r.TrustedProfileID, r.ArgoCDClusterServer, r.LastPublishedCommitSHA = old.TrustedProfileID, old.ArgoCDClusterServer, old.LastPublishedCommitSHA
+		r.TGWConnectionCreatedID = old.TGWConnectionCreatedID
+	}
+	return r
 }
