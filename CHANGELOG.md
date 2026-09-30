@@ -4,6 +4,16 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.6.3] - 2026-09-30
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Fixed
+- `install` saves the ID of the transit gateway connection and the trusted profile it
+  creates as soon as each exists. Before, a failure between creating one and the next
+  save (the wait for the connection to attach, or linking the profile) lost the ID, so
+  `uninstall --detach-tgw` and `workspaces delete` did not know about it (#28).
+
 ## [0.6.2] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.

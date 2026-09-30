@@ -544,7 +544,27 @@ func registrationCA(endpoint string, clusterCA []byte) []byte {
 // ensureClusterOnTGW attaches the cluster VPC to the transit gateway when it is
 // not already, after checking no attached VPC overlaps its prefixes (a gateway
 // silently blackholes one of two overlapping VPCs).
-func ensureClusterOnTGW(ctx context.Context, s *session, ibmc *ibm.Client) error {
+// tgwAPI is the part of the IBM Cloud client ensureClusterOnTGW uses; tests
+// substitute a fake.
+type tgwAPI interface {
+	FindConnectionForVPC(ctx context.Context, gatewayID, vpcCRN string) (*ibm.TGWConnection, error)
+	WaitConnectionAttached(ctx context.Context, gatewayID, connectionID string, timeout time.Duration) (*ibm.TGWConnection, error)
+	ListAddressPrefixes(ctx context.Context, vpcID string) ([]ibm.AddressPrefix, error)
+	GatewayAttachedPrefixes(ctx context.Context, gatewayID string) (map[string][]string, error)
+	CreateVPCConnection(ctx context.Context, gatewayID, name, vpcCRN string) (*ibm.TGWConnection, error)
+}
+
+// profileAPI is the part of the IBM Cloud client ensureTrustedProfile uses.
+type profileAPI interface {
+	FindTrustedProfileByName(ctx context.Context, name string) (*ibm.TrustedProfile, error)
+	CreateTrustedProfile(ctx context.Context, name, description string) (*ibm.TrustedProfile, error)
+	ListProfileLinks(ctx context.Context, profileID string) ([]ibm.ProfileLink, error)
+	LinkROKSServiceAccount(ctx context.Context, profileID, clusterCRN, namespace, saName, linkName string) (string, error)
+	ListProfilePolicies(ctx context.Context, profileID string) ([]string, error)
+	CreatePolicy(ctx context.Context, profileID string, roles []string, attrs []ibm.PolicyAttribute) (string, error)
+}
+
+func ensureClusterOnTGW(ctx context.Context, s *session, ibmc tgwAPI) error {
 	r, p := s.cfg.Resolved, s.p
 	conn, err := ibmc.FindConnectionForVPC(ctx, r.TransitGatewayID, r.VPCCRN)
 	if err == nil && conn != nil {
@@ -583,11 +603,16 @@ func ensureClusterOnTGW(ctx context.Context, s *session, ibmc *ibm.Client) error
 	if err != nil {
 		return err
 	}
+	// Recorded and saved before the wait (#28): if attaching fails or times
+	// out, uninstall --detach-tgw and workspaces delete still know about it.
+	r.TGWConnectionCreatedID = nc.ID
+	if err := s.save(); err != nil {
+		return fmt.Errorf("created transit gateway connection %s but could not record it: %w", nc.ID, err)
+	}
 	if _, err := ibmc.WaitConnectionAttached(ctx, r.TransitGatewayID, nc.ID, 10*time.Minute); err != nil {
 		return err
 	}
 	r.ClusterAttachedToTGW = true
-	r.TGWConnectionCreatedID = nc.ID
 	p.ok("attached (connection %s)", nc.ID)
 	return nil
 }
@@ -601,7 +626,7 @@ func trustedProfileName(c *config.Config) string {
 // ensureTrustedProfile creates the IAM trusted profile the 2.4 CNE controller
 // uses to program VPC routes: linked to ServiceAccount <ns>/f5-cne-controller in
 // this cluster, Viewer+Editor on the cluster's VPC and Viewer on the cluster.
-func ensureTrustedProfile(ctx context.Context, s *session, ibmc *ibm.Client) error {
+func ensureTrustedProfile(ctx context.Context, s *session, ibmc profileAPI) error {
 	c, p := s.cfg, s.p
 	r := c.Resolved
 	name := trustedProfileName(c)
@@ -615,7 +640,14 @@ func ensureTrustedProfile(ctx context.Context, s *session, ibmc *ibm.Client) err
 			return err
 		}
 	}
-	r.TrustedProfileID = tp.ID
+	// Recorded and saved before linking and policies (#28): if one of those
+	// fails, uninstall and workspaces delete still know about the profile.
+	if r.TrustedProfileID != tp.ID {
+		r.TrustedProfileID = tp.ID
+		if err := s.save(); err != nil {
+			return fmt.Errorf("trusted profile %s exists but could not be recorded: %w", tp.ID, err)
+		}
+	}
 	links, err := ibmc.ListProfileLinks(ctx, tp.ID)
 	if err != nil {
 		return err
