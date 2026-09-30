@@ -297,14 +297,19 @@ func runFLPUp(ctx context.Context, s *session, o *flpOpts, stdout io.Writer) err
 	if rec.PrivateIP != "" {
 		out.URL = flp.URL(rec.PrivateIP)
 	}
-	if caPath != "" {
-		if err := config.WriteFileAtomic(caPath, ca.CertPEM, 0o600); err != nil {
-			return err
-		}
-		out.CAFile = caPath
-	}
+	// The state first: it records what Provision built (#28's class of bug:
+	// a failed CA write returned before it, losing every resource ID).
 	if err := writeJSON(statePath, out); err != nil {
 		return err
+	}
+	if caPath != "" {
+		if err := config.WriteFileAtomic(caPath, ca.CertPEM, 0o600); err != nil {
+			return fmt.Errorf("writing the CA to %s: %w (the license proxy is recorded in %s)", caPath, err, statePath)
+		}
+		out.CAFile = caPath
+		if err := writeJSON(statePath, out); err != nil {
+			return err
+		}
 	}
 	if perr != nil {
 		return fmt.Errorf("%w (partial state saved in %s; `flp down` cleans it up)", perr, statePath)
