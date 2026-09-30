@@ -148,7 +148,7 @@ func TestCLIImageSetsTheMarkerAndStampsTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Join continuation lines, so ENV A=… \ B=… reads as one instruction.
-	df := strings.ReplaceAll(string(b), "\\\n", " ")
+	df := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\\\n", " ")
 	if !regexp.MustCompile(`(?m)^ENV\b.*\b` + containerEnv + `=1\b`).MatchString(df) {
 		t.Errorf("build/cli/Dockerfile does not set ENV %s=1", containerEnv)
 	}
@@ -183,7 +183,7 @@ func TestEveryDockerfileBuildsForTheTargetPlatform(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		df := strings.ReplaceAll(string(b), "\\\n", " ")
+		df := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\\\n", " ")
 		if m := regexp.MustCompile(`(?m)^ARG\s+TARGET(OS|ARCH|PLATFORM)\s*=.*$`).FindString(df); m != "" {
 			t.Errorf("%s gives a platform ARG a default (%q)", f, m)
 		}
