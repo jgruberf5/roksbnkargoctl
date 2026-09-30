@@ -324,6 +324,9 @@ which need no kubectl or oc.`,
 				fmt.Fprintf(cmd.OutOrStdout(), "cd %s && %s\n", agent.Show([]string{ws.Dir}), agent.Show(argv))
 				return nil
 			}
+			if inContainerImage() {
+				return errAgentInContainer(args[0])
+			}
 			if _, err := os.Stat(filepath.Join(ws.Dir, "AGENTS.md")); err != nil {
 				if _, err := agent.Init(ws.Dir, false); err != nil {
 					return err

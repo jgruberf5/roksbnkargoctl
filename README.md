@@ -34,6 +34,23 @@ updates the tool in place, for the same BNK version; it does not upgrade BNK.
 Or build it from the repository: `make build && ./bin/roksbnkargoctl self install`
 (Go 1.26).
 
+Or run it with only Docker, from `ghcr.io/jgruberf5/roksbnkargoctl` (`:vX.Y.Z` and
+`:latest` per release, `:dev` from main; linux/amd64 and arm64). The current directory
+becomes the container's home, so workspaces land in `./.roksbnkargoctl`, owned by you,
+and files the config names (F5 tarball, JWT, SSH key, CA files) are given as paths
+under it. Secrets pass through from your environment with `-e NAME`:
+
+```sh
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  -e IBMCLOUD_API_KEY -e ARGOCD_AUTH_TOKEN -e ROKSBNKARGOCTL_GIT_TOKEN \
+  ghcr.io/jgruberf5/roksbnkargoctl:latest init --config-file config.yaml
+```
+
+In the image, `self install` and `self update` refuse (pull a newer tag instead;
+`self update --check` still reports releases), and `agent <cli>` has no agent CLI to
+start (`agent <cli> --show` prints the command for the host). Behind a TLS-intercepting
+proxy, add its CA with `-v /path/to/proxy-ca.pem:/etc/ssl/certs/proxy-ca.pem:ro`.
+
 Or download the archive for your platform from
 [Releases](https://github.com/jgruberf5/roksbnkargoctl/releases). Each binary installs
 one BNK release, and its name says which:

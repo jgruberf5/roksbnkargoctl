@@ -5,8 +5,9 @@ LDFLAGS := -s -w -X github.com/jgruberf5/roksbnkargoctl/internal/cli.Version=$(V
 	-X github.com/jgruberf5/roksbnkargoctl/internal/cli.Commit=$(COMMIT) \
 	-X github.com/jgruberf5/roksbnkargoctl/internal/cli.BuildDate=$(DATE)
 CHECK_IMAGE ?= ghcr.io/jgruberf5/roksbnkargoctl-check
+CLI_IMAGE   ?= ghcr.io/jgruberf5/roksbnkargoctl
 
-.PHONY: build check-binary check-image test vet fmt staticcheck verify far-test book book-pdf
+.PHONY: build check-binary check-image cli-image test vet fmt staticcheck verify far-test book book-pdf
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/roksbnkargoctl ./cmd/roksbnkargoctl
 
@@ -15,6 +16,15 @@ check-binary:
 
 check-image:
 	docker build -f build/check/Dockerfile --build-arg VERSION=$(VERSION) -t $(CHECK_IMAGE):$(VERSION) .
+
+# roksbnkargoctl itself as an image (what .github/workflows/cli-image.yml publishes).
+# EXTRA_CA=corp-ca.pem trusts a TLS-intercepting proxy's CA for the module
+# download only (a build secret, never baked into the image).
+comma := ,
+cli-image:
+	docker build -f build/cli/Dockerfile --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) $(if $(EXTRA_CA),--secret id=extra_ca$(comma)src=$(EXTRA_CA)) \
+		-t $(CLI_IMAGE):$(VERSION) .
 
 test:
 	go test -race ./...
