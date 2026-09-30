@@ -49,7 +49,8 @@ output of ` + "`roksbnkargoctl export`" + ` yourself first. install then compare
 Application would sync (Argo CD reads git.url, git.branch, git.path) with this
 workspace's render, refuses to sync if they differ, and otherwise syncs exactly
 the revision it compared. With no Git token or SSH key set, Argo CD reads the
-repository anonymously (a public repository, or one already registered in it).
+repository with the credential already registered in it, or anonymously, and step
+1 asks Argo CD, not your machine, whether it can read git.branch.
 
 The sync runs the pre-install check in ROKS first; nothing of BNK is applied if
 it fails.`,
@@ -93,7 +94,13 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	p.ok("Argo CD %s at %s", v, c.ArgoCD.Server)
 	// Git access, before anything changes (#18): push rights for a normal
 	// install, read access and the branch for --no-publish.
-	if err := checkGitAccess(ctx, p, c, gitOpts, !noPublish, noPublish); err != nil {
+	if noPublish && gitOpts.Token == "" && len(gitOpts.SSHKeyPEM) == 0 {
+		// No local credential: Argo CD reads the repository with its own
+		// registration, so ask Argo CD rather than reading anonymously from here.
+		if err := checkGitThroughArgoCD(ctx, p, c, ac); err != nil {
+			return err
+		}
+	} else if err := checkGitAccess(ctx, p, c, gitOpts, !noPublish, noPublish); err != nil {
 		return err
 	}
 

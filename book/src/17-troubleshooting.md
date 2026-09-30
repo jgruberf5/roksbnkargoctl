@@ -102,7 +102,8 @@ push rights and a missing credential are only warnings, because the `export` and
 | `git: cannot read <url>: …` / `git: cannot push to <url>: …` | Anything else: unreachable host, TLS, an SSH host-key failure (below) | Read the quoted cause |
 | `git: <url> has no branch <branch>: push the export there first (roksbnkargoctl export)` | `install --no-publish`, and `git.branch` does not exist yet | Push the export to that branch first |
 | `no Git credential: Git token: set the environment variable ROKSBNKARGOCTL_GIT_TOKEN` | `install` without `--no-publish` and no credential set | Set the token, or `git.ssh_key_file` |
-| `gitpub: an ssh URL needs SSHKeyPEM` | A `git@…` URL without `git.ssh_key_file` (for example `install --no-publish` with no credential) | Set `git.ssh_key_file`, or use the `https://` URL |
+| `gitpub: an ssh URL needs SSHKeyPEM` | A `git@…` URL without `git.ssh_key_file` | Set `git.ssh_key_file`, or use the `https://` URL |
+| `git: no Git credential is set here, and Argo CD cannot read <url> with its own registration: …` | `install --no-publish` with no credential: the repository is private and not registered in Argo CD (Argo CD says `authentication required` or, for SSH, that it has no key) | Register the repository in Argo CD, or set the token variable or `git.ssh_key_file` |
 
 At `init` the warnings read `⚠ no Git credential ($ROKSBNKARGOCTL_GIT_TOKEN or
 git.ssh_key_file): install needs one to push, unless you commit `roksbnkargoctl export`
@@ -124,8 +125,8 @@ contents, push, and run `install --no-publish` again. Nothing was synced.
 <branch>:<path>: … (was the export pushed there?)`** (`install --no-publish`). Argo CD
 itself cannot produce manifests from that location: the path does not exist on the
 branch, or Argo CD has no access to the repository. With no Git credential set, `install`
-leaves Argo CD's repository registration as it is, so a private repository must already
-be registered in Argo CD with a credential.
+leaves Argo CD's repository registration as it is and checks at step 1 that Argo CD can
+read the branch, so this usually means the path is wrong.
 
 **`refusing to attach: the cluster VPC overlaps VPCs already on <gateway>`.** A
 transit gateway silently blackholes one of two overlapping VPCs, so `install`

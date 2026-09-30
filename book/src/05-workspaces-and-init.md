@@ -297,7 +297,7 @@ nothing is saved.
 | The repository cannot be read (not found, no access, unreachable) | Error; nothing is saved |
 | It can be read but the credential may not push | Warning: `… install will fail at the push; fix the credential, or commit `roksbnkargoctl export` yourself and run install --no-publish` |
 | No credential is set | Warning: `no Git credential ($ROKSBNKARGOCTL_GIT_TOKEN or git.ssh_key_file): install needs one to push, unless you commit `roksbnkargoctl export` yourself and run install --no-publish`. `init` then tries to read the repository anonymously, and only warns if it cannot, since Argo CD may have its own credential for it |
-| It can be read and pushed to | `✓ Git <url>: readable, branch <branch> present`, then `✓ Git <url>: the credential can push` |
+| It can be read and pushed to | `✓ Git <url>: readable, branch <branch> present` (or `readable; no branch <branch> yet`, or `readable, and empty`), then `✓ Git <url>: the credential can push` |
 
 Push rights are only a warning at `init` because the [export and
 `install --no-publish`](./08-install.md#without-letting-roksbnkargoctl-push-to-git) flow

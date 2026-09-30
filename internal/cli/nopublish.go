@@ -166,8 +166,35 @@ func checkGitAccess(ctx context.Context, p printer, c *config.Config, o gitpub.O
 		p.ok("Git %s is empty; the first push creates %s", c.Git.URL, branch)
 	case write:
 		p.ok("Git %s: the credential can push", c.Git.URL)
-	default:
+	case a.HasBranch:
 		p.ok("Git %s: readable, branch %s present", c.Git.URL, branch)
+	case a.Empty:
+		p.ok("Git %s: readable, and empty", c.Git.URL)
+	default:
+		p.ok("Git %s: readable; no branch %s yet", c.Git.URL, branch)
 	}
 	return nil
+}
+
+// branchLister is the part of the Argo CD client checkGitThroughArgoCD uses.
+type branchLister interface {
+	RepositoryBranches(ctx context.Context, repoURL, project string) ([]string, error)
+}
+
+// checkGitThroughArgoCD is install --no-publish's Git check when the operator
+// holds no Git credential: Argo CD must read the repository with the
+// credential registered in it (or anonymously), and git.branch must exist.
+func checkGitThroughArgoCD(ctx context.Context, p printer, c *config.Config, ac branchLister) error {
+	branch := firstOf(c.Git.Branch, "main")
+	branches, err := ac.RepositoryBranches(ctx, c.Git.URL, c.ArgoCD.Project)
+	if err != nil {
+		return fmt.Errorf("git: no Git credential is set here, and Argo CD cannot read %s with its own registration: %w\n  register the repository in Argo CD, or set $%s or git.ssh_key_file", c.Git.URL, err, firstOf(c.Git.TokenEnv, "ROKSBNKARGOCTL_GIT_TOKEN"))
+	}
+	for _, b := range branches {
+		if b == branch {
+			p.ok("Git %s: Argo CD reads it, branch %s present", c.Git.URL, branch)
+			return nil
+		}
+	}
+	return fmt.Errorf("git: %s has no branch %s: push the export there first (roksbnkargoctl export)", c.Git.URL, branch)
 }

@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/gitpub"
@@ -180,4 +184,76 @@ func TestCheckGitAccessNeedsTheBranchForNoPublish(t *testing.T) {
 
 func gitOptsFor(c *config.Config) gitpub.Options {
 	return gitpub.Options{URL: c.Git.URL, Branch: c.Git.Branch}
+}
+
+// init's read-only check says what it saw: the branch present, the repo empty,
+// or no such branch yet. It used to say "branch present" for all three.
+func TestCheckGitAccessReportsWhatItSaw(t *testing.T) {
+	populated := t.TempDir()
+	r, err := git.PlainInit(populated, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(populated, "/") {
+		t.Skip("file:// URL form below assumes a Unix path")
+	}
+	if err := writeFile(filepath.Join(populated, "f"), "x"); err != nil {
+		t.Fatal(err)
+	}
+	wt, _ := r.Worktree()
+	if _, err := wt.Add("f"); err != nil {
+		t.Fatal(err)
+	}
+	sig := &object.Signature{Name: "t", Email: "t@example.com", When: time.Unix(0, 0)}
+	if _, err := wt.Commit("c", &git.CommitOptions{Author: sig}); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	if _, err := git.PlainInit(empty, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dir, branch, want string }{
+		{populated, "master", "readable, branch master present"},
+		{populated, "main", "readable; no branch main yet"},
+		{empty, "main", "readable, and empty"},
+	} {
+		c := &config.Config{Git: config.Git{URL: "file://" + tc.dir, Branch: tc.branch}}
+		s, out := initSession(c)
+		if err := checkGitAccess(context.Background(), s.p, c, gitOptsFor(c), false, false); err != nil {
+			t.Fatalf("%s %s: %v", tc.dir, tc.branch, err)
+		}
+		if !strings.Contains(out.String(), tc.want) {
+			t.Errorf("branch %s: got %q, want %q", tc.branch, out.String(), tc.want)
+		}
+	}
+}
+
+type fakeBranches struct {
+	branches []string
+	err      error
+}
+
+func (f fakeBranches) RepositoryBranches(context.Context, string, string) ([]string, error) {
+	return f.branches, f.err
+}
+
+// install --no-publish with no local credential asks Argo CD, which reads the
+// repository with its own registration, instead of failing an anonymous read.
+func TestCheckGitThroughArgoCD(t *testing.T) {
+	c := &config.Config{Git: config.Git{URL: "git@example.com:o/r.git", Branch: "main"}}
+	s, out := initSession(c)
+	if err := checkGitThroughArgoCD(context.Background(), s.p, c, fakeBranches{branches: []string{"dev", "main"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Argo CD reads it, branch main present") {
+		t.Errorf("output %q", out.String())
+	}
+	err := checkGitThroughArgoCD(context.Background(), s.p, c, fakeBranches{branches: []string{"dev"}})
+	if err == nil || !strings.Contains(err.Error(), "has no branch main") {
+		t.Errorf("missing branch: %v", err)
+	}
+	err = checkGitThroughArgoCD(context.Background(), s.p, c, fakeBranches{err: errors.New("authentication required")})
+	if err == nil || !strings.Contains(err.Error(), "Argo CD cannot read") || !strings.Contains(err.Error(), "authentication required") {
+		t.Errorf("unreadable: %v", err)
+	}
 }

@@ -80,6 +80,7 @@ and SSH host-key verification as the push in step 7):
 |---|---|---|
 | `install` | The credential may **push** to `git.url`. `install` asks for the ref list a push starts with (the `git-receive-pack` advertisement), which Git hosts serve only to a credential allowed to push. Nothing is pushed | `✓ Git <url>: the credential can push`, or `✓ Git <url> is empty; the first push creates <branch>` |
 | `install --no-publish` | The repository can be **read** (the clone advertisement), and `git.branch` exists in it, since the Application syncs what is already there | `✓ Git <url>: readable, branch <branch> present` |
+| `install --no-publish`, no Git credential set | **Argo CD** can read the repository, with the credential registered in it or anonymously, and lists `git.branch` among its branches (`GET /api/v1/repositories/{repo}/refs`, tried with `argocd.project` first) | `✓ Git <url>: Argo CD reads it, branch <branch> present` |
 
 A failure stops the install with nothing changed, for example:
 
@@ -90,9 +91,9 @@ git: https://… has no branch main: push the export there first (roksbnkargoctl
 ```
 
 The [troubleshooting guide](./17-troubleshooting.md#before-the-sync-init-render-install)
-lists every message. With `--no-publish` and no Git credential set, the check reads the
-repository anonymously, so it must be readable without one (an `https://` URL; an SSH
-URL always needs `git.ssh_key_file`).
+lists every message. With `--no-publish` and no Git credential set, the check is made by
+Argo CD, not from your machine: a private repository only needs to be registered in Argo
+CD with its own credential, and you need none.
 
 ### 2. Transit gateway attachment
 
