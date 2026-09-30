@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,13 @@ Secrets are never asked for or stored. Set them in the environment:
 func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 	ctx := cmd.Context()
 	p := out(cmd)
+	if flagNoWorkspace {
+		return errors.New("init creates a workspace: drop --no-workspace")
+	}
+	ovs, err := commandOverrides(cmd)
+	if err != nil {
+		return err
+	}
 	name := flagWorkspace
 	if name == "" {
 		name = os.Getenv("ROKSBNKARGOCTL_WORKSPACE")
@@ -89,11 +97,18 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 		}
 	}
 	c.Defaults(name)
-	if err := c.Validate(); err != nil {
+	// c is what config.yaml will hold. The overrides apply on top of it for the
+	// validation and the lookups, and are never saved: resolved is recorded
+	// for the effective settings, so the same overrides must be set for later
+	// commands (resolved() refuses a cluster/gateway override it does not match).
+	s, err := buildSession(p, ws, name, c, ovs)
+	if err != nil {
 		return err
 	}
-	s := &session{ws: ws, cfg: c, p: p}
-	if err := resolve(ctx, s); err != nil {
+	if err := s.cfg.Validate(); err != nil {
+		return err
+	}
+	if err := resolveWorkspace(ctx, s); err != nil {
 		return err
 	}
 	if err := s.save(); err != nil {
@@ -103,6 +118,11 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 		return err
 	}
 	p.ok("workspace %q saved to %s", name, ws.ConfigPath())
+	for _, o := range ovs {
+		if s.overridden(o.Key.Path) {
+			p.warn("%s: %s was used but not saved (config.yaml keeps its own value)", o.Source, o.Key.Path)
+		}
+	}
 	p.info("next: roksbnkargoctl render   (then review %s)", ws.ManifestsDir())
 	return nil
 }
@@ -226,6 +246,9 @@ func firstOf(vals ...string) string {
 	}
 	return ""
 }
+
+// resolveWorkspace is resolve; tests substitute a fake that needs no IBM Cloud.
+var resolveWorkspace = resolve
 
 // resolve looks everything up and records it, so render and install work from
 // recorded facts and a typo fails here rather than mid-install.

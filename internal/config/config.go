@@ -32,10 +32,14 @@ const (
 )
 
 // Config is config.yaml. Field names are the YAML keys an operator writes.
+//
+// Every leaf setting carries a `help` tag and, unless tagged `override:"-"`,
+// can be overridden by ROKSBNKARGOCTL_<KEY_PATH> and by a command flag bound
+// to it (see Keys). Resolved is machine state, not a setting: it has neither.
 type Config struct {
 	IBMCloud       IBMCloud  `yaml:"ibmcloud"`
-	Cluster        string    `yaml:"cluster"`
-	TransitGateway string    `yaml:"transit_gateway"`
+	Cluster        string    `yaml:"cluster" help:"name or id of the existing ROKS cluster"`
+	TransitGateway string    `yaml:"transit_gateway" help:"name or id of the existing transit gateway"`
 	BNK            BNK       `yaml:"bnk"`
 	Registry       Registry  `yaml:"registry"`
 	COS            COS       `yaml:"cos"`
@@ -50,59 +54,62 @@ type Config struct {
 // IBMCloud selects the account context. The key itself is only ever read from the
 // environment variable named by APIKeyEnv.
 type IBMCloud struct {
-	Region        string `yaml:"region"`
-	ResourceGroup string `yaml:"resource_group,omitempty"`
-	APIKeyEnv     string `yaml:"api_key_env,omitempty"`
+	Region        string `yaml:"region" help:"IBM Cloud region of the ROKS cluster"`
+	ResourceGroup string `yaml:"resource_group,omitempty" help:"resource group name or id"`
+	APIKeyEnv     string `yaml:"api_key_env,omitempty" help:"environment variable holding the IBM Cloud API key"`
 }
 
 // BNK is the install shape. Everything not listed here is fixed by DESIGN.md.
 type BNK struct {
-	Version        string `yaml:"version"`
-	Mode           string `yaml:"mode"`
-	TMMReplicas    int    `yaml:"tmm_replicas,omitempty"`
-	Namespace      string `yaml:"namespace,omitempty"`
-	UtilsNamespace string `yaml:"utils_namespace,omitempty"`
+	// Version has no environment or flag override: this build accepts exactly
+	// one value, and ROKSBNKARGOCTL_BNK_VERSION already means "which BNK line's
+	// binary to download" to install.sh and install.ps1.
+	Version        string `yaml:"version" help:"BNK release; only this build's release is accepted" override:"-"`
+	Mode           string `yaml:"mode" help:"connected or disconnected"`
+	TMMReplicas    int    `yaml:"tmm_replicas,omitempty" help:"TMM replicas"`
+	Namespace      string `yaml:"namespace,omitempty" help:"namespace BNK is installed into"`
+	UtilsNamespace string `yaml:"utils_namespace,omitempty" help:"namespace for the BNK utilities"`
 	// CertManager: install the pinned cert-manager (default) or adopt an existing one.
 	CertManager CertManager `yaml:"cert_manager,omitempty"`
 	// NADAddress is the static address on the ens3 ipvlan attachment (roksbnkctl default).
-	NADAddress string `yaml:"nad_address,omitempty"`
+	NADAddress string `yaml:"nad_address,omitempty" help:"static address on the ens3 ipvlan attachment"`
 	// StorageClass for BNK components that request one; empty uses the default class.
-	StorageClass string `yaml:"storage_class,omitempty"`
+	StorageClass string `yaml:"storage_class,omitempty" help:"StorageClass for BNK volumes; empty uses the default class"`
 }
 
 // CertManager controls the cert-manager dependency.
 type CertManager struct {
-	Install *bool  `yaml:"install,omitempty"`
-	Version string `yaml:"version,omitempty"`
+	Install *bool  `yaml:"install,omitempty" help:"install the pinned cert-manager (false adopts an existing one)"`
+	Version string `yaml:"version,omitempty" help:"cert-manager version"`
 }
 
 // Registry says where ROKS pulls BNK images from.
 type Registry struct {
-	Source string `yaml:"source"`
+	Source string `yaml:"source" help:"where ROKS pulls BNK images from: far or mirror"`
 	// FARHost is FAR's registry host.
-	FARHost string `yaml:"far_host,omitempty"`
+	FARHost string `yaml:"far_host,omitempty" help:"FAR registry host"`
 	Mirror  Mirror `yaml:"mirror,omitempty"`
 }
 
 // Mirror is a replicated private registry (Harbor, Artifactory, registry:2, ICR).
 type Mirror struct {
-	Host        string `yaml:"host,omitempty"`
-	Prefix      string `yaml:"prefix,omitempty"`
-	Username    string `yaml:"username,omitempty"`
-	PasswordEnv string `yaml:"password_env,omitempty"`
-	CAFile      string `yaml:"ca_file,omitempty"`
+	Host        string `yaml:"host,omitempty" help:"mirror registry host[:port]"`
+	Prefix      string `yaml:"prefix,omitempty" help:"repository prefix under the mirror host"`
+	Username    string `yaml:"username,omitempty" help:"mirror registry username"`
+	PasswordEnv string `yaml:"password_env,omitempty" help:"environment variable holding the mirror password"`
+	CAFile      string `yaml:"ca_file,omitempty" help:"PEM file with the mirror registry CA"`
 }
 
 // COS locates the FAR auth tarball and the subscription JWT. LocalFARAuthFile /
 // LocalJWTFile bypass COS for operators who hold the files directly.
 type COS struct {
-	Instance         string `yaml:"instance,omitempty"`
-	Bucket           string `yaml:"bucket,omitempty"`
-	Region           string `yaml:"region,omitempty"`
-	FARAuthObject    string `yaml:"far_auth_object,omitempty"`
-	JWTObject        string `yaml:"jwt_object,omitempty"`
-	LocalFARAuthFile string `yaml:"local_far_auth_file,omitempty"`
-	LocalJWTFile     string `yaml:"local_jwt_file,omitempty"`
+	Instance         string `yaml:"instance,omitempty" help:"COS instance name"`
+	Bucket           string `yaml:"bucket,omitempty" help:"COS bucket"`
+	Region           string `yaml:"region,omitempty" help:"COS bucket region"`
+	FARAuthObject    string `yaml:"far_auth_object,omitempty" help:"object key of the FAR auth tarball"`
+	JWTObject        string `yaml:"jwt_object,omitempty" help:"object key of the subscription JWT"`
+	LocalFARAuthFile string `yaml:"local_far_auth_file,omitempty" help:"local FAR auth tarball, instead of COS"`
+	LocalJWTFile     string `yaml:"local_jwt_file,omitempty" help:"local subscription JWT file, instead of COS"`
 }
 
 // FLP is the F5 License Proxy for disconnected mode. Either `flp up` builds a VSI
@@ -114,68 +121,68 @@ type FLP struct {
 
 // FLPVSI parameterises `flp up`.
 type FLPVSI struct {
-	Zone         string   `yaml:"zone,omitempty"`
-	VPC          string   `yaml:"vpc,omitempty"` // existing VPC name/id; empty creates one
-	CIDR         string   `yaml:"cidr,omitempty"`
-	Profile      string   `yaml:"profile,omitempty"`
-	AllowedCIDRs []string `yaml:"allowed_cidrs,omitempty"` // may reach :8443
-	SSHKey       string   `yaml:"ssh_key,omitempty"`       // existing VPC SSH key name
-	FloatingIP   *bool    `yaml:"floating_ip,omitempty"`
+	Zone         string   `yaml:"zone,omitempty" help:"zone for the license proxy VSI (default <region>-1)"`
+	VPC          string   `yaml:"vpc,omitempty" help:"existing VPC name or id; empty creates one"` // existing VPC name/id; empty creates one
+	CIDR         string   `yaml:"cidr,omitempty" help:"address prefix for the license proxy subnet (a /24 to /28)"`
+	Profile      string   `yaml:"profile,omitempty" help:"license proxy VSI profile"`
+	AllowedCIDRs []string `yaml:"allowed_cidrs,omitempty" help:"CIDRs allowed to reach the proxy on :8443 (comma-separated)"` // may reach :8443
+	SSHKey       string   `yaml:"ssh_key,omitempty" help:"existing VPC SSH key name for the license proxy"`                   // existing VPC SSH key name
+	FloatingIP   *bool    `yaml:"floating_ip,omitempty" help:"give the license proxy VSI a floating IP"`
 }
 
 // FLPExternal points at an FLP this tool did not build.
 type FLPExternal struct {
-	URL        string `yaml:"url,omitempty"`
-	RootCAFile string `yaml:"root_ca_file,omitempty"`
+	URL        string `yaml:"url,omitempty" help:"URL of an existing license proxy (https://<ip>:8443)"`
+	RootCAFile string `yaml:"root_ca_file,omitempty" help:"PEM file with the existing license proxy's root CA"`
 }
 
 // ArgoCD is the customer's existing, external Argo CD.
 type ArgoCD struct {
-	Server      string `yaml:"server"`
-	TokenEnv    string `yaml:"token_env,omitempty"`
-	Insecure    bool   `yaml:"insecure,omitempty"`
-	CAFile      string `yaml:"ca_file,omitempty"`
-	Project     string `yaml:"project,omitempty"`
-	Application string `yaml:"application,omitempty"`
+	Server      string `yaml:"server" help:"https URL of the Argo CD"`
+	TokenEnv    string `yaml:"token_env,omitempty" help:"environment variable holding the Argo CD API token"`
+	Insecure    bool   `yaml:"insecure,omitempty" help:"skip TLS verification of the Argo CD"`
+	CAFile      string `yaml:"ca_file,omitempty" help:"PEM file with the Argo CD CA"`
+	Project     string `yaml:"project,omitempty" help:"Argo CD project"`
+	Application string `yaml:"application,omitempty" help:"Argo CD Application name"`
 	// ClusterEndpoint selects the ROKS API endpoint Argo CD dials: private (over the
 	// transit gateway, default) or public.
-	ClusterEndpoint string `yaml:"cluster_endpoint,omitempty"`
+	ClusterEndpoint string `yaml:"cluster_endpoint,omitempty" help:"ROKS endpoint Argo CD dials: private or public"`
 }
 
 // Git is the customer repo Argo CD syncs from.
 type Git struct {
-	URL        string `yaml:"url"`
-	Branch     string `yaml:"branch,omitempty"`
-	Path       string `yaml:"path,omitempty"`
-	Username   string `yaml:"username,omitempty"`
-	TokenEnv   string `yaml:"token_env,omitempty"`
-	SSHKeyFile string `yaml:"ssh_key_file,omitempty"`
+	URL        string `yaml:"url" help:"Git repo Argo CD syncs from"`
+	Branch     string `yaml:"branch,omitempty" help:"Git branch"`
+	Path       string `yaml:"path,omitempty" help:"path inside the Git repo"`
+	Username   string `yaml:"username,omitempty" help:"Git username for https"`
+	TokenEnv   string `yaml:"token_env,omitempty" help:"environment variable holding the Git token"`
+	SSHKeyFile string `yaml:"ssh_key_file,omitempty" help:"SSH private key file for a git@ URL"`
 	// KnownHostsFile holds SSH host keys for a Git server other than
 	// github.com, gitlab.com and bitbucket.org (whose verified keys are built
 	// in). It is also given to Argo CD so its clone verifies the same host.
-	KnownHostsFile string `yaml:"known_hosts_file,omitempty"`
-	AuthorName     string `yaml:"author_name,omitempty"`
-	AuthorEmail    string `yaml:"author_email,omitempty"`
+	KnownHostsFile string `yaml:"known_hosts_file,omitempty" help:"known_hosts file for a Git host other than github.com, gitlab.com or bitbucket.org"`
+	AuthorName     string `yaml:"author_name,omitempty" help:"Git commit author name"`
+	AuthorEmail    string `yaml:"author_email,omitempty" help:"Git commit author email"`
 }
 
 // Check pins the check image.
 type Check struct {
-	Image string `yaml:"image,omitempty"`
+	Image string `yaml:"image,omitempty" help:"check image (default: this build's)"`
 }
 
 // TestHub parameterises `argocd up`, the test Argo CD VSI.
 type TestHub struct {
-	Region       string `yaml:"region,omitempty"`
-	Zone         string `yaml:"zone,omitempty"`
-	CIDR         string `yaml:"cidr,omitempty"`
-	Profile      string `yaml:"profile,omitempty"`
-	Version      string `yaml:"version,omitempty"`
-	AllowedCIDR  string `yaml:"allowed_cidr,omitempty"`
-	SSHKey       string `yaml:"ssh_key,omitempty"`
-	NodePort     int    `yaml:"node_port,omitempty"`
-	K3sChannel   string `yaml:"k3s_channel,omitempty"`
-	AttachToTGW  *bool  `yaml:"attach_to_tgw,omitempty"`
-	ResourceName string `yaml:"name,omitempty"`
+	Region       string `yaml:"region,omitempty" help:"region for the test Argo CD VSI (default ibmcloud.region)"`
+	Zone         string `yaml:"zone,omitempty" help:"zone for the test Argo CD VSI (default <region>-1)"`
+	CIDR         string `yaml:"cidr,omitempty" help:"address prefix for the test Argo CD subnet (a /24 to /28)"`
+	Profile      string `yaml:"profile,omitempty" help:"test Argo CD VSI profile"`
+	Version      string `yaml:"version,omitempty" help:"Argo CD version on the test hub"`
+	AllowedCIDR  string `yaml:"allowed_cidr,omitempty" help:"CIDR allowed to reach the test Argo CD"`
+	SSHKey       string `yaml:"ssh_key,omitempty" help:"existing VPC SSH key name for the test hub"`
+	NodePort     int    `yaml:"node_port,omitempty" help:"NodePort the test Argo CD listens on"`
+	K3sChannel   string `yaml:"k3s_channel,omitempty" help:"k3s release channel"`
+	AttachToTGW  *bool  `yaml:"attach_to_tgw,omitempty" help:"attach the test hub VPC to the transit gateway"`
+	ResourceName string `yaml:"name,omitempty" help:"name of the test hub VSI and its resources"`
 }
 
 // Resolved caches what `init` looked up, so later commands and the rendered
@@ -477,6 +484,18 @@ func (w *Workspace) Exists() bool {
 // Load reads, defaults and returns config.yaml (without validating: `init` and
 // `status` must work on a half-filled config).
 func (w *Workspace) Load() (*Config, error) {
+	c, err := w.LoadFile()
+	if err != nil {
+		return nil, err
+	}
+	c.Defaults(w.Name)
+	return c, nil
+}
+
+// LoadFile reads config.yaml exactly as written, WITHOUT defaults, so a caller
+// can apply overrides before the defaults fill what is still empty (defaults
+// are the lowest precedence, and some depend on other keys).
+func (w *Workspace) LoadFile() (*Config, error) {
 	data, err := os.ReadFile(w.ConfigPath())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -484,12 +503,7 @@ func (w *Workspace) Load() (*Config, error) {
 		}
 		return nil, err
 	}
-	c, err := Parse(data)
-	if err != nil {
-		return nil, err
-	}
-	c.Defaults(w.Name)
-	return c, nil
+	return Parse(data)
 }
 
 // Save writes config.yaml owner-only.
