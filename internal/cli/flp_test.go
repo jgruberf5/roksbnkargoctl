@@ -378,3 +378,30 @@ resolved:
 		}
 	}
 }
+
+// A workspace name may start with a digit; an IBM Cloud VPC resource name may
+// not. flp up says so before building anything, and --name gets around it.
+func TestFLPUpChecksAWorkspaceNameToo(t *testing.T) {
+	home := isolate(t)
+	cloud, _, _, _ := flpFake(t)
+	writeWorkspace(t, home, "1ws", `
+cluster: c
+transit_gateway: mytgw
+ibmcloud: {region: us-east}
+cos: {local_far_auth_file: far.tgz, local_jwt_file: sub.jwt}
+flp: {vsi: {cidr: 10.1.0.0/28}}
+`)
+	_, _, err := runFLP(t, "flp", "up", "-w", "1ws")
+	if err == nil || !strings.Contains(err.Error(), `workspace name "1ws" cannot name IBM Cloud resources`) {
+		t.Fatalf("got %v", err)
+	}
+	if n := cloud.Names(); len(n) != 0 {
+		t.Fatalf("created %v", n)
+	}
+	if _, e, err := runFLP(t, "flp", "up", "-w", "1ws", "--name", "ws1"); err != nil {
+		t.Fatalf("%v\n%s", err, e)
+	}
+	if in, _ := cloud.FindInstanceByName(context.Background(), "ws1-flp"); in == nil || len(cloud.Instances) != 1 {
+		t.Errorf("instances %v", cloud.Names())
+	}
+}

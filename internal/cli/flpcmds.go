@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -76,15 +77,15 @@ var flpNameRE = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,40}[a-z0-9])?$`)
 
 // name is the FLP's --name: the flag, else the workspace's name.
 func (o *flpOpts) nameFor(s *session) (string, error) {
-	n := o.name
+	n, what := o.name, "--name"
 	if n == "" {
 		if s.ws == nil {
 			return "", errors.New("--name is required without a workspace: the license proxy's resources are named <name>-flp-*, and `flp down --name` finds them by it")
 		}
-		n = s.ws.Name
+		n, what = s.ws.Name, "workspace name"
 	}
 	if !flpNameRE.MatchString(n) {
-		return "", fmt.Errorf("--name %q: use lowercase letters, digits and hyphens, starting with a letter (at most 42 characters)", n)
+		return "", fmt.Errorf("%s %q cannot name IBM Cloud resources: use lowercase letters, digits and hyphens, starting with a letter (at most 42 characters), in --name", what, n)
 	}
 	return n, nil
 }
@@ -307,7 +308,7 @@ flp:
 `, url, caPath)
 	for _, kv := range [][2]string{{config.EnvName("flp.external.url"), url}, {config.EnvName("flp.external.root_ca_file"), caPath}} {
 		if runtime.GOOS == "windows" {
-			fmt.Fprintf(w, "$env:%s = %q\n", kv[0], kv[1])
+			fmt.Fprintf(w, "$env:%s = '%s'\n", kv[0], strings.ReplaceAll(kv[1], "'", "''"))
 		} else {
 			fmt.Fprintf(w, "export %s=%s\n", kv[0], kv[1])
 		}
