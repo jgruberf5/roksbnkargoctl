@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,33 +234,7 @@ func setupForge(t *testing.T) *forgeEnv {
 	return e
 }
 
-// run executes `roksbnkargoctl <args>` through the real root command.
-func runRoot(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	root := newRoot()
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs(args)
-	err := root.Execute()
-	flagWorkspace, flagNoWorkspace = "", false
-	return out.String(), err
-}
-
 var noWS = []string{"forge", "register", "--cluster", "bnkargo", "--region", "us-south"}
-
-func homeEntries(t *testing.T, home string) []string {
-	t.Helper()
-	ents, err := os.ReadDir(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range ents {
-		names = append(names, e.Name())
-	}
-	return names
-}
 
 // ---- register -------------------------------------------------------------------
 

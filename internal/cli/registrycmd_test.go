@@ -152,18 +152,6 @@ func args(parts ...[]string) []string {
 	return out
 }
 
-func homeEntries(t *testing.T, home string) []string {
-	t.Helper()
-	var out []string
-	filepath.WalkDir(home, func(p string, _ os.DirEntry, _ error) error {
-		if p != home {
-			out = append(out, strings.TrimPrefix(p, home))
-		}
-		return nil
-	})
-	return out
-}
-
 // ---- flags ---------------------------------------------------------------------
 
 // Every registry.mirror key is a --mirror-* flag on replicate and verify, every

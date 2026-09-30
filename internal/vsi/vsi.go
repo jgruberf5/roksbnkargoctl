@@ -8,11 +8,60 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/ibm"
 )
+
+// API is the part of the IBM Cloud client this package drives, bound to one
+// region. *ibm.Client satisfies it; tests substitute an in-memory cloud
+// (package vsitest).
+type API interface {
+	Region() string
+
+	ListVPCs(ctx context.Context) ([]ibm.VPC, error)
+	GetVPCByNameOrID(ctx context.Context, nameOrID string) (*ibm.VPC, error)
+	CreateVPC(ctx context.Context, spec ibm.VPCSpec) (*ibm.VPC, error)
+	WaitVPCAvailable(ctx context.Context, id string, timeout time.Duration) (*ibm.VPC, error)
+	CreateAddressPrefix(ctx context.Context, vpcID, name, cidr, zone string) (*ibm.AddressPrefix, error)
+
+	GetPublicGateway(ctx context.Context, id string) (*ibm.PublicGateway, error)
+	FindPublicGateway(ctx context.Context, vpcID, zone string) (*ibm.PublicGateway, error)
+	EnsurePublicGateway(ctx context.Context, name, vpcID, zone, resourceGroupID string) (*ibm.PublicGateway, bool, error)
+
+	ListSubnets(ctx context.Context, vpcID string) ([]ibm.Subnet, error)
+	CreateSubnet(ctx context.Context, spec ibm.SubnetSpec) (*ibm.Subnet, error)
+	WaitSubnetAvailable(ctx context.Context, id string, timeout time.Duration) (*ibm.Subnet, error)
+
+	FindSecurityGroupByName(ctx context.Context, vpcID, name string) (*ibm.SecurityGroup, error)
+	CreateSecurityGroup(ctx context.Context, name, vpcID, resourceGroupID string) (*ibm.SecurityGroup, error)
+	AddSecurityGroupRule(ctx context.Context, securityGroupID string, rule ibm.SecurityGroupRule) (string, error)
+
+	FindFloatingIPByName(ctx context.Context, name string) (*ibm.FloatingIP, error)
+	ReserveFloatingIP(ctx context.Context, name, zone, resourceGroupID string) (*ibm.FloatingIP, error)
+	BindFloatingIP(ctx context.Context, floatingIPID string, inst *ibm.Instance) (*ibm.FloatingIP, error)
+
+	LatestPublicImage(ctx context.Context, pattern *regexp.Regexp) (*ibm.Image, error)
+	GetSSHKeyByName(ctx context.Context, name string) (*ibm.SSHKey, error)
+	GetInstance(ctx context.Context, id string) (*ibm.Instance, error)
+	FindInstanceByName(ctx context.Context, name string) (*ibm.Instance, error)
+	CreateInstance(ctx context.Context, spec ibm.InstanceSpec) (*ibm.Instance, error)
+	WaitInstanceRunning(ctx context.Context, id string, timeout time.Duration) (*ibm.Instance, error)
+
+	ListTransitGateways(ctx context.Context) ([]ibm.TransitGateway, error)
+	GatewayAttachedPrefixes(ctx context.Context, gatewayID string) (map[string][]string, error)
+	ListConnections(ctx context.Context, gatewayID string) ([]ibm.TGWConnection, error)
+	FindConnectionForVPC(ctx context.Context, gatewayID, vpcCRN string) (*ibm.TGWConnection, error)
+	CreateVPCConnection(ctx context.Context, gatewayID, name, vpcCRN string) (*ibm.TGWConnection, error)
+	WaitConnectionAttached(ctx context.Context, gatewayID, connectionID string, timeout time.Duration) (*ibm.TGWConnection, error)
+	DeleteConnection(ctx context.Context, gatewayID, connectionID string, timeout time.Duration) error
+
+	DeleteAndWait(ctx context.Context, kind ibm.VPCKind, id string, timeout time.Duration) error
+}
+
+var _ API = (*ibm.Client)(nil)
 
 // Rule is one inbound TCP port range opened to a CIDR.
 type Rule struct {
@@ -69,13 +118,13 @@ func (s *Spec) log(f string, a ...any) {
 // Provision creates (or reuses, by name) every piece and returns the record.
 // On failure the partial record is returned too, so the caller can persist it
 // and Teardown what was made.
-func Provision(ctx context.Context, c *ibm.Client, spec Spec) (*Record, error) {
+func Provision(ctx context.Context, c API, spec Spec) (*Record, error) {
 	rec := &Record{Name: spec.Name, Region: c.Region(), Zone: spec.Zone}
 	err := provision(ctx, c, &spec, rec)
 	return rec, err
 }
 
-func provision(ctx context.Context, c *ibm.Client, spec *Spec, rec *Record) error {
+func provision(ctx context.Context, c API, spec *Spec, rec *Record) error {
 	if spec.Zone == "" || spec.CIDR == "" || spec.Profile == "" {
 		return errors.New("vsi: zone, CIDR and profile are required")
 	}
@@ -245,7 +294,7 @@ func provision(ctx context.Context, c *ibm.Client, spec *Spec, rec *Record) erro
 	return nil
 }
 
-func checkOverlap(ctx context.Context, c *ibm.Client, gatewayID, cidr string) error {
+func checkOverlap(ctx context.Context, c API, gatewayID, cidr string) error {
 	attached, err := c.GatewayAttachedPrefixes(ctx, gatewayID)
 	if err != nil {
 		return err
@@ -266,7 +315,7 @@ func checkOverlap(ctx context.Context, c *ibm.Client, gatewayID, cidr string) er
 
 // Teardown deletes what rec says was created, in dependency order, and waits
 // for each to go. It is safe to re-run.
-func Teardown(ctx context.Context, c *ibm.Client, rec *Record, log func(string, ...any)) error {
+func Teardown(ctx context.Context, c API, rec *Record, log func(string, ...any)) error {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
@@ -303,4 +352,156 @@ func Teardown(ctx context.Context, c *ibm.Client, rec *Record, log func(string, 
 		step("VPC", func() error { return c.DeleteAndWait(ctx, ibm.KindVPC, rec.VPCID, wait) })
 	}
 	return errors.Join(errs...)
+}
+
+// DiscoverSpec names what Provision built, for a Teardown when its record is
+// lost. Everything is matched by the exact names Provision gives
+// (<Name>-vpc, -subnet, -pgw, -sg, -fip, instance <Name>, transit gateway
+// connection <Name>) and nothing else: a prefix or a near miss is never taken.
+type DiscoverSpec struct {
+	Name string
+	// Zone locates the public gateway when the subnet is already gone.
+	Zone string
+	// ExistingVPC is the VPC Provision adopted (Spec.ExistingVPC), if any. Its
+	// subnet, security group, floating IP and instance are searched inside it;
+	// the VPC and its gateway connection were not Provision's, so they are
+	// never taken (a public gateway named <Name>-pgw was).
+	ExistingVPC string
+	// TransitGateway limits the connection search to one gateway (id); empty
+	// searches every gateway in the account.
+	TransitGateway string
+}
+
+// Found is one resource Discover matched.
+type Found struct {
+	Kind, Name, ID string
+}
+
+func (f Found) String() string { return fmt.Sprintf("%-26s %-32s %s", f.Kind, f.Name, f.ID) }
+
+// Discover finds what Provision built for d.Name and returns a Record that
+// Teardown removes, and the resources it holds, for the operator to confirm.
+func Discover(ctx context.Context, c API, d DiscoverSpec) (*Record, []Found, error) {
+	if d.Name == "" {
+		return nil, nil, errors.New("vsi: discover needs a name")
+	}
+	rec := &Record{Name: d.Name, Region: c.Region(), Zone: d.Zone}
+	var found []Found
+	add := func(kind, name, id string) { found = append(found, Found{kind, name, id}) }
+
+	var vpc *ibm.VPC
+	if d.ExistingVPC != "" {
+		v, err := c.GetVPCByNameOrID(ctx, d.ExistingVPC)
+		if err != nil {
+			return nil, nil, fmt.Errorf("VPC %s: %w", d.ExistingVPC, err)
+		}
+		vpc = v
+		rec.VPCID, rec.VPCCRN = v.ID, v.CRN
+	} else {
+		vpcs, err := c.ListVPCs(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		var matches []ibm.VPC
+		for _, v := range vpcs {
+			if v.Name == d.Name+"-vpc" {
+				matches = append(matches, v)
+			}
+		}
+		if len(matches) > 1 {
+			return nil, nil, fmt.Errorf("%d VPCs are named %s-vpc in %s; delete by hand", len(matches), d.Name, c.Region())
+		}
+		if len(matches) == 1 {
+			vpc = &matches[0]
+			rec.VPCID, rec.VPCCRN, rec.VPCCreated = vpc.ID, vpc.CRN, true
+			add("VPC", vpc.Name, vpc.ID)
+		}
+	}
+
+	if vpc != nil {
+		subnets, err := c.ListSubnets(ctx, vpc.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		var pgwID string
+		for _, sn := range subnets {
+			if sn.Name == d.Name+"-subnet" && sn.VPCID == vpc.ID {
+				rec.SubnetID, pgwID = sn.ID, sn.PublicGatewayID
+				add("subnet", sn.Name, sn.ID)
+			}
+		}
+		// Provision reuses a zone's existing public gateway, whatever its name;
+		// only one it named was one it created.
+		var pgw *ibm.PublicGateway
+		if pgwID != "" {
+			if pgw, err = c.GetPublicGateway(ctx, pgwID); err != nil && !ibm.IsNotFound(err) {
+				return nil, nil, err
+			}
+		} else if d.Zone != "" {
+			if pgw, err = c.FindPublicGateway(ctx, vpc.ID, d.Zone); err != nil {
+				return nil, nil, err
+			}
+		}
+		if pgw != nil && pgw.Name == d.Name+"-pgw" && pgw.VPCID == vpc.ID {
+			rec.PublicGatewayID, rec.PGWCreated = pgw.ID, true
+			add("public gateway", pgw.Name, pgw.ID)
+		}
+		// FindSecurityGroupByName, FindFloatingIPByName and FindInstanceByName
+		// match the name exactly (internal/ibm).
+		sg, err := c.FindSecurityGroupByName(ctx, vpc.ID, d.Name+"-sg")
+		if err != nil && !ibm.IsNotFound(err) {
+			return nil, nil, err
+		}
+		if sg != nil {
+			rec.SecurityGroupID = sg.ID
+			add("security group", sg.Name, sg.ID)
+		}
+	}
+
+	fip, err := c.FindFloatingIPByName(ctx, d.Name+"-fip")
+	if err != nil && !ibm.IsNotFound(err) {
+		return nil, nil, err
+	}
+	if fip != nil {
+		rec.FloatingIPID, rec.FloatingIP = fip.ID, fip.Address
+		add("floating IP", fip.Name, fip.ID)
+	}
+	inst, err := c.FindInstanceByName(ctx, d.Name)
+	if err != nil && !ibm.IsNotFound(err) {
+		return nil, nil, err
+	}
+	// An instance of that name in another VPC is not the one Provision built.
+	if inst != nil && (vpc == nil || inst.VPCID == vpc.ID) {
+		rec.InstanceID, rec.PrivateIP = inst.ID, inst.PrimaryIP
+		add("instance", inst.Name, inst.ID)
+	}
+
+	// Provision records a gateway connection only for a VPC it created; a VPC
+	// that is gone cannot still be attached.
+	if rec.VPCCreated {
+		gws := []string{d.TransitGateway}
+		if d.TransitGateway == "" {
+			all, err := c.ListTransitGateways(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			gws = gws[:0]
+			for _, g := range all {
+				gws = append(gws, g.ID)
+			}
+		}
+		for _, gw := range gws {
+			conns, err := c.ListConnections(ctx, gw)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, conn := range conns {
+				if conn.Name == d.Name && strings.EqualFold(conn.NetworkID, vpc.CRN) && rec.TGWConnectionID == "" {
+					rec.TGWID, rec.TGWConnectionID = gw, conn.ID
+					add("transit gateway connection", conn.Name, conn.ID)
+				}
+			}
+		}
+	}
+	return rec, found, nil
 }

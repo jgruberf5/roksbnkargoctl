@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,4 +22,18 @@ func runRoot(t *testing.T, args ...string) (string, error) {
 	root.SetArgs(args)
 	err := root.Execute()
 	return out.String(), err
+}
+
+// homeEntries lists every path under home, recursively, so a test can assert a
+// command wrote nothing anywhere in it.
+func homeEntries(t *testing.T, home string) []string {
+	t.Helper()
+	var out []string
+	filepath.WalkDir(home, func(p string, _ os.DirEntry, _ error) error {
+		if p != home {
+			out = append(out, strings.TrimPrefix(p, home))
+		}
+		return nil
+	})
+	return out
 }
