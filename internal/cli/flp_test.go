@@ -405,3 +405,32 @@ flp: {vsi: {cidr: 10.1.0.0/28}}
 		t.Errorf("instances %v", cloud.Names())
 	}
 }
+
+// A CA file that cannot be written does not lose the license proxy: its state
+// (every resource ID Provision built) is saved first.
+func TestFLPUpSavesItsStateWhenTheCACannotBeWritten(t *testing.T) {
+	home := isolate(t)
+	cloud, _, _, dir := flpFake(t)
+	writeWorkspace(t, home, "p", `
+cluster: c
+transit_gateway: mytgw
+ibmcloud: {region: us-east}
+cos: {local_far_auth_file: far.tgz, local_jwt_file: sub.jwt}
+flp: {vsi: {cidr: 10.1.0.0/28}}
+`)
+	blocked := filepath.Join(dir, "ca-is-a-directory") // a file cannot replace it
+	if err := os.MkdirAll(filepath.Join(blocked, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, e, err := runFLP(t, "flp", "up", "-w", "p", "--ca-out", blocked)
+	if err == nil || !strings.Contains(err.Error(), "the license proxy is recorded in") {
+		t.Fatalf("got %v\n%s", err, e)
+	}
+	b, rerr := os.ReadFile(filepath.Join(home, "p", "flp-outputs.json"))
+	if rerr != nil || !strings.Contains(string(b), "instance_id") {
+		t.Fatalf("no state after a failed CA write (%v): %s", rerr, b)
+	}
+	if len(cloud.Names()) == 0 {
+		t.Fatal("nothing was built")
+	}
+}

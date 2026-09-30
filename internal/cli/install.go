@@ -541,9 +541,6 @@ func registrationCA(endpoint string, clusterCA []byte) []byte {
 	return nil
 }
 
-// ensureClusterOnTGW attaches the cluster VPC to the transit gateway when it is
-// not already, after checking no attached VPC overlaps its prefixes (a gateway
-// silently blackholes one of two overlapping VPCs).
 // tgwAPI is the part of the IBM Cloud client ensureClusterOnTGW uses; tests
 // substitute a fake.
 type tgwAPI interface {
@@ -564,6 +561,9 @@ type profileAPI interface {
 	CreatePolicy(ctx context.Context, profileID string, roles []string, attrs []ibm.PolicyAttribute) (string, error)
 }
 
+// ensureClusterOnTGW attaches the cluster VPC to the transit gateway when it is
+// not already, after checking no attached VPC overlaps its prefixes (a gateway
+// silently blackholes one of two overlapping VPCs).
 func ensureClusterOnTGW(ctx context.Context, s *session, ibmc tgwAPI) error {
 	r, p := s.cfg.Resolved, s.p
 	conn, err := ibmc.FindConnectionForVPC(ctx, r.TransitGatewayID, r.VPCCRN)
@@ -607,7 +607,8 @@ func ensureClusterOnTGW(ctx context.Context, s *session, ibmc tgwAPI) error {
 	// out, uninstall --detach-tgw and workspaces delete still know about it.
 	r.TGWConnectionCreatedID = nc.ID
 	if err := s.save(); err != nil {
-		return fmt.Errorf("created transit gateway connection %s but could not record it: %w", nc.ID, err)
+		return fmt.Errorf("created transit gateway connection %s but could not record it: %w "+
+			"(remove it with `ibmcloud tg connection-delete %s %s` if you do not keep it)", nc.ID, err, r.TransitGatewayID, nc.ID)
 	}
 	if _, err := ibmc.WaitConnectionAttached(ctx, r.TransitGatewayID, nc.ID, 10*time.Minute); err != nil {
 		return err
@@ -645,7 +646,8 @@ func ensureTrustedProfile(ctx context.Context, s *session, ibmc profileAPI) erro
 	if r.TrustedProfileID != tp.ID {
 		r.TrustedProfileID = tp.ID
 		if err := s.save(); err != nil {
-			return fmt.Errorf("trusted profile %s exists but could not be recorded: %w", tp.ID, err)
+			return fmt.Errorf("trusted profile %s exists but could not be recorded: %w "+
+				"(remove it with `ibmcloud iam trusted-profile-delete %s` if you do not keep it)", tp.ID, err, tp.ID)
 		}
 	}
 	links, err := ibmc.ListProfileLinks(ctx, tp.ID)

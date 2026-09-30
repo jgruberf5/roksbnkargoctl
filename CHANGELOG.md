@@ -13,6 +13,10 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   creates as soon as each exists. Before, a failure between creating one and the next
   save (the wait for the connection to attach, or linking the profile) lost the ID, so
   `uninstall --detach-tgw` and `workspaces delete` did not know about it (#28).
+- `flp up` saves the license proxy's state before writing the CA file (`--ca-out`). Before,
+  a CA file that could not be written returned first and lost every resource ID; if the
+  state cannot be saved after `install` creates a resource, the error names the resource
+  and the command that removes it.
 
 ## [0.6.2] - 2026-09-30
 

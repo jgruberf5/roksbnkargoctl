@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -146,5 +148,28 @@ func TestInstallRecordsTheTrustedProfileBeforeLinking(t *testing.T) {
 	_ = ensureTrustedProfile(context.Background(), s, f)
 	if f.created != 0 || onDisk(t, s).TrustedProfileID != "Profile-found" {
 		t.Errorf("found profile: created %d, record %q", f.created, onDisk(t, s).TrustedProfileID)
+	}
+}
+
+// When the record cannot be saved, the error names the resource install just
+// created and how to remove it, since nothing else will know about it.
+func TestInstallNamesTheResourceWhenItCannotRecordIt(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the test user cannot write")
+	}
+	s := recordSession(t)
+	if err := os.Chmod(s.ws.Dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(s.ws.Dir, 0o700) })
+	err := ensureClusterOnTGW(context.Background(), s, &fakeTGW{})
+	if err == nil || !strings.Contains(err.Error(), "created transit gateway connection conn-new but could not record it") ||
+		!strings.Contains(err.Error(), "ibmcloud tg connection-delete tid conn-new") {
+		t.Errorf("TGW: %v", err)
+	}
+	err = ensureTrustedProfile(context.Background(), s, &fakeProfiles{})
+	if err == nil || !strings.Contains(err.Error(), "trusted profile Profile-new exists but could not be recorded") ||
+		!strings.Contains(err.Error(), "ibmcloud iam trusted-profile-delete Profile-new") {
+		t.Errorf("profile: %v", err)
 	}
 }
