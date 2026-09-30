@@ -12,3 +12,7 @@
 # which CI then could not build.
 /kubeconfig*
 *.kubeconfig
+# Local environment files hold credentials (API keys, FAR key, JWTs).
+.env
+.env.*
+!.env.example
