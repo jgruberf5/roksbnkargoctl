@@ -32,10 +32,10 @@ writes.
   key, or the mirror user and password) is now stored in Argo CD on the hub**, on the
   registry it belongs to only; `quay.io` is anonymous. The hub must reach FAR and `quay.io`,
   or the mirror. `uninstall --remove-repo` removes the chart registries too.
-- Not verified live: a full sync and uninstall on ROKS with the new waves, FAR as a Helm OCI
-  source, and a private-CA mirror's CA in Argo CD. Verified on Argo CD 3.5.1: the FLO chart
-  pulled from an Artifactory mirror, a render compared with Argo CD's with 0 differences,
-  and all 26 FLO chart CRDs kept after a cascading delete.
+- Verified live on OpenShift 4.21.31 with Argo CD 3.5.1, connected mode, charts from an
+  Artifactory mirror: install (8m36s), uninstall and reinstall (7m46s), each ending Synced
+  and Healthy with nothing OutOfSync and the License Active; the charts' CRDs survived the
+  uninstall. A render compared with Argo CD's own had 0 differences.
 
 ### Without a workspace
 - `cos instances`, `cos buckets --instance`, `cos list --instance --bucket`,
@@ -82,6 +82,8 @@ writes.
 
 ### Not verified live
 - `forge register/unregister`: tested against a fake Forge API only.
+- The charts as Helm sources with FAR (only a mirror was used), with a private-CA mirror,
+  and in disconnected mode.
 
 ## [0.5.0] - 2026-09-29
 
