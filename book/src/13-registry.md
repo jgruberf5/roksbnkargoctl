@@ -159,13 +159,16 @@ check image by digest and requires that digest in the mirror
 
 ## A mirror with a private CA
 
-Set `registry.mirror.ca_file` to the CA's PEM file. It is used in two places:
+Set `registry.mirror.ca_file` to the CA's PEM file. It is used in three places:
 
 - **On your host:** trusted, in addition to the system roots, for every pull and push.
 - **On every node:** the renderer adds ConfigMap `roksbnkargoctl-check/registry-ca` and the
   privileged DaemonSet `roksbnkargoctl-check/registry-ca-trust` in wave −19. Its pod copies
   the CA to `/etc/containers/certs.d/<mirror-host>/ca.crt` and
   `/etc/docker/certs.d/<mirror-host>/ca.crt` on the host, then sleeps.
+- **In Argo CD:** `install` adds it as a TLS certificate for the mirror's host name
+  (without the port), so Argo CD verifies the mirror when it pulls the charts. It stays in
+  Argo CD after `uninstall`.
 
 The DaemonSet must run before any pod pulls from the mirror, including the check image
 itself, so it cannot use an image from the mirror. It runs on the
@@ -182,8 +185,9 @@ mirror with a TLS handshake without verification and reports the certificate sub
 2. `roksbnkargoctl registry replicate`
 3. `roksbnkargoctl registry verify` — expect `all 93 artifacts present in the mirror`.
 4. Set `registry.source: mirror`.
-5. `roksbnkargoctl render` and review `manifests/git/`: images, charts and the check image
-   now reference the mirror base, and the pull secret is `mirror-secret`.
+5. `roksbnkargoctl render` and review `manifests/git/` and `manifests/application.yaml`:
+   images, the check image and the Application's chart sources now reference the mirror
+   base, and the pull secret is `mirror-secret`.
 6. `roksbnkargoctl install`.
 
 Do this before the first install. For a cluster that already runs BNK from FAR, treat the

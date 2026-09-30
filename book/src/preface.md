@@ -23,9 +23,12 @@ existing ROKS cluster **as one Argo CD Application in your existing, external Ar
 > documentation. It is beyond the scope of this tool. (`roksbnkargoctl self update`
 > updates roksbnkargoctl itself, never BNK.)
 
-- **Argo CD applies the F5 objects.** Every in-cluster BNK object is plain YAML in your
-  Git repository, synced by Argo CD in ordered waves. The tool renders that YAML, pushes
-  it to Git, registers the cluster with Argo CD, and creates the Application.
+- **Argo CD applies the F5 objects.** Your Git repository holds what F5's manual install
+  writes: the values files of the cert-manager and FLO Helm charts, and the handful of
+  custom resources and supporting objects. Argo CD installs the two charts from the
+  registry with those values, as `helm install` would, and syncs everything in ordered
+  waves. The tool renders the YAML, pushes it to Git, registers the cluster and the chart
+  registries with Argo CD, and creates the Application.
 - **No Terraform, and no other binaries.** IBM Cloud, Kubernetes, Git and Argo CD are
   driven through their APIs from inside the one process. There is no `terraform`, `helm`,
   `kubectl`, `ibmcloud` or `git` to install, and the tool builds and runs natively on
@@ -35,7 +38,8 @@ existing ROKS cluster **as one Argo CD Application in your existing, external Ar
   as Jobs that `uninstall` runs around the delete. Nothing runs on the Argo CD hub.
 - **No secret goes to Git.** The FAR pull credential, the subscription JWT and the
   license proxy CA are written straight into the cluster by `install`. The renderer
-  refuses to publish if a secret value appears in any Git object.
+  refuses to publish if a secret value appears in any Git object or values file. (The
+  registry login is also given to Argo CD, so that it can pull the charts.)
 
 It is the slim successor to [roksbnkctl](https://github.com/jgruberf5/roksbnkctl), a
 heavier Terraform-based tool, for teams that standardise on Argo CD and do not want

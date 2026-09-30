@@ -12,7 +12,7 @@ The design follows from what the customer asked for:
 
 | # | Constraint | Consequence |
 |---|---|---|
-| C1 | Argo CD YAML is the only install mechanism | every in-cluster BNK object is plain YAML in Git, synced by Argo CD |
+| C1 | Argo CD YAML is the only install mechanism | every in-cluster BNK object is applied by Argo CD: plain YAML and chart values from Git, the two Helm charts from the registry |
 | C2 | the cluster and transit gateway already exist | taken by name or ID; never created or deleted by `install` |
 | C3 | Argo CD already exists, outside ROKS | ROKS is registered with the hub as a cluster; the hub never runs the tool's containers |
 | C4 | IBM Cloud APIs, not Terraform | Go REST/SDK calls only; no `terraform`, `helm`, `kubectl`, `ibmcloud` or `git` binaries |
@@ -25,28 +25,50 @@ The design follows from what the customer asked for:
 
 ## Design decisions
 
-### Git is Argo CD's only source
+### Git holds what the manual install writes; the charts are Helm sources
 
-The Application has one source: a path in your Git repository. Argo CD must not
-need access to FAR, a Helm repository or a config-management plugin. That keeps the
-hub's configuration yours, makes `manifests/git/` the complete, reviewable record
-of what is installed, and means an air-gapped hub works the same as a connected
-one. The consequences are the next two decisions.
+F5's manual procedure has the operator `helm install` two charts, cert-manager and
+FLO, each with a values file, and apply a handful of YAML files. The repository
+mirrors that: `git.path` holds about 18 manifests (namespaces, the check machinery,
+the SCC binding, the NAD, the issuers, `CNEManifest`, `CNEInstance`) and
+`values/cert-manager.yaml` and `values/flo.yaml`. The Application has one Helm source
+per chart, pulled over OCI from FAR or the mirror (`quay.io` for cert-manager with
+FAR), reading its values file from the Git source (`$values`), plus the Git source
+itself with `recurse: false`, so `values/` is not applied.
 
-### Helm charts are rendered offline, on the operator host
+The first design expanded both charts into Git instead, so that the hub needed no
+registry access: 96 objects for one install, 32 of them CRDs and the rest chart
+internals. A customer comparing that repository with F5's procedure could not
+recognise it. The cost of the change is that the hub now reaches the chart registry
+and holds the registry login (see
+[Appendix D](./appendix-d-security.md#the-registry-credential-is-stored-in-argo-cd)),
+and an air-gapped hub needs the mirror.
 
-`render` pulls cert-manager `v1.17.3` and FLO `f5-lifecycle-operator` from FAR (or
-the mirror) as OCI artifacts and templates them in-process with the Helm Go SDK in
-client-only mode — no `helm` binary. Details that follow from rendering offline:
+`render` still templates both charts, in-process with the Helm Go SDK in client-only
+mode (no `helm` binary), into `manifests/charts/`, which is never published. It is
+there for review, and for `install --no-publish` to compare with what Argo CD
+renders. Each Helm source passes Argo CD the same release name, namespace, Kubernetes
+version and OpenShift API versions, so the two agree; on the test hub a production
+render compared with 0 differences. Details:
 
 - FLO's chart `lookup`s cert-manager's CRDs and fails when it cannot see them.
-  Offline, `lookup` is always empty, so the render sets `skipCertMgr: true`; that
-  skips only the chart's pre-check.
+  Templating without a cluster, `lookup` is always empty, on the operator host and in
+  Argo CD, so the values set `skipCertMgr: true`; that skips only the chart's
+  pre-check.
 - Helm hooks keep their `helm.sh/hook` annotations; Argo CD maps them. cert-manager's
   `startupapicheck` hook is disabled — `cert-manager-ready` does that job better.
-- Every object gets an `argocd.argoproj.io/sync-wave`, and the render is sorted and
+- Argo CD puts a namespaced object that names no namespace in the Application's
+  destination namespace, whatever the Helm source's namespace. cert-manager is
+  released in `cert-manager`, not the destination, so the render fails if any of its
+  namespaced objects names no namespace.
+- Argo CD's manifests API returns Secret values as `++++++++`, so the render writes a
+  chart's Secrets that way in `manifests/charts/` and they compare equal.
+- Every Git object gets an `argocd.argoproj.io/sync-wave`, and the render is sorted and
   deterministic: re-rendering an unchanged config produces identical files, and
   re-publishing commits nothing.
+- A multi-source Application reports no single revision, so `install` syncs with the
+  Git source pinned to the commit by position (`revisions` and `sourcePositions`), and
+  `install --no-publish` reads the commit from `status.sync.revisions`.
 - The render's **run id** is a hash of the config (without the `resolved`
   bookkeeping), the manifest version, the check image digest, the FLP URL, the mirror
   CA and the node image. Any change re-rolls the node probes; no change leaves them
@@ -54,10 +76,11 @@ client-only mode — no `helm` binary. Details that follow from rendering offlin
 
 ### Secrets go direct, never through Git
 
-Every rendered Secret, whichever chart produced it, is moved to the out-of-band set
-that `install` writes into ROKS, and the render refuses to publish if the registry
-password or the JWT appears in any Git object. See
-[Appendix D](./appendix-d-security.md).
+Every Secret of the tool's own is kept out of Git, in the out-of-band set that
+`install` writes into ROKS, and the render refuses to publish if the registry
+password or the JWT appears in any Git object or values file. A Secret a chart ships
+(FLO's `external-otelsvr-secret`) is chart content, applied by Argo CD from the
+chart. See [Appendix D](./appendix-d-security.md).
 
 ### The License is built by a hook
 
@@ -79,26 +102,37 @@ outlive the Application for the PostDelete check.
 
 ### The gateway API sweep is a Deployment, not a hook
 
-The CRDs it waits for arrive with FLO in the next wave, and Argo CD does not start a
+The CRDs it waits for arrive with FLO in a later wave (0), and Argo CD does not start a
 wave until the previous wave's hooks finish. A blocking hook would deadlock the
 sync; a Deployment is healthy as soon as it runs.
 
-### `Delete=false` on namespaces and CRDs
+### Sync order
+
+The charts' objects carry no wave, so they sync in wave 0. What must come before
+them is negative: namespaces (−20), the mirror CA trust (−19), the node probe and
+pre-install check (−18), the NAD, FLO's SCC binding and the Gateway API sweep (−6).
+What needs them is positive: `cert-manager-ready` (1), the issuers (2 to 4),
+`CNEManifest` (6), `CNEInstance` (8) and `check license` (10).
+
+### What uninstall keeps: namespaces and CRDs
 
 - **BNK namespaces** carry `argocd.argoproj.io/sync-options: Delete=false`. A
   namespace stuck on an F5 finalizer would otherwise hang the Application's
   deletion before the PostDelete check ran. `check post-uninstall` deletes them
   instead, handling finalizers.
-- **CRDs** carry `Delete=false`. Deleting a CRD deletes every CR of that kind, and
-  F5 CRs whose finalizer's controller is gone hang their namespace. F5 CRDs stay
-  after uninstall, as they do with roksbnkctl.
+- **The charts' CRDs** are kept by `crds.keep: true` in both charts' values, which
+  annotates them `helm.sh/resource-policy: keep`; Argo CD honours that on delete
+  (on 3.5.1, all 26 of FLO's chart CRDs remained after a cascading delete while the
+  chart's ClusterRole went). Deleting a CRD deletes every CR of that kind, and F5
+  CRs whose finalizer's controller is gone hang their namespace. F5 CRDs stay after
+  uninstall, as they do with roksbnkctl.
 
 ### Application settings
 
 | Setting | Why |
 |---|---|
 | manual sync, no automatic retry (`retry.limit: 0`) | the sync is the operator's approval |
-| `ServerSideApply=true` | FLO's CRDs exceed the client-side apply annotation limit |
+| `ServerSideApply=true` | FLO's CRDs, from its chart, exceed the client-side apply annotation limit |
 | `PruneLast=true` (with `RespectIgnoreDifferences=true`) | prune only after everything else has applied |
 | finalizer `resources-finalizer.argocd.argoproj.io` | foreground-cascading delete: without it Argo CD deletes the Application and orphans BNK, skipping the uninstall checks |
 | Argo CD ≥ 3.3 enforced | PreDelete hooks, which the drain depends on |
@@ -141,7 +175,7 @@ behaviour.
 | A `git describe` build version names no published image, so every check pod would `ImagePullBackOff` | only an exact `vX.Y.Z` release tag is used; anything else uses `:dev` |
 | Argo CD 3.5.1 answered the Application DELETE with `415 Invalid content type` (a body-less request without `Content-Type`) | every non-GET request declares JSON |
 | IBM VPC paging drops the required `version` parameter from `next.href`, so a second page answered 400 | the parameters are carried onto every page |
-| A reinstall failed at the issuer wave: `failed calling webhook webhook.cert-manager.io … x509: certificate signed by unknown authority` — the cainjector lagged cert-manager's Deployment health | the `cert-manager-ready` Sync hook (wave −11) dry-runs a ClusterIssuer until the webhook admits it |
+| A reinstall failed at the issuer wave: `failed calling webhook webhook.cert-manager.io … x509: certificate signed by unknown authority` — the cainjector lagged cert-manager's Deployment health | the `cert-manager-ready` Sync hook (now wave 1) dry-runs a ClusterIssuer until the webhook admits it |
 | `uninstall` deleted the check namespace, and with it the uninstall checks' logs; Argo CD deletes the PreDelete pod with the Application | check logs are collected every few seconds **while** the Application is deleted, into `diagnostics/uninstall-<time>/` |
 | An uninstall printed `uninstalled` and left `f5-bnk`, `f5-utils` and `cert-manager`: Argo CD 3.5.1 stopped the PreDelete pod 0.4 s after it started and never ran PostDelete ([argoproj/argo-cd#29100](https://github.com/argoproj/argo-cd/issues/29100)) | `uninstall` runs both checks as its own Jobs around the delete and fails unless the BNK namespaces are gone; `install` keeps Argo CD's delete-hook finalizers when it updates the Application |
 | `registry replicate` pushed to Artifactory anonymously (`Authentication is required`, 93 of 93 failed): mirror credentials were applied only once `registry.source` was already `mirror` | mirror credentials and CA apply whenever a mirror is configured, because the mirror is filled before the install switches to it |

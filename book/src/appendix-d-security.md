@@ -8,20 +8,23 @@ at each step.
 
 ## Principle: no secret value in Git
 
-Your Git repository is Argo CD's only source, and it is typically readable by far
-more people than the cluster. So **no secret value is ever published to it**:
+Your Git repository holds the Application's manifests and the charts' values files, and
+it is typically readable by far more people than the cluster. So **no secret value is
+ever published to it**:
 
-- Every `kind: Secret` a render produces — the tool's own, or one a Helm chart
-  renders (FLO's chart renders `external-otelsvr-secret`) — is moved out of the Git
-  set into the **direct** set, which `install` writes straight into ROKS.
+- Every `kind: Secret` of the tool's own is kept out of the Git set, in the **direct**
+  set, which `install` writes straight into ROKS. A Secret a chart ships (FLO's chart
+  ships `external-otelsvr-secret`) holds no value of yours; Argo CD applies it from the
+  chart, which it pulls from the registry, not from Git.
 - The subscription JWT cannot live in a `License` in Git either, because the BNK 2.4
   CRD requires it **inline** in `spec.jwt`. It is written to a Secret instead, and
   the `check license` hook builds the License inside the cluster.
 - As a last line of defence, the render **refuses to publish** if the registry
-  password or the subscription JWT appears anywhere in any Git object:
+  password or the subscription JWT appears anywhere in any Git object or values file:
 
   ```text
   render: refusing to publish: the subscription JWT appears in <Kind> <namespace>/<name>
+  render: refusing to publish: the registry password appears in values/<chart>.yaml
   ```
 
 You can confirm the whole of what Git will contain before anything is published:
@@ -35,8 +38,8 @@ You can confirm the whole of what Git will contain before anything is published:
 | Argo CD API token | you (or `argocd up`) | environment only (`ARGOCD_AUTH_TOKEN`) | — | — |
 | Git token | you | environment only (`ROKSBNKARGOCTL_GIT_TOKEN`) | — | Argo CD repository credential (`install` registers the repo) |
 | Git SSH key | you | the file at `git.ssh_key_file` (yours) | — | Argo CD repository credential |
-| Mirror password | you | environment only (`ROKSBNKARGOCTL_MIRROR_PASSWORD`) | pull Secret `mirror-secret` | — |
-| FAR auth key | MyF5 | read from COS (or `cos.local_far_auth_file`) at run time | pull Secret `far-secret` (`kubernetes.io/dockerconfigjson`) | COS object `f5-far-auth-key.tgz` |
+| Mirror password | you | environment only (`ROKSBNKARGOCTL_MIRROR_PASSWORD`) | pull Secret `mirror-secret` | Argo CD repository credential for the mirror's chart registries (`install` registers them) |
+| FAR auth key | MyF5 | read from COS (or `cos.local_far_auth_file`) at run time | pull Secret `far-secret` (`kubernetes.io/dockerconfigjson`) | COS object `f5-far-auth-key.tgz`; Argo CD repository credential for FAR's chart registry (`install` registers it) |
 | Subscription JWT | MyF5 | read from COS (or `cos.local_jwt_file`) at run time | Secret `roksbnkargoctl-check/bnk-license-jwt`; `License.spec.jwt` (built in-cluster) | COS object `subscription.jwt` |
 | FLP root CA and key | `flp up` | the state file: `flp-outputs.json` in the workspace, or `./<name>-flp.json` without one (mode 0600; holds the CA private key so a re-run reuses the CA). The certificate alone may also be in the `--ca-out` file | Secret `f5-utils/licenseserver-rootca` (certificate only) | the proxy VSI |
 | Argo CD cluster credential | `install` | — | Secret `kube-system/roksbnkargoctl-argocd-manager-token` | Argo CD's cluster Secret on the hub |
@@ -54,11 +57,25 @@ Secrets are read from environment variables whose **names** are in `config.yaml`
 `show` prints the variable names only. The zip `export` writes holds no Secret: it
 refuses any file of `kind: Secret`.
 
+### The registry credential is stored in Argo CD
+
+Argo CD pulls the cert-manager and FLO charts itself, so `install` registers each chart
+registry in Argo CD as an OCI Helm repository and gives it the registry login: the FAR
+service-account key (user `_json_key_base64`) in FAR mode, the mirror user and password in
+mirror mode. The login goes only to an entry on the registry it belongs to: `quay.io`, where
+cert-manager's chart comes from in FAR mode, gets none, and neither does an anonymous
+mirror. Argo CD keeps these credentials on the hub, in its namespace, like the Git
+credential. Anyone who can read Argo CD's repository credentials or the Secrets of its
+namespace can read the FAR key or the mirror password. Use a mirror account that can only
+pull, and protect the hub as you protect the FAR key itself. The entries stay until `uninstall --remove-repo`, and every
+`install` sets them again (an upsert).
+
 ## Redaction
 
 | Where | What is done |
 |---|---|
 | `manifests/direct/` | every Secret is written with each value replaced by `REDACTED` (base64 `UkVEQUNURUQ=` under `data`), and annotated `roksbnkargoctl.io/redacted` explaining that the real Secret is written to the cluster by `install`, never to Git. `uninstall` needs only kinds and names from these files |
+| `manifests/charts/` | a Secret a chart ships is written with every value replaced by `++++++++`, as Argo CD's manifests API returns it |
 | `diagnose` | never collects Secret objects; `license.yaml` has `spec.jwt` replaced with `REDACTED` |
 | `uninstall` log collection | check pod logs only |
 | `check license` | logs the JWT's byte count, never its value |
@@ -182,6 +199,10 @@ Every SSH host key is verified.
 
 - The Argo CD API is reached over TLS; `argocd.ca_file` supplies a private CA, and
   `argocd.insecure` turns verification off for a self-signed hub.
+- Argo CD verifies the chart registries with its own trust store. For a private-CA
+  mirror, `install` adds `registry.mirror.ca_file` to Argo CD as a TLS certificate for the
+  mirror's host name (`POST /api/v1/certificates?upsert=true`, certificate type `https`),
+  so the hub verifies the mirror rather than skipping verification.
 - The node probe verifies registry and licensing certificates against the image's
   CA bundle, reporting the presented subject even when verification fails. A
   private mirror CA is trusted by setting `registry.mirror.ca_file`; the FLP, which

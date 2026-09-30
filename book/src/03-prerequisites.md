@@ -17,6 +17,7 @@ checklist; most failed installs trace back to one line of it.
 | The FAR auth tarball and the subscription JWT from MyF5, in COS or as local files | `init` (objects exist), `render` / `install` (read them) |
 | `IBMCLOUD_API_KEY` in the environment, with the IAM access below | every command that calls IBM Cloud |
 | Node egress for your mode | `check-node-probe` and `check pre-install`, before any BNK object is applied |
+| Hub egress to the chart registry (FAR and `quay.io`, or the mirror) | Argo CD, when it renders the Application's Helm sources |
 
 ## The ROKS cluster
 
@@ -48,10 +49,10 @@ VSI) reaches the cluster privately. It must already exist; you give its name or 
 |---|---|
 | Version | **3.3 or later**. The uninstall depends on PreDelete hooks, which arrived in 3.3. `install` reads `/api/version` and refuses an older server. |
 | Location | Outside the ROKS cluster. The hub's own Argo CD never runs any container of this install. |
-| Reachability | The hub must reach the ROKS **private** service endpoint over the transit gateway (or the public endpoint with `argocd.cluster_endpoint: public`), and must reach your Git repository. |
+| Reachability | The hub must reach the ROKS **private** service endpoint over the transit gateway (or the public endpoint with `argocd.cluster_endpoint: public`), your Git repository, and the registry the charts come from: see [From the Argo CD hub](#from-the-argo-cd-hub). |
 | API access from the operator host | `argocd.server` is the URL of the Argo CD API (normally `https://…`) and must be reachable from the operator host. Use `argocd.ca_file` for a private CA, or `argocd.insecure: true` to skip verification of a self-signed server. |
 | Application namespace | The Application is created in namespace `argocd`. |
-| Project | `argocd.project` (default `default`) must allow the Git repository and the ROKS destination. |
+| Project | `argocd.project` (default `default`) must allow the Git repository, the chart registries (as source repositories) and the ROKS destination. |
 | Health customisation | None needed. The `check license` hook is the gate for BNK coming up. |
 
 ### The Argo CD API token
@@ -61,8 +62,9 @@ VSI) reaches the cluster privately. It must already exist; you give its name or 
 
 - read the server version;
 - create, update and delete **clusters** (the ROKS registration);
-- create, update and delete **repositories** (the Git repository entry), and
-  **certificates** if you use `git.known_hosts_file` (SSH known hosts);
+- create, update and delete **repositories** (the Git repository entry and one OCI Helm
+  entry per chart registry), and **certificates** if you use `git.known_hosts_file` (SSH
+  known hosts) or a mirror with `registry.mirror.ca_file` (its CA, as a TLS certificate);
 - create, get, sync and delete **applications** in the chosen project, and read their
   resource tree and managed resources (used by `status` and `diagnose`).
 
@@ -108,6 +110,10 @@ Keep them either:
 [The COS supply chain](./14-cos.md). The JWT is written only into the cluster, as Secret
 `bnk-license-jwt`; it never reaches Git or the workspace.
 
+The FAR key is written into the cluster as the pull secret `far-secret`, and is also
+registered in Argo CD as the login for FAR's chart registry, so that the hub can pull the
+FLO chart. It never reaches Git.
+
 ## IBM Cloud API key
 
 `IBMCLOUD_API_KEY` must hold an API key for the account that owns the cluster
@@ -148,6 +154,18 @@ target before anything of BNK is applied. The targets depend on your choices:
 
 So a connected install from FAR needs egress to five hosts on 443; a disconnected install
 from a mirror needs none to the internet, only the mirror and the license proxy.
+
+### From the Argo CD hub
+
+Argo CD's repository server pulls the two Helm charts over HTTPS:
+
+| Choice | Destination |
+|---|---|
+| `registry.source: far` | `registry.far_host` (default `repo.f5.com`):443 for the FLO chart; `quay.io`:443 for the cert-manager chart (unless `bnk.cert_manager.install: false`) |
+| `registry.source: mirror` | the mirror host from `registry.mirror.host` (its port, default 443), for both charts |
+
+`install` registers these registries in Argo CD with the registry login; see
+[the chart registries in Argo CD](./07-the-application.md#the-chart-registries-in-argo-cd).
 
 ### From the operator host
 

@@ -21,7 +21,7 @@ It is a day-0 tool: it puts BNK on, and it takes BNK off.
 | Use what you already have | The ROKS cluster and the transit gateway are taken by name or ID. The Argo CD hub is yours and runs outside the cluster. |
 | Prepare IBM Cloud | Creates the IAM trusted profile BNK's CNE controller uses; attaches the cluster's VPC to the transit gateway if it is not attached already. |
 | Prepare the cluster | Writes the pull secret, the subscription JWT, the license proxy CA and the check namespace and RBAC directly into ROKS; registers ROKS with Argo CD. |
-| Publish to Git | Renders every manifest on your workstation and commits it to one path in your repository. Argo CD's only source is that repository. |
+| Publish to Git | Renders the manifests and the two charts' Helm values on your workstation and commits them to one path in your repository. Argo CD installs the cert-manager and FLO charts from the registry with those values, and syncs the rest from the repository. |
 | Check before and after | Argo CD runs the `check` container as hooks in ROKS: before anything of BNK is applied, while it comes up, after it is healthy, and around uninstall. |
 | Optional components | Keep the F5 files in COS (`cos`), fill a private registry (`registry`), build a license proxy (`flp`) or a test Argo CD hub (`argocd`), and register the cluster with BNK Forge (`forge`). `cos`, `registry`, `flp` and `forge` also run without a workspace, from flags alone. |
 
@@ -77,7 +77,7 @@ heavy and standardises on Argo CD.
 
 | | roksbnkctl | roksbnkargoctl |
 |---|---|---|
-| Install mechanism | Terraform | Plain YAML in your Git repo, synced by your Argo CD |
+| Install mechanism | Terraform | Plain YAML and Helm values in your Git repo, and the two Helm charts from the registry, synced by your Argo CD |
 | Who applies the F5 objects | The tool | Argo CD |
 | External binaries | Terraform and friends | None: IBM Cloud, Kubernetes, Git and Argo CD APIs are called in-process |
 | Scope | Wider lifecycle, including cluster creation and later phases | Day-0 install and uninstall of BNK 2.4 GA only |

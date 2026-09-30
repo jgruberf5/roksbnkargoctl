@@ -44,6 +44,7 @@ cluster is spared that egress. See [The F5 License Proxy](./12-flp.md).
 | cert-manager images | `quay.io/jetstack/…` | `<mirror>/jetstack/cert-manager-<component>` |
 | Check image | `ghcr.io/jgruberf5/roksbnkargoctl-check@sha256:…` | `<mirror>/jgruberf5/roksbnkargoctl-check@sha256:…` |
 | Where `render` pulls charts from | FAR (and `quay.io` for cert-manager) | The mirror only |
+| Where Argo CD pulls charts from | FAR (FLO, with the FAR key) and `quay.io` (cert-manager, anonymously) | The mirror only, with the mirror login if there is one |
 | Extra work | none | `registry replicate` before the install |
 
 See [Mirroring into a private registry](./13-registry.md) for filling the mirror and for
@@ -77,6 +78,13 @@ reach any target.
 | `quay.io` | `render`/`install` in `far` mode with cert-manager installed; `registry replicate` |
 | The mirror | `render`/`install` in `mirror` mode; `registry replicate` and `verify` |
 | `ghcr.io` | Resolving the check image digest at `render`/`install` (in `mirror` mode optional: without it the mirror's digest is used, with a warning); `registry replicate` copies the check image from it |
+
+## What the Argo CD hub must reach
+
+Besides the ROKS API and your Git repository, the hub pulls the two Helm charts: from FAR
+and `quay.io` with `registry.source: far`, from the mirror with `registry.source: mirror`.
+The mode does not change this; the FLP plays no part in it. An air-gapped hub therefore
+needs `registry.source: mirror` and a route to the mirror.
 
 ## The combinations
 
