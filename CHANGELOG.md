@@ -16,6 +16,10 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   and lists what is left without a local record. Deleting the current workspace unsets
   it (#26).
 
+### Fixed
+- `init --refresh` dropped the record of the transit gateway connection `install` created,
+  so `uninstall --detach-tgw` no longer knew about it. It is kept now.
+
 ## [0.6.1] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.

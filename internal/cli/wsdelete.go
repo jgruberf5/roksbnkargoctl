@@ -15,6 +15,7 @@ import (
 type wsRecord struct {
 	what   string // what is recorded
 	remove string // the command that removes it
+	alt    string // when that command cannot run, what to do instead
 }
 
 // wsBlockers are the records that stop `workspaces delete`: each is a cloud
@@ -31,23 +32,27 @@ func wsBlockers(ws *config.Workspace) (blockers, warnings []wsRecord, err error)
 		if r.TrustedProfileID != "" {
 			blockers = append(blockers, wsRecord{
 				"an install: trusted profile " + r.TrustedProfileID + " still exists (BNK is installed, or was uninstalled with --keep-trusted-profile)",
-				"roksbnkargoctl uninstall -w " + name})
+				"roksbnkargoctl uninstall -w " + name,
+				"uninstall needs the cluster and Argo CD. If the cluster is gone, delete the profile in IBM Cloud " +
+					"(Manage > Access (IAM) > Trusted profiles, or `ibmcloud iam trusted-profile-delete " + r.TrustedProfileID + "`), " +
+					"then delete the workspace with --force; if you kept the profile on purpose, --force leaves it in IBM Cloud"})
 		}
 		if r.TGWConnectionCreatedID != "" {
 			warnings = append(warnings, wsRecord{
 				"transit gateway connection " + r.TGWConnectionCreatedID + ", which install created to attach the cluster VPC (uninstall leaves it attached)",
-				"roksbnkargoctl uninstall -w " + name + " --detach-tgw"})
+				"roksbnkargoctl uninstall -w " + name + " --detach-tgw", ""})
 		}
 	}
 	if _, err := os.Stat(ws.FLPOutputsPath()); err == nil {
 		blockers = append(blockers, wsRecord{
 			"an F5 License Proxy (flp-outputs.json, with the CA key BNK trusts)",
-			"roksbnkargoctl flp down -w " + name})
+			"roksbnkargoctl flp down -w " + name, ""})
 	}
 	if _, err := os.Stat(ws.HubOutputsPath()); err == nil {
 		blockers = append(blockers, wsRecord{
 			"a test Argo CD hub (argocd-hub.json)",
-			"roksbnkargoctl argocd down -w " + name})
+			"roksbnkargoctl argocd down -w " + name,
+			"take it down last: uninstall needs it if it is this install's Argo CD"})
 	}
 	return blockers, warnings, nil
 }
@@ -104,9 +109,12 @@ func runWorkspacesDelete(cmd *cobra.Command, name string, force bool) error {
 	if len(blockers) > 0 {
 		if !force {
 			var b strings.Builder
-			fmt.Fprintf(&b, "workspace %q still records cloud resources; remove them first:", name)
-			for _, x := range blockers {
-				fmt.Fprintf(&b, "\n  %s\n    %s", x.what, x.remove)
+			fmt.Fprintf(&b, "workspace %q still records cloud resources; remove them first, in this order:", name)
+			for i, x := range blockers {
+				fmt.Fprintf(&b, "\n  %d. %s\n     %s", i+1, x.what, x.remove)
+				if x.alt != "" {
+					fmt.Fprintf(&b, "\n     (%s)", x.alt)
+				}
 			}
 			b.WriteString("\n(or pass --force to delete the workspace and leave them without a local record)")
 			return errors.New(b.String())
@@ -128,6 +136,9 @@ func runWorkspacesDelete(cmd *cobra.Command, name string, force bool) error {
 			}
 		}
 		p.info("it was the current workspace; select another with `roksbnkargoctl workspaces use <name>`")
+	}
+	if os.Getenv("ROKSBNKARGOCTL_WORKSPACE") == name {
+		p.warn("ROKSBNKARGOCTL_WORKSPACE still names %q: unset it, or later commands fail with \"has no config.yaml\"", name)
 	}
 	p.ok("workspace %q deleted", name)
 	return nil

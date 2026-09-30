@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 )
 
 const wsDeleteBase = "cluster: c\ntransit_gateway: t\n"
@@ -62,10 +64,19 @@ func TestWorkspacesDeleteRefusesWhileItRecordsCloudResources(t *testing.T) {
 		t.Fatal("deleted a workspace that records cloud resources")
 	}
 	for _, want := range []string{"trusted profile Profile-1", "roksbnkargoctl uninstall -w busy",
-		"F5 License Proxy", "roksbnkargoctl flp down -w busy", "test Argo CD hub", "roksbnkargoctl argocd down -w busy", "--force"} {
+		"F5 License Proxy", "roksbnkargoctl flp down -w busy", "test Argo CD hub", "roksbnkargoctl argocd down -w busy", "--force",
+		// the cluster-gone path, since uninstall cannot run without it
+		"If the cluster is gone", "ibmcloud iam trusted-profile-delete Profile-1",
+		// the order: uninstall needs the Argo CD a test hub may be
+		"in this order", "take it down last"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal lacks %q:\n%v", want, err)
 		}
+	}
+	msg := err.Error()
+	if !(strings.Index(msg, "1. an install") < strings.Index(msg, "2. an F5 License Proxy") &&
+		strings.Index(msg, "2. an F5 License Proxy") < strings.Index(msg, "3. a test Argo CD hub")) {
+		t.Errorf("refusal not in uninstall, flp down, argocd down order:\n%s", msg)
 	}
 	if !exists(filepath.Join(wsDir, "config.yaml")) || !exists(filepath.Join(wsDir, "flp-outputs.json")) {
 		t.Fatal("a refused delete removed files")
@@ -98,7 +109,7 @@ func TestWorkspacesDeleteForce(t *testing.T) {
 	if exists(d) {
 		t.Fatal("--force did not delete the workspace")
 	}
-	for _, want := range []string{"left without a local record (--force)", "Profile-1", "F5 License Proxy"} {
+	for _, want := range []string{"⚠ left without a local record (--force)", "Profile-1", "F5 License Proxy"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -133,8 +144,13 @@ func TestWorkspacesDeleteNeedsConfirmationAndAWorkspace(t *testing.T) {
 	if _, err := runRoot(t, "ws", "delete", "nosuch", "--yes"); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Errorf("missing workspace: %v", err)
 	}
+	// A real workspace outside the home: only the name check stands between
+	// ../victim and deleting it (without config.yaml, Exists alone refused it).
 	outside := filepath.Join(filepath.Dir(home), "victim")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "config.yaml"), []byte(wsDeleteBase), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runRoot(t, "ws", "delete", "../victim", "--yes", "--force"); err == nil || !exists(outside) {
@@ -159,5 +175,37 @@ func TestWorkspacesDeleteUnreadableConfig(t *testing.T) {
 	}
 	if out, err := runRoot(t, "ws", "delete", "bad", "--yes", "--force"); err != nil || exists(d) {
 		t.Errorf("--force on an unreadable config: %v\n%s", err, out)
+	}
+}
+
+// Deleting the workspace ROKSBNKARGOCTL_WORKSPACE names warns that it still
+// names it: the current pointer is unset, the variable is not.
+func TestWorkspacesDeleteWarnsAboutTheWorkspaceVariable(t *testing.T) {
+	home := isolate(t)
+	writeWorkspace(t, home, "envws", wsDeleteBase)
+	t.Setenv("ROKSBNKARGOCTL_WORKSPACE", "envws")
+	out, err := runRoot(t, "ws", "delete", "envws", "--yes")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "⚠ ROKSBNKARGOCTL_WORKSPACE still names") {
+		t.Errorf("no warning about the variable:\n%s", out)
+	}
+}
+
+// A re-resolve (init --refresh) keeps what install created, the transit
+// gateway connection included; the rest is looked up again.
+func TestReResolveKeepsWhatInstallCreated(t *testing.T) {
+	old := &config.Resolved{ClusterID: "c", TrustedProfileID: "Profile-1", ArgoCDClusterServer: "https://k",
+		LastPublishedCommitSHA: "abc", TGWConnectionCreatedID: "conn-9", ClusterAttachedToTGW: true}
+	r := carriedOver(old)
+	if r.TrustedProfileID != "Profile-1" || r.ArgoCDClusterServer != "https://k" || r.LastPublishedCommitSHA != "abc" || r.TGWConnectionCreatedID != "conn-9" {
+		t.Errorf("lost what install created: %+v", r)
+	}
+	if r.ClusterID != "" || r.ClusterAttachedToTGW {
+		t.Errorf("carried over what init looks up again: %+v", r)
+	}
+	if carriedOver(nil) == nil {
+		t.Error("nil old record")
 	}
 }

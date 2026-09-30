@@ -94,8 +94,16 @@ records any of them, and names the command that removes each:
 | an F5 License Proxy: `flp-outputs.json`, with the CA key BNK trusts | `roksbnkargoctl flp down -w <name>` |
 | a test Argo CD hub: `argocd-hub.json` | `roksbnkargoctl argocd down -w <name>` |
 
+Remove them in the table's order: `uninstall` needs the cluster and Argo CD, so a test hub
+that is this install's Argo CD comes down last. If the cluster no longer exists, `uninstall`
+cannot run: delete the trusted profile in IBM Cloud (**Manage > Access (IAM) > Trusted
+profiles**, or `ibmcloud iam trusted-profile-delete <id>`), then delete the workspace with
+`--force`. A profile kept on purpose (`uninstall --keep-trusted-profile`) also needs
+`--force`, which leaves it in IBM Cloud.
+
 A transit gateway connection `install` created (`resolved.tgw_connection_created_id`) is
-reported but does not block: `uninstall` leaves it attached unless `--detach-tgw`.
+reported but does not block: `uninstall` leaves it attached unless `--detach-tgw`. If
+`ROKSBNKARGOCTL_WORKSPACE` names the deleted workspace, `delete` warns that it still does.
 `--force` deletes anyway and lists what is left without a local record. Deleting the
 current workspace unsets it; select another with `workspaces use`.
 
