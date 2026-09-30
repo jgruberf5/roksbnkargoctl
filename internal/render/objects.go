@@ -226,6 +226,25 @@ func Redact(o Object) Object {
 	return out
 }
 
+// MaskLikeArgoCD returns a copy of a Secret with every value replaced as Argo
+// CD's manifests API returns it ("++++++++", verified on 3.5.1): the charts'
+// reference copy, which install --no-publish compares with that API.
+func MaskLikeArgoCD(o Object) Object {
+	c := deepCopy(o).(map[string]any)
+	out := Object(c)
+	for _, k := range []string{"data", "stringData"} {
+		if m, ok := out[k].(map[string]any); ok {
+			for key := range m {
+				m[key] = ArgoCDMask
+			}
+		}
+	}
+	return out
+}
+
+// ArgoCDMask is the value Argo CD shows for every Secret value.
+const ArgoCDMask = "++++++++"
+
 func deepCopy(v any) any {
 	switch t := v.(type) {
 	case map[string]any:

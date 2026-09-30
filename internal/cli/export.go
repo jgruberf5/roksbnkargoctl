@@ -68,7 +68,7 @@ are written straight into ROKS by install, never to Git. It also holds
 			if err := os.WriteFile(output, buf.Bytes(), 0o600); err != nil {
 				return err
 			}
-			s.p.ok("exported %d manifests under %s/ to %s", n, s.cfg.Git.Path, output)
+			s.p.ok("exported %d files under %s/ to %s", n, s.cfg.Git.Path, output)
 			s.p.info("unzip it at the root of %s (branch %s), commit and push, then run `roksbnkargoctl install --no-publish`", s.cfg.Git.URL, s.cfg.Git.Branch)
 			return nil
 		},
@@ -95,6 +95,18 @@ func writeExport(w io.Writer, gitDir, gitPath, readme string, application []byte
 			names = append(names, e.Name())
 		}
 	}
+	// The charts' values files, which the Application's Helm sources read.
+	vals, err := os.ReadDir(filepath.Join(gitDir, "values"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
+	var valueFiles []string
+	for _, e := range vals {
+		if e.Type().IsRegular() && strings.HasSuffix(e.Name(), ".yaml") {
+			valueFiles = append(valueFiles, "values/"+e.Name())
+		}
+	}
+	sort.Strings(valueFiles)
 	if len(names) == 0 {
 		return 0, fmt.Errorf("%s has no manifests: run `roksbnkargoctl render`", gitDir)
 	}
@@ -126,6 +138,15 @@ func writeExport(w io.Writer, gitDir, gitPath, readme string, application []byte
 			return 0, err
 		}
 	}
+	for _, n := range valueFiles {
+		b, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(n)))
+		if err != nil {
+			return 0, err
+		}
+		if err := add(gitPath+"/"+n, b); err != nil {
+			return 0, err
+		}
+	}
 	if err := add(exportReadme, []byte(readme)); err != nil {
 		return 0, err
 	}
@@ -137,7 +158,7 @@ func writeExport(w io.Writer, gitDir, gitPath, readme string, application []byte
 	if err := zw.Close(); err != nil {
 		return 0, err
 	}
-	return len(names), nil
+	return len(names) + len(valueFiles), nil
 }
 
 // stale reports whether config was modified after the render wrote dir.
@@ -153,14 +174,16 @@ func stale(config, dir string) bool {
 func exportInstructions(ws, url, branch, gitPath string) string {
 	return fmt.Sprintf(`# roksbnkargoctl export: workspace %[1]s
 
-This zip is the complete Git content of the BNK install for workspace %[1]s.
-Argo CD syncs it from:
+This zip is the complete Git content of the BNK install for workspace %[1]s:
+our manifests, and in values/ the Helm values of cert-manager and F5's FLO
+chart. The Application installs those two charts from the registry, as
+`+"`helm install`"+` would, with these values. Argo CD syncs it from:
 
     repository: %[2]s
     branch:     %[3]s
     path:       %[4]s
 
-1. Unzip it at the root of that repository. The manifests land in %[4]s/.
+1. Unzip it at the root of that repository. The files land in %[4]s/.
    Replace that directory's previous contents: files left over from an earlier
    export would be synced too.
 2. Commit and push to %[3]s.

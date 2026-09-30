@@ -38,8 +38,11 @@ type ObjectMeta struct {
 
 // ApplicationSpec is the subset of the Application spec used here.
 type ApplicationSpec struct {
-	Project     string                 `json:"project"`
-	Source      *ApplicationSource     `json:"source,omitempty"`
+	Project string             `json:"project"`
+	Source  *ApplicationSource `json:"source,omitempty"`
+	// Sources (multi-source: the Helm charts and Git) is passed through as
+	// rendered, so no Helm field can be dropped by a typed struct.
+	Sources     []map[string]any       `json:"sources,omitempty"`
 	Destination ApplicationDestination `json:"destination"`
 	SyncPolicy  *SyncPolicy            `json:"syncPolicy,omitempty"`
 	// IgnoreDifferences is passed through as rendered. Any field missing from
@@ -102,6 +105,9 @@ type ApplicationStatus struct {
 type SyncStatus struct {
 	Status   string `json:"status,omitempty"`
 	Revision string `json:"revision,omitempty"`
+	// Revisions is a multi-source Application's resolved revision per source
+	// (a chart version, a Git commit), in source order; Revision is empty then.
+	Revisions []string `json:"revisions,omitempty"`
 }
 
 // HealthStatus is Healthy / Progressing / Degraded / Suspended / Missing / Unknown.
@@ -224,19 +230,25 @@ func (c *Client) GetApplication(ctx context.Context, name, appNamespace string) 
 
 // SyncOptions are the knobs of one manual sync.
 type SyncOptions struct {
-	Prune        bool
-	Revision     string
-	SyncOptions  []string // e.g. ServerSideApply=true; empty uses the app's own
-	AppNamespace string
+	Prune    bool
+	Revision string
+	// SourcePosition (1-based) makes Revision the revision of that source of
+	// a multi-source Application; 0 is a single-source Application.
+	SourcePosition int
+	SyncOptions    []string // e.g. ServerSideApply=true; empty uses the app's own
+	AppNamespace   string
 }
 
 type syncBody struct {
-	Name         string        `json:"name"`
-	AppNamespace string        `json:"appNamespace,omitempty"`
-	Project      string        `json:"project,omitempty"`
-	Prune        bool          `json:"prune"`
-	Revision     string        `json:"revision,omitempty"`
-	SyncOptions  *syncOptItems `json:"syncOptions,omitempty"`
+	Name         string `json:"name"`
+	AppNamespace string `json:"appNamespace,omitempty"`
+	Project      string `json:"project,omitempty"`
+	Prune        bool   `json:"prune"`
+	Revision     string `json:"revision,omitempty"`
+	// Multi-source: the revision of each listed source (1-based positions).
+	Revisions       []string      `json:"revisions,omitempty"`
+	SourcePositions []int64       `json:"sourcePositions,omitempty"`
+	SyncOptions     *syncOptItems `json:"syncOptions,omitempty"`
 }
 
 type syncOptItems struct {
@@ -247,6 +259,10 @@ type syncOptItems struct {
 // operation is requested; use WaitOperation for the outcome.
 func (c *Client) Sync(ctx context.Context, name string, o SyncOptions) (*Application, error) {
 	body := syncBody{Name: name, AppNamespace: o.AppNamespace, Project: c.Project, Prune: o.Prune, Revision: o.Revision}
+	if o.SourcePosition > 0 && o.Revision != "" {
+		body.Revision = ""
+		body.Revisions, body.SourcePositions = []string{o.Revision}, []int64{int64(o.SourcePosition)}
+	}
 	if len(o.SyncOptions) > 0 {
 		body.SyncOptions = &syncOptItems{Items: o.SyncOptions}
 	}
@@ -382,13 +398,45 @@ func Jobs(tree *ApplicationTree, op *OperationState) []JobStatus {
 // the Application would sync from its source right now, one JSON document per
 // object, and the Git revision they came from.
 func (c *Client) Manifests(ctx context.Context, name, appNamespace string) (revision string, manifests []string, err error) {
+	return c.ManifestsAt(ctx, name, appNamespace, 0, "")
+}
+
+// ManifestsAt is Manifests with source sourcePosition (1-based) of a
+// multi-source Application rendered at revision; the other sources render at
+// their own targetRevision. A multi-source response carries no revision, so
+// revision is returned as given.
+func (c *Client) ManifestsAt(ctx context.Context, name, appNamespace string, sourcePosition int, revision string) (string, []string, error) {
 	var out struct {
 		Manifests []string `json:"manifests"`
 		Revision  string   `json:"revision"`
 	}
+	q := c.appQuery(appNamespace)
+	if sourcePosition > 0 {
+		q.Set("sourcePositions", strconv.Itoa(sourcePosition))
+		q.Set("revisions", revision)
+	}
 	if err := c.do(ctx, "read manifests of "+name, "GET",
-		withQuery("/api/v1/applications/"+url.PathEscape(name)+"/manifests", c.appQuery(appNamespace)), nil, &out); err != nil {
+		withQuery("/api/v1/applications/"+url.PathEscape(name)+"/manifests", q), nil, &out); err != nil {
 		return "", nil, err
 	}
+	if out.Revision == "" {
+		out.Revision = revision
+	}
 	return out.Revision, out.Manifests, nil
+}
+
+// SourceRevisions refreshes an Application and returns the revision each of
+// its sources resolves to now (GET ?refresh=normal; status.sync.revisions).
+func (c *Client) SourceRevisions(ctx context.Context, name, appNamespace string) ([]string, error) {
+	q := c.appQuery(appNamespace)
+	q.Set("refresh", "normal")
+	var out Application
+	if err := c.do(ctx, "refresh application "+name, "GET",
+		withQuery("/api/v1/applications/"+url.PathEscape(name), q), nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Status == nil {
+		return nil, nil
+	}
+	return out.Status.Sync.Revisions, nil
 }

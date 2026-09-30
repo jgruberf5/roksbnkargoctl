@@ -55,8 +55,10 @@ func chartTGZ(t *testing.T, name string) []byte {
 	t.Helper()
 	files := map[string]string{
 		name + "/Chart.yaml":        "apiVersion: v2\nname: " + name + "\nversion: 0.1.0\n",
-		name + "/templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "\ndata: {}\n",
-		name + "/values.yaml":       "{}\n",
+		name + "/templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "\n  namespace: {{ .Release.Namespace }}\ndata: {}\n",
+		// A chart-shipped Secret, as FLO ships external-otelsvr-secret.
+		name + "/templates/secret.yaml": "apiVersion: v1\nkind: Secret\nmetadata:\n  name: " + name + "-shipped\n  namespace: {{ .Release.Namespace }}\ndata:\n  tls.key: c2VjcmV0\n",
+		name + "/values.yaml":           "{}\n",
 	}
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -72,6 +74,12 @@ func chartTGZ(t *testing.T, name string) []byte {
 
 // renderedGitDir renders a workspace the way `render` does and writes it.
 func renderedGitDir(t *testing.T) string {
+	dir, _ := renderedWorkspace(t)
+	return dir
+}
+
+// renderedWorkspace is renderedGitDir with the in-memory render it wrote.
+func renderedWorkspace(t *testing.T) (string, *render.Output) {
 	c := &config.Config{IBMCloud: config.IBMCloud{Region: "us-east"}, Cluster: "c", TransitGateway: "t",
 		COS: config.COS{Bucket: "b"}, ArgoCD: config.ArgoCD{Server: "https://a"}, Git: config.Git{URL: "https://g/r.git"}}
 	c.Defaults("ws")
@@ -81,6 +89,7 @@ func renderedGitDir(t *testing.T) string {
 			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
 			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
 		FLOChart: chartTGZ(t, "flo"), CertManagerChart: chartTGZ(t, "cm"),
+		FLOChartRef: "repo.f5.com/charts/f5-lifecycle-operator:1", CertManagerChartRef: "quay.io/jetstack/charts/cert-manager:v1",
 		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +98,7 @@ func renderedGitDir(t *testing.T) string {
 	if err := render.Write(out, dir); err != nil {
 		t.Fatal(err)
 	}
-	return filepath.Join(dir, "git")
+	return filepath.Join(dir, "git"), out
 }
 
 // The CLI's copy of a hook must be the same check (image, args, account,
@@ -246,9 +255,13 @@ func TestToArgoAppIsLossless(t *testing.T) {
 			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
 			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
 		FLOChart: chartTGZ(t, "flo"), CertManagerChart: chartTGZ(t, "cm"),
+		FLOChartRef: "repo.f5.com/charts/f5-lifecycle-operator:1", CertManagerChartRef: "quay.io/jetstack/charts/cert-manager:v1",
 		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, ok := out.Application["spec"].(map[string]any)["sources"]; !ok {
+		t.Fatal("the rendered Application has no sources: this test would not see them dropped")
 	}
 	app, err := toArgoApp(out.Application)
 	if err != nil {

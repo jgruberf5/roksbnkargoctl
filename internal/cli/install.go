@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/argocd"
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
@@ -130,7 +132,7 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	if err := render.Write(o, s.ws.ManifestsDir()); err != nil {
 		return err
 	}
-	p.ok("rendered %d Git objects, %d direct objects", len(o.Git), len(o.Direct))
+	p.ok("rendered %d Git objects, %d Helm charts, %d direct objects", len(o.Git), len(o.Charts), len(o.Direct))
 
 	// 5. Direct objects.
 	k, err := s.Kube(ctx)
@@ -202,6 +204,25 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	}); err != nil {
 		return err
 	}
+	host, user, pass, err := registryLogin(ctx, s)
+	if err != nil {
+		return err
+	}
+	if ca, err := s.MirrorCA(); err != nil {
+		return err
+	} else if ca != "" && c.Registry.Source == config.SourceMirror {
+		h := strings.SplitN(mirrorRegistryHost(c), ":", 2)[0]
+		if err := ac.UpsertTLSCert(ctx, h, ca); err != nil {
+			return fmt.Errorf("adding the mirror's CA (registry.mirror.ca_file) to Argo CD: %w", err)
+		}
+		p.ok("Argo CD trusts the mirror's CA for %s", h)
+	}
+	for _, r := range chartRepos(c, o.Charts, host, user, pass) {
+		if _, err := ac.UpsertRepository(ctx, r); err != nil {
+			return fmt.Errorf("adding the chart registry %s to Argo CD: %w", r.URL, err)
+		}
+		p.ok("Argo CD pulls the %s chart from %s", r.Name, r.URL)
+	}
 	app, err := toArgoApp(o.Application)
 	if err != nil {
 		return err
@@ -219,14 +240,65 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return fmt.Errorf("creating the Application: %w", err)
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
-	if sha, err = revisionToSync(noPublish, sha, func() (string, error) { return checkGitMatchesRender(ctx, s, ac) }); err != nil {
+	gitPos, err := gitSourcePosition(o.Application)
+	if err != nil {
+		return err
+	}
+	if sha, err = revisionToSync(noPublish, sha, func() (string, error) { return checkGitMatchesRender(ctx, s, ac, gitPos) }); err != nil {
 		return err
 	}
 	if noSync {
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
 		return nil
 	}
-	return syncAndWait(ctx, s, ac, sha, timeout)
+	return syncAndWait(ctx, s, ac, sha, gitPos, timeout)
+}
+
+// chartRepos are the Argo CD repository entries the charts' Helm sources pull
+// from: OCI registries, with the registry login where the chart lives on the
+// registry it is for (FAR or the mirror), anonymous otherwise (quay.io).
+func chartRepos(c *config.Config, charts []render.Chart, loginHost, user, pass string) []argocd.Repo {
+	var out []argocd.Repo
+	seen := map[string]bool{}
+	for _, ch := range charts {
+		if seen[ch.RepoURL] {
+			continue
+		}
+		seen[ch.RepoURL] = true
+		r := argocd.Repo{URL: ch.RepoURL, HelmOCI: true, Name: ch.Chart, Project: c.ArgoCD.Project}
+		if user != "" && strings.SplitN(ch.RepoURL, "/", 2)[0] == loginHost {
+			r.Username, r.Password = user, pass
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// chartRepoURLs are the chart registries the workspace's Application pulls
+// from, as the last render wrote them into application.yaml.
+func chartRepoURLs(s *session) []string {
+	b, err := os.ReadFile(filepath.Join(s.ws.ManifestsDir(), "application.yaml"))
+	if err != nil {
+		return nil
+	}
+	var app struct {
+		Spec struct {
+			Sources []struct {
+				RepoURL string `json:"repoURL"`
+				Chart   string `json:"chart"`
+			} `json:"sources"`
+		} `json:"spec"`
+	}
+	if yaml.Unmarshal(b, &app) != nil {
+		return nil
+	}
+	var out []string
+	for _, src := range app.Spec.Sources {
+		if src.Chart != "" && !slices.Contains(out, src.RepoURL) {
+			out = append(out, src.RepoURL)
+		}
+	}
+	return out
 }
 
 // registerRepo registers the Git repository in Argo CD with the credential
@@ -255,10 +327,32 @@ func revisionToSync(noPublish bool, pushed string, compare func() (string, error
 	return compare()
 }
 
-func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, timeout time.Duration) error {
+// gitSourcePosition is the 1-based position of the Application's Git source
+// (the one that is not a chart), which install pins to the commit it syncs.
+func gitSourcePosition(app render.Object) (int, error) {
+	spec, _ := app["spec"].(map[string]any)
+	srcs, _ := spec["sources"].([]any)
+	pos := 0
+	for i, x := range srcs {
+		if m, ok := x.(map[string]any); ok && m["chart"] == nil {
+			if pos != 0 {
+				return 0, errors.New("the Application has more than one Git source")
+			}
+			pos = i + 1
+		}
+	}
+	if pos == 0 {
+		return 0, errors.New("the Application has no Git source")
+	}
+	return pos, nil
+}
+
+// syncAndWait syncs the Application with its Git source (position gitPos) at
+// revision, the commit published or compared; the charts at their versions.
+func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, gitPos int, timeout time.Duration) error {
 	c, p := s.cfg, s.p
 	p.step("syncing %s (pre-install check → cert-manager → FLO → CNEInstance → license)", c.ArgoCD.Application)
-	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision}); err != nil {
+	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision, SourcePosition: gitPos}); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
 	last := ""
@@ -656,6 +750,11 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if o.removeRepo {
 		if err := ac.DeleteRepository(ctx, c.Git.URL); err != nil && !argocd.IsNotFound(err) {
 			errs = append(errs, err)
+		}
+		for _, u := range chartRepoURLs(s) {
+			if err := ac.DeleteRepository(ctx, u); err != nil && !argocd.IsNotFound(err) {
+				errs = append(errs, err)
+			}
 		}
 	}
 	ibmc, err := s.IBM()

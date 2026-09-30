@@ -65,3 +65,16 @@ func (c *Client) UpsertSSHKnownHosts(ctx context.Context, knownHosts string) (ad
 	}
 	return len(items), skipped, nil
 }
+
+// UpsertTLSCert adds a CA certificate Argo CD trusts for HTTPS repositories on
+// serverName (POST /api/v1/certificates?upsert=true, certType https), as
+// `argocd cert add-tls` does: a private-CA registry's charts then pull without
+// skipping verification. serverName is a host name without a port: Argo CD
+// matches TLS certificates by host.
+func (c *Client) UpsertTLSCert(ctx context.Context, serverName, pemData string) error {
+	if strings.Contains(serverName, ":") || serverName == "" {
+		return fmt.Errorf("argocd: TLS certificate server name %q must be a host name without a port", serverName)
+	}
+	body := map[string]any{"items": []repoCert{{ServerName: serverName, CertType: "https", CertData: []byte(pemData)}}}
+	return c.do(ctx, "add TLS certificate for "+serverName, "POST", "/api/v1/certificates?upsert=true", body, nil)
+}

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -29,31 +30,53 @@ func readZip(t *testing.T, b []byte) map[string]string {
 	return out
 }
 
-// The export of a real render: every manifest under git.path, byte-for-byte,
-// plus the instructions and the Application; no Secret; and nothing else.
+// gitFiles lists every file render wrote for Git, relative to dir.
+func gitFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, p)
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// The export of a real render: every file render wrote for Git (the manifests
+// and the charts' values files) under git.path, byte-for-byte, plus the
+// instructions and the Application; no Secret; and nothing else.
 func TestExportIsTheRenderedGitContentUnderGitPath(t *testing.T) {
 	dir := renderedGitDir(t)
-	ents, _ := os.ReadDir(dir)
+	want := gitFiles(t, dir)
+	if !slices.Contains(want, "values/flo.yaml") || !slices.Contains(want, "values/cert-manager.yaml") {
+		t.Fatalf("render wrote no values files: %v", want)
+	}
 	var buf bytes.Buffer
 	n, err := writeExport(&buf, dir, "bnk/demo", "readme", []byte("app"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != len(ents) {
-		t.Fatalf("exported %d of %d manifests", n, len(ents))
+	if n != len(want) {
+		t.Fatalf("exported %d of %d files", n, len(want))
 	}
 	files := readZip(t, buf.Bytes())
-	for _, e := range ents {
-		want, _ := os.ReadFile(filepath.Join(dir, e.Name()))
-		if files["bnk/demo/"+e.Name()] != string(want) {
-			t.Errorf("%s missing or changed in the zip", e.Name())
+	for _, f := range want {
+		b, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f)))
+		if files["bnk/demo/"+f] != string(b) {
+			t.Errorf("%s missing or changed in the zip", f)
 		}
 	}
 	if files[exportReadme] != "readme" || files[exportApplication] != "app" {
 		t.Error("instructions or Application missing")
 	}
-	if len(files) != len(ents)+2 {
-		t.Errorf("zip has %d entries, want %d", len(files), len(ents)+2)
+	if len(files) != len(want)+2 {
+		t.Errorf("zip has %d entries, want %d", len(files), len(want)+2)
 	}
 	for name, body := range files {
 		if strings.Contains(body, "\nkind: Secret") || strings.HasPrefix(body, "kind: Secret") {

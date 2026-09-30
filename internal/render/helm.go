@@ -18,6 +18,10 @@ type ChartRender struct {
 	Values      map[string]any
 	KubeVersion string   // e.g. "v1.34.9", the cluster's
 	APIVersions []string // extra group/versions the chart tests with .Capabilities
+	// ReleaseNamespace is .Release.Namespace when it differs from Namespace,
+	// which is where an object that names no namespace goes (Argo CD's
+	// destination namespace, whatever the Helm source's namespace).
+	ReleaseNamespace string
 }
 
 // RenderChart templates a chart in-process with the Helm SDK: client-only, no
@@ -40,6 +44,9 @@ func RenderChart(r ChartRender) ([]Object, error) {
 	inst.IncludeCRDs = true
 	inst.ReleaseName = r.Release
 	inst.Namespace = r.Namespace
+	if r.ReleaseNamespace != "" {
+		inst.Namespace = r.ReleaseNamespace
+	}
 	inst.DisableOpenAPIValidation = true
 	if r.KubeVersion != "" {
 		kv, err := chartutil.ParseKubeVersion(r.KubeVersion)
