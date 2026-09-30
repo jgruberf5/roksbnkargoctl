@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,16 +13,17 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // withPrompt makes prompts interactive, reading from r, with ctx as the
 // Ctrl-C context, for the test's duration.
 func withPrompt(t *testing.T, r io.Reader, ctx context.Context) {
 	t.Helper()
-	stdinOnce.Do(func() {})
-	oldR, oldTTY, oldCtx := stdinReader, isTTY, promptCtx
-	stdinReader, isTTY, promptCtx = bufio.NewReader(r), func() bool { return true }, ctx
-	t.Cleanup(func() { stdinReader, isTTY, promptCtx = oldR, oldTTY, oldCtx })
+	stdin() // initialise the real reader first, so cleanup restores a usable one
+	oldR, oldTTY, oldCtx, oldErr := stdinReader, isTTY, promptCtx, promptErr
+	stdinReader, isTTY, promptCtx, promptErr = bufio.NewReader(r), func() bool { return true }, ctx, io.Discard
+	t.Cleanup(func() { stdinReader, isTTY, promptCtx, promptErr = oldR, oldTTY, oldCtx, oldErr })
 }
 
 // runAsking runs a command that asks one question, as Execute runs commands.
@@ -182,4 +184,61 @@ func TestCtrlCEndsConfirmAndTheForgePassword(t *testing.T) {
 		_, _ = forgePassword(io.Discard)
 	})
 	wantInterrupted(t, err)
+}
+
+// An interrupted prompt ends its line before "roksbnkargoctl: interrupted",
+// whether by Ctrl-C or by the end of input.
+func TestInterruptEndsThePromptLine(t *testing.T) {
+	for name, setup := range map[string]func() (io.Reader, context.Context){
+		"ctrl-c": func() (io.Reader, context.Context) {
+			pr, _ := io.Pipe()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return pr, ctx
+		},
+		"eof": func() (io.Reader, context.Context) {
+			pr, pw := io.Pipe()
+			pw.Close()
+			return pr, context.Background()
+		},
+	} {
+		r, ctx := setup()
+		withPrompt(t, r, ctx)
+		var out bytes.Buffer
+		promptErr = &out
+		var err error
+		within(t, func() {
+			defer recoverInterrupted(&err)
+			readLine()
+		})
+		wantInterrupted(t, err)
+		if out.String() != "\n" {
+			t.Errorf("%s: wrote %q before the error, want a newline", name, out.String())
+		}
+	}
+}
+
+// Ctrl-C at the password prompt restores the terminal state captured before
+// the read: the abandoned read would otherwise leave echo off.
+func TestInterruptedSecretRestoresTheTerminal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	withPrompt(t, nil, ctx)
+	captured := &term.State{}
+	var restored *term.State
+	oldGet, oldRestore := termGetState, termRestore
+	defer func() { termGetState, termRestore = oldGet, oldRestore }()
+	termGetState = func(int) (*term.State, error) { return captured, nil }
+	termRestore = func(_ int, st *term.State) error { restored = st; return nil }
+	block := make(chan struct{})
+	defer close(block)
+	time.AfterFunc(20*time.Millisecond, cancel)
+	var err error
+	within(t, func() {
+		defer recoverInterrupted(&err)
+		_, _ = readSecret(func() ([]byte, error) { <-block; return nil, nil })
+	})
+	wantInterrupted(t, err)
+	if restored != captured {
+		t.Error("the terminal state was not restored after an interrupted password read")
+	}
 }

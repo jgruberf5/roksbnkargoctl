@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -37,6 +38,14 @@ var promptCtx = context.Background()
 // unwinding still runs every deferred cleanup on the way out.
 type interrupted struct{}
 
+// Seams for tests: where the interrupt newline goes, and the terminal state
+// calls readSecret uses to restore echo (a test has no terminal).
+var (
+	promptErr    io.Writer = os.Stderr
+	termGetState           = term.GetState
+	termRestore            = term.Restore
+)
+
 // errInterrupted is what an interrupted command returns.
 var errInterrupted = errors.New("interrupted")
 
@@ -57,21 +66,24 @@ func readLine() string {
 	select {
 	case r := <-ch:
 		if r.err != nil && r.s == "" {
+			// End of input: end the prompt's line before the error message.
+			fmt.Fprintln(promptErr)
 			panic(interrupted{})
 		}
 		return r.s
 	case <-promptCtx.Done():
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(promptErr)
 		panic(interrupted{})
 	}
 }
 
 // readSecret is readLine without echo, via read (term.ReadPassword on the
-// real terminal). On Ctrl-C the terminal's echo is restored before unwinding:
+// real terminal). Ctrl-D does not end it: x/term's password read treats an
+// empty read as nothing typed and waits on; Ctrl-C does. On Ctrl-C the terminal's echo is restored before unwinding:
 // the abandoned read would otherwise leave it off.
 func readSecret(read func() ([]byte, error)) ([]byte, error) {
 	fd := int(os.Stdin.Fd())
-	state, stateErr := term.GetState(fd)
+	state, stateErr := termGetState(fd)
 	type res struct {
 		b   []byte
 		err error
@@ -86,9 +98,9 @@ func readSecret(read func() ([]byte, error)) ([]byte, error) {
 		return r.b, r.err
 	case <-promptCtx.Done():
 		if stateErr == nil {
-			_ = term.Restore(fd, state)
+			_ = termRestore(fd, state)
 		}
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(promptErr)
 		panic(interrupted{})
 	}
 }
