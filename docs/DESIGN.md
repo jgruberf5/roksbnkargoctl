@@ -26,7 +26,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 |---|---|---|
 | `init` | Interview, or `--config-file`; resolves cluster → VPC, gateway, COS objects; writes the workspace | IBM |
 | `cos` | Publish and discover the FAR auth tarball and subscription JWT | IBM COS |
-| `registry` | `bom`, `replicate`, `verify`: FAR → private registry with crane; includes the `check` image | FAR, mirror |
+| `registry` | `bom`, `replicate`, `verify`: FAR → private registry with crane; includes the `check` image. No workspace needed: every input is a flag (`--mirror-*`, `--far-*`, `--cos-*`); the mirror password only ever comes from an environment variable | FAR, mirror |
 | `flp` | `up`/`down`/`status`: F5 License Proxy on a VSI attached to the transit gateway | IBM VPC, TGW |
 | `argocd` | `up`/`down`/`status`: a **test** Argo CD hub (k3s + Argo CD on a VSI), like roksbnkctl's demo hub | IBM VPC, TGW |
 | `render` | Writes every manifest the Application syncs into `<workspace>/manifests/` | FAR (chart pulls) |

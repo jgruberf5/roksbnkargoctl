@@ -1,8 +1,20 @@
 package registry
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	ggcrregistry "github.com/google/go-containerregistry/pkg/registry"
+	"github.com/google/go-containerregistry/pkg/v1/random"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 )
@@ -67,5 +79,41 @@ func TestBOMMapsPlusToUnderscore(t *testing.T) {
 		if strings.Contains(a.Source, "log-doc") && !strings.HasSuffix(a.Source, ":14.91.12_0.4.7") {
 			t.Fatalf("log-doc tag = %s, want 14.91.12_0.4.7", a.Source)
 		}
+	}
+}
+
+// Replicate calls progress from its copy goroutines; callers count and print
+// in it, so the calls must never overlap (the CLI's done++ raced under -race).
+func TestReplicateNeverCallsProgressConcurrently(t *testing.T) {
+	reg := httptest.NewServer(ggcrregistry.New(ggcrregistry.Logger(log.New(io.Discard, "", 0))))
+	defer reg.Close()
+	host := strings.TrimPrefix(reg.URL, "http://")
+	var bom []Artifact
+	for i := 0; i < 8; i++ {
+		img, _ := random.Image(64, 1)
+		src := fmt.Sprintf("%s/src/img%d:1", host, i)
+		ref, _ := name.ParseReference(src)
+		if err := remote.Write(ref, img); err != nil {
+			t.Fatal(err)
+		}
+		bom = append(bom, Artifact{Source: src, Kind: "chart"})
+	}
+	pl, _ := far.NewPuller(nil, nil)
+	var inFlight, overlaps, calls int32
+	res := Replicate(context.Background(), pl, host+"/m", bom, 8, func(Result) {
+		if atomic.AddInt32(&inFlight, 1) > 1 {
+			atomic.AddInt32(&overlaps, 1)
+		}
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt32(&calls, 1)
+		atomic.AddInt32(&inFlight, -1)
+	})
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatal(r.Err)
+		}
+	}
+	if calls != int32(len(bom)) || overlaps != 0 {
+		t.Fatalf("progress called %d times (want %d), %d overlapping", calls, len(bom), overlaps)
 	}
 }
