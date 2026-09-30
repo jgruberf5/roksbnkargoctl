@@ -12,8 +12,8 @@ checklist; most failed installs trace back to one line of it.
 | A ROKS cluster: OpenShift 4.16 or later, schedulable workers in 3 zones, at least 3 of them | `init` (OpenShift, one VPC, zones warning), `check pre-install` (version, zones, workers) |
 | A transit gateway | `init` (resolves it), `install` (attaches the cluster VPC if needed) |
 | Argo CD 3.3 or later, outside the cluster, reachable over the transit gateway to the ROKS private endpoint | `install` (version), the first sync wave (reachability) |
-| An Argo CD API token | `install` |
-| A Git repository, and a token or SSH key that can push to it | `install` (publish), Argo CD (clone) |
+| An Argo CD API token | `init` (when you use an existing Argo CD), `install` |
+| A Git repository, and a token or SSH key that can push to it (read access is enough for `install --no-publish`) | `init` and `install` (access check), `install` (publish), Argo CD (clone) |
 | The FAR auth tarball and the subscription JWT from MyF5, in COS or as local files | `init` (objects exist), `render` / `install` (read them) |
 | `IBMCLOUD_API_KEY` in the environment, with the IAM access below | every command that calls IBM Cloud |
 | Node egress for your mode | `check-node-probe` and `check pre-install`, before any BNK object is applied |
@@ -56,7 +56,7 @@ VSI) reaches the cluster privately. It must already exist; you give its name or 
 
 ### The Argo CD API token
 
-`install` reads the token from `ARGOCD_AUTH_TOKEN` (or the variable named by
+`init` (for an existing Argo CD) and `install` read the token from `ARGOCD_AUTH_TOKEN` (or the variable named by
 `argocd.token_env`). The account behind it must be allowed to:
 
 - read the server version;
@@ -75,13 +75,16 @@ equivalent RBAC works. Generate the token in the Argo CD UI or with the Argo CD 
 |---|---|
 | Repository | `git.url`, over HTTPS (`https://…`) or SSH (`git@…`). Argo CD must be able to read it. |
 | Branch and path | `git.branch` (default `main`) and `git.path` (default `bnk/<workspace>`), a relative path inside the repo. Only that path is written. |
-| HTTPS credential | A token that can push, from `ROKSBNKARGOCTL_GIT_TOKEN` (or `git.token_env`), with `git.username` (default `git`). |
+| HTTPS credential | A token that can push, from `ROKSBNKARGOCTL_GIT_TOKEN` (or `git.token_env`), with `git.username` (default `git`). `init` checks the repository can be read and warns if the token cannot push; `install` refuses to start without push rights. With `install --no-publish` read access is enough, and the credential is optional for a repository readable without one. |
 | SSH credential | A private key file, `git.ssh_key_file`. |
 | SSH host keys | Always verified. The keys of `github.com`, `gitlab.com` and `bitbucket.org` are built in. For any other Git server, set `git.known_hosts_file`; its entries are also added to Argo CD so the hub's clone verifies the same host. |
 
 The same credential is given to Argo CD as the repository credential, so a token with
-push rights is stored in Argo CD. If your policy requires a read-only credential on the
-hub, replace the repository credential in Argo CD after the first install.
+push rights is stored in Argo CD. Every `install` sets it again (an upsert). If your
+policy requires a read-only credential on the hub, commit an `export` yourself and run
+`install --no-publish` with a read-only token or deploy key: `--no-publish` needs only
+read access, and that credential is the one registered in Argo CD (see
+[install](./08-install.md#without-letting-roksbnkargoctl-push-to-git)).
 
 `ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1` switches SSH host-key verification off. It is an
 escape hatch that prints a loud warning; prefer `git.known_hosts_file`.
@@ -122,8 +125,8 @@ These are the IBM Cloud services the tool calls, and the access each call implie
 | Transit Gateway | List gateways and connections; create a VPC connection (only when the cluster VPC is not attached); delete it on `uninstall --detach-tgw` | Viewer, plus Editor to attach or detach |
 | IAM Identity Service | Read the key's own details (account ID); create, find, link and delete the trusted profile | A role that can create and delete trusted profiles (Administrator does) |
 | IAM Access Management | Create and list access policies for the trusted profile | Administrator on the resources being granted: VPC Infrastructure Services for the cluster's VPC, and Kubernetes Service for the cluster |
-| Resource Controller | Find the COS instance by name | Viewer on its resource group |
-| Cloud Object Storage | List the bucket; read the FAR tarball and JWT | Reader (or Content Reader) on the bucket |
+| Resource Controller | List the account's COS instances, to find one by name, GUID or CRN | Viewer on its resource group |
+| Cloud Object Storage | List the instance's buckets (to find the bucket's region); list the bucket; read the FAR tarball and JWT | Reader (or Content Reader) on the bucket. Without the right to list the instance's buckets, reads fall back to `cos.region` ([chapter 14](./14-cos.md#finding-the-buckets-region)) |
 
 `flp up` and `argocd up` create VPC resources (VSI, subnet, security group, floating IP,
 public gateway, SSH key) and need Editor on VPC Infrastructure Services in addition; see
@@ -151,7 +154,7 @@ from a mirror needs none to the internet, only the mirror and the license proxy.
 | Destination | Used by |
 |---|---|
 | `iam.cloud.ibm.com`, `containers.cloud.ibm.com`, `transit.cloud.ibm.com`, `resource-controller.cloud.ibm.com`, `<region>.iaas.cloud.ibm.com` | `init`, `install`, `uninstall`, `status` |
-| `s3.<cos.region>.cloud-object-storage.appdomain.cloud` | reading the FAR tarball and JWT from COS |
+| `s3.<region>.cloud-object-storage.appdomain.cloud`, for the bucket's region (and `cos.region`) | reading the FAR tarball and JWT from COS |
 | The ROKS default (normally public) service endpoint (or private, with `ROKSBNKARGOCTL_PRIVATE_ENDPOINT=1`) | `render`, `install`, `uninstall`, `status`, `diagnose` |
 | FAR (`repo.f5.com`) or the mirror; `quay.io` for the cert-manager chart when pulling from FAR | `render` (manifest and charts) |
 | `ghcr.io` | `render` resolves the check image's digest (in mirror mode it falls back to the mirror's copy, with a warning, if `ghcr.io` is unreachable) |

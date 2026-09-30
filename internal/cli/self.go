@@ -94,6 +94,13 @@ authenticates the GitHub API calls (60 requests/hour without it).`,
 			if check {
 				return u.check(ctx, cmd.OutOrStdout())
 			}
+			if u.container {
+				tag := strings.TrimSpace(pinned)
+				if tag != "" {
+					tag = normalizeTag(tag)
+				}
+				return errSelfUpdateInContainer(tag)
+			}
 			target, err := runningBinary()
 			if err != nil {
 				return err
@@ -118,6 +125,9 @@ type updater struct {
 	bnk     string // the BNK version this binary installs; never changes
 	current string // this binary's version
 	w       io.Writer
+	// container is true in the published image, where the binary is replaced
+	// by pulling a newer image tag, never in place.
+	container bool
 }
 
 func newUpdater(w io.Writer) *updater {
@@ -125,6 +135,7 @@ func newUpdater(w io.Writer) *updater {
 		api: githubAPI, repo: selfRepo, client: &http.Client{Timeout: selfUpdateTimeout},
 		goos: runtime.GOOS, goarch: runtime.GOARCH,
 		bnk: config.BNKVersion, current: Version, w: w,
+		container: inContainerImage(),
 	}
 }
 
@@ -228,6 +239,10 @@ func (u *updater) check(ctx context.Context, out io.Writer) error {
 			suffix = "  (latest)"
 		}
 		fmt.Fprintf(out, "  %s%s\n", r.TagName, suffix)
+	}
+	if u.container {
+		fmt.Fprintf(out, "Pull it: docker pull %s:%s\n", CLIImageRepo, newer[0].TagName)
+		return nil
 	}
 	fmt.Fprintln(out, "Run `roksbnkargoctl self update` to install one.")
 	return nil

@@ -25,9 +25,10 @@ var (
 )
 
 var (
-	flagWorkspace string
-	flagYes       bool
-	flagVerbose   bool
+	flagWorkspace   string
+	flagNoWorkspace bool
+	flagYes         bool
+	flagVerbose     bool
 )
 
 // Execute runs the CLI.
@@ -74,7 +75,8 @@ their APIs.
 
 Optional components: cos (FAR key + JWT), registry (private mirror),
 flp (license proxy VSI for disconnected mode), argocd (a test Argo CD hub),
-agent (troubleshooting with an agentic CLI).
+agent (troubleshooting with an agentic CLI), forge (register the cluster with
+BNK Forge).
 
 The binary itself: self install (copy it onto PATH), self update (from the
 GitHub releases, for the same BNK version).`,
@@ -82,12 +84,13 @@ GitHub releases, for the same BNK version).`,
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVarP(&flagWorkspace, "workspace", "w", "", "workspace name (default: the current workspace)")
+	root.PersistentFlags().BoolVar(&flagNoWorkspace, "no-workspace", false, "run without a workspace, ignoring ROKSBNKARGOCTL_WORKSPACE and the current workspace: settings come from flags, ROKSBNKARGOCTL_* variables and defaults (commands that need a workspace refuse)")
 	root.PersistentFlags().BoolVarP(&flagYes, "yes", "y", false, "do not ask for confirmation")
 	root.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	root.AddCommand(
-		newInitCmd(), newRenderCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
-		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(),
-		newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
+		newInitCmd(), newRenderCmd(), newExportCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
+		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(), newForgeCmd(),
+		newShowCmd(), newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
 	)
 	return root
 }
@@ -132,7 +135,20 @@ func setCurrent(name string) error {
 	return config.WriteFileAtomic(p, []byte(name+"\n"), 0o600)
 }
 
+// errNoWorkspace is returned when nothing selects a workspace.
+var errNoWorkspace = errors.New("no workspace selected: pass -w <name> or run `roksbnkargoctl init -w <name>`")
+
+// errWorkspaceRefused is returned to a command that needs a workspace when
+// --no-workspace was given.
+var errWorkspaceRefused = errors.New("this command needs a workspace: drop --no-workspace and pass -w <name>")
+
 func workspaceName() (string, error) {
+	if flagNoWorkspace {
+		if flagWorkspace != "" {
+			return "", errors.New("--workspace and --no-workspace cannot be used together")
+		}
+		return "", errWorkspaceRefused
+	}
 	if flagWorkspace != "" {
 		return flagWorkspace, nil
 	}
@@ -142,7 +158,22 @@ func workspaceName() (string, error) {
 	if c := currentWorkspace(); c != "" {
 		return c, nil
 	}
-	return "", errors.New("no workspace selected: pass -w <name> or run `roksbnkargoctl init -w <name>`")
+	return "", errNoWorkspace
+}
+
+// selectWorkspace returns the selected workspace. With required false, no
+// selection (or --no-workspace) is a nil workspace rather than an error; a
+// selected workspace that does not exist is still an error, since silently
+// running without the workspace the operator named would be worse.
+func selectWorkspace(required bool) (*config.Workspace, error) {
+	name, err := workspaceName()
+	if err != nil {
+		if !required && (errors.Is(err, errNoWorkspace) || errors.Is(err, errWorkspaceRefused)) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return config.Open(name)
 }
 
 func openWorkspace() (*config.Workspace, *config.Config, error) {

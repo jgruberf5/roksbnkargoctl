@@ -26,7 +26,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 |---|---|---|
 | `init` | Interview, or `--config-file`; resolves cluster → VPC, gateway, COS objects; writes the workspace | IBM |
 | `cos` | Publish and discover the FAR auth tarball and subscription JWT | IBM COS |
-| `registry` | `bom`, `replicate`, `verify`: FAR → private registry with crane; includes the `check` image | FAR, mirror |
+| `registry` | `bom`, `replicate`, `verify`: FAR → private registry with crane; includes the `check` image. No workspace needed: every input is a flag (`--mirror-*`, `--far-*`, `--cos-*`); the mirror password only ever comes from an environment variable | FAR, mirror |
 | `flp` | `up`/`down`/`status`: F5 License Proxy on a VSI attached to the transit gateway | IBM VPC, TGW |
 | `argocd` | `up`/`down`/`status`: a **test** Argo CD hub (k3s + Argo CD on a VSI), like roksbnkctl's demo hub | IBM VPC, TGW |
 | `render` | Writes every manifest the Application syncs into `<workspace>/manifests/` | FAR (chart pulls) |
@@ -228,6 +228,26 @@ A binary installs one BNK release (`config.BNKVersion`), and its release archive
   `BNK_VERSION` archive (default 2.4.0) and fail, naming the BNK versions present, when that
   release lacks it. They verify the checksum (mandatory) and hand off to
   `self install --force`.
+
+## The CLI image
+
+`ghcr.io/jgruberf5/roksbnkargoctl` runs the tool with only Docker (`build/cli/Dockerfile`,
+`.github/workflows/cli-image.yml`): `:vX.Y.Z` (+ `:latest` for a final release) on a tag,
+`:dev` from main, `:pr-N` for a same-repo PR; linux/amd64 and arm64. The binary is stamped
+like a release (`Version` is the tag, so it runs the check image of the same tag).
+
+- `distroless/static:nonroot`, not scratch: CA roots, tzdata and a writable `/tmp`
+  (gitpub writes known_hosts to `os.TempDir()`). Runs as 65532; works under any `--user`.
+- `HOME=/work`, the working directory and the mount point: workspaces land in
+  `/work/.roksbnkargoctl`, i.e. the host directory, owned by the host user under
+  `--user "$(id -u):$(id -g)"`. An unknown uid would otherwise get `HOME=/`.
+- The image sets `ROKSBNKARGOCTL_CONTAINER=1`, and only exactly `1` counts. There, `self
+  update` and `self install` refuse before any network call and name the image tag to pull;
+  `self update --check` works and names it too. `agent <cli>` refuses before scaffolding
+  (the image has no agent CLI); `agent <cli> --show` works.
+- Secrets pass with `-e`; a TLS-intercepting proxy's CA can be mounted into
+  `/etc/ssl/certs/` (Go reads every file there). Building behind one takes the optional
+  `extra_ca` build secret, used by `go mod download` only.
 
 ## Not in scope
 

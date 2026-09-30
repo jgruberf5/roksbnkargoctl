@@ -2,6 +2,7 @@ package argocd
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 )
@@ -98,4 +99,30 @@ func sameRepoURL(a, b string) bool {
 		return strings.TrimSuffix(s, ".git")
 	}
 	return norm(a) == norm(b)
+}
+
+// RepositoryBranches lists repoURL's branches as Argo CD reads them (GET
+// /api/v1/repositories/{repo}/refs), with the credential registered in Argo CD,
+// or anonymously when none is. It proves Argo CD can read the repository
+// without the operator holding a Git credential. project is tried first, for
+// a repository registered to that project, then the global registration.
+func (c *Client) RepositoryBranches(ctx context.Context, repoURL, project string) ([]string, error) {
+	var refs struct {
+		Branches []string `json:"branches"`
+	}
+	path := "/api/v1/repositories/" + pathEscape(repoURL) + "/refs"
+	op := "read the branches of " + repoURL
+	var err error
+	if project != "" {
+		if err = c.do(ctx, op, "GET", path+"?appProject="+url.QueryEscape(project), nil, &refs); err == nil {
+			return refs.Branches, nil
+		}
+	}
+	if err2 := c.do(ctx, op, "GET", path, nil, &refs); err2 != nil {
+		if err == nil || err.Error() == err2.Error() {
+			return nil, err2
+		}
+		return nil, errors.Join(err, err2)
+	}
+	return refs.Branches, nil
 }

@@ -14,8 +14,17 @@ auth tarball and subscription JWT in a COS bucket, and the binary:
 curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.sh | sh
 ```
 
-(on Windows, and other ways to install it, see
-[Installing roksbnkargoctl](./04-installation.md)).
+(on Windows, and other ways to install it, including running it from its container image
+with only Docker, see [Installing roksbnkargoctl](./04-installation.md)).
+
+If the F5 files are not in a bucket yet, publish them first; no workspace is needed for it,
+only the API key:
+
+```sh
+export IBMCLOUD_API_KEY=…
+roksbnkargoctl cos publish --bucket my-bnk-bucket --create-bucket \
+  --far-auth f5-far-auth-key.tgz --jwt subscription.jwt
+```
 
 ## 1. Write config.yaml
 
@@ -71,7 +80,9 @@ export ARGOCD_AUTH_TOKEN=…           # Argo CD API token
 export ROKSBNKARGOCTL_GIT_TOKEN=…    # Git token with push rights to the repo
 ```
 
-They are read from the environment on each run and never written to disk.
+They are read from the environment on each run and never written to disk. `init`
+already checks the Argo CD token against the server and the Git token against the
+repository, so export them before `init`.
 
 ## 3. init
 
@@ -80,6 +91,9 @@ roksbnkargoctl init -w demo --config-file config.yaml
 ```
 
 ```text
+✓ Argo CD v3.5.1+… at https://argocd.example.internal accepts the token in $ARGOCD_AUTH_TOKEN
+✓ Git https://github.com/example-org/platform-gitops.git: readable, branch main present
+✓ Git https://github.com/example-org/platform-gitops.git: the credential can push
 → resolving cluster my-roks
 ✓ cluster my-roks (<cluster-id>), OpenShift 4.21.31, VPC my-roks-vpc, zones us-south-1,us-south-2,us-south-3
 → resolving transit gateway my-tgw

@@ -40,6 +40,9 @@ Examples:
   sudo roksbnkargoctl self install --dir /usr/local/bin`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if inContainerImage() {
+				return errSelfInstallInContainer()
+			}
 			self, err := runningBinary()
 			if err != nil {
 				return err

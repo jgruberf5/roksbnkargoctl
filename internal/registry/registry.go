@@ -81,6 +81,8 @@ type Result struct {
 // Replicate copies the BOM into the mirror with bounded concurrency. Images are
 // narrowed to linux/amd64 (ROKS workers); charts and single-arch artifacts copy
 // as they are. An artifact already present with the source digest is skipped.
+// progress is called once per artifact, never concurrently, so it may count and
+// print without locking.
 func Replicate(ctx context.Context, p *far.Puller, mirror string, bom []Artifact, concurrency int, progress func(Result)) []Result {
 	if concurrency < 1 {
 		concurrency = 2
@@ -88,6 +90,7 @@ func Replicate(ctx context.Context, p *far.Puller, mirror string, bom []Artifact
 	results := make([]Result, len(bom))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
+	var progressMu sync.Mutex
 	for i, a := range bom {
 		wg.Add(1)
 		go func(i int, a Artifact) {
@@ -121,7 +124,9 @@ func Replicate(ctx context.Context, p *far.Puller, mirror string, bom []Artifact
 			}
 			results[i] = r
 			if progress != nil {
+				progressMu.Lock()
 				progress(r)
+				progressMu.Unlock()
 			}
 		}(i, a)
 	}

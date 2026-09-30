@@ -1,8 +1,9 @@
 # Installing roksbnkargoctl
 
 This chapter gets the `roksbnkargoctl` binary onto your workstation, on Linux, macOS or
-Windows, keeps it up to date, and explains where the in-cluster `check` image comes from
-and how the binary chooses which one to deploy.
+Windows, or runs it from its container image with nothing but Docker, keeps it up to date,
+and explains where the in-cluster `check` image comes from and how the binary chooses which
+one to deploy.
 
 ## Install with one line
 
@@ -143,6 +144,61 @@ does not upgrade it. BNK supports an in-place upgrade by changing the manifest v
 its custom resources, as F5's BNK documentation describes, and that is beyond the scope
 of this tool.
 
+## Run with Docker
+
+If you would rather not install anything, run the tool from its container image,
+`ghcr.io/jgruberf5/roksbnkargoctl`:
+
+| Tag | Published from |
+|---|---|
+| `:vX.Y.Z` | each release tag `vX.Y.Z` |
+| `:latest` | the newest final release (not a prerelease) |
+| `:dev` | every change on `main` |
+| `:pr-N` | a pull request in the repository |
+
+Each tag is built for `linux/amd64` and `linux/arm64`. The binary in `:vX.Y.Z` is stamped
+with that version, so it deploys the check image of the same tag, exactly as the release
+binary does.
+
+```sh
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  -e IBMCLOUD_API_KEY -e ARGOCD_AUTH_TOKEN -e ROKSBNKARGOCTL_GIT_TOKEN \
+  ghcr.io/jgruberf5/roksbnkargoctl:<tag> init -w demo --config-file config.yaml
+```
+
+Everything after the image name is a `roksbnkargoctl` command line. The pieces:
+
+| Part | Why |
+|---|---|
+| `-v "$PWD:/work"` | The image's working directory and home is `/work` (`HOME=/work`), so workspaces land in `./.roksbnkargoctl` in your current directory and survive the container. Files the config names (the F5 tarball and JWT, an SSH key, CA files) are given as paths under it, such as `config.yaml` or `./certs/mirror-ca.pem` |
+| `--user "$(id -u):$(id -g)"` | Files the tool writes are owned by you, not by the image's user (65532) |
+| `-e NAME` | Passes a secret through from your environment without putting its value on the command line. Add `-e` for every variable the command reads: `ROKSBNKARGOCTL_MIRROR_PASSWORD`, `BNK_FORGE_PASSWORD`, `ROKSBNKARGOCTL_*` overrides |
+| `-it` | A terminal, for the `init` interview and confirmations; omit it in automation and pass `--yes` |
+
+`ROKSBNKARGOCTL_HOME` still overrides where the workspaces go, as on the host.
+
+Inside the image, three things behave differently:
+
+| Command | In the image |
+|---|---|
+| `self install` | Refuses: it would copy the binary onto a `PATH` inside a container that is gone when it exits |
+| `self update` | Refuses, and names the image tag to pull instead (`docker pull ghcr.io/jgruberf5/roksbnkargoctl:<tag>`). `self update --check` works, and names the tag to pull when there is a newer release |
+| `agent <cli>` | Refuses: the image has no agent CLI. `agent <cli> --show` works and prints the command to run on the host ([chapter 18](./18-agent.md)) |
+
+The image is `distroless/static` with the standard CA roots. Behind a corporate proxy that
+intercepts TLS, calls to IBM Cloud, GitHub, FAR and your registries fail with
+`certificate signed by unknown authority` until you mount the proxy's CA into
+`/etc/ssl/certs/`:
+
+```sh
+docker run --rm -it --user "$(id -u):$(id -g)" -v "$PWD:/work" \
+  -v /path/to/proxy-ca.pem:/etc/ssl/certs/proxy-ca.pem:ro \
+  -e IBMCLOUD_API_KEY ghcr.io/jgruberf5/roksbnkargoctl:<tag> cos instances
+```
+
+To build the image yourself, `make cli-image` (`EXTRA_CA=corp-ca.pem` trusts such a proxy
+for the module download only; it is not written into the image).
+
 ## Build from the repository
 
 `roksbnkargoctl` is one Go module, `github.com/jgruberf5/roksbnkargoctl`. It needs Go
@@ -185,6 +241,7 @@ Other targets in the `Makefile`:
 | `make verify` | fmt, vet, staticcheck, test, build and the check binary: everything a change must pass |
 | `make check-binary` | the `check` binary for Linux, into `bin/check` |
 | `make check-image` | builds the `check` image with Docker from `build/check/Dockerfile` |
+| `make cli-image` | builds the `roksbnkargoctl` image with Docker from `build/cli/Dockerfile` |
 | `make book`, `make book-pdf` | this book as HTML, or as a PDF and an HTML archive in `dist/` (needs Docker) |
 
 ### On Windows
@@ -216,7 +273,8 @@ $env:ROKSBNKARGOCTL_GIT_TOKEN = "…"
 ```
 
 The workspace lives under your home directory (your user profile on Windows), in
-`.roksbnkargoctl` (see [Workspaces and init](./05-workspaces-and-init.md)).
+`.roksbnkargoctl` (see [Workspaces and init](./05-workspaces-and-init.md)); in the
+container image, in `./.roksbnkargoctl` of the directory you mount.
 
 ## The check image
 
@@ -225,7 +283,10 @@ standard-library-only Go binary on `scratch`, running as a non-root user. The bi
 your workstation never runs it; Argo CD does, in the cluster.
 
 It is published, publicly, to `ghcr.io/jgruberf5/roksbnkargoctl-check` for `linux/amd64`
-and `linux/arm64`:
+and `linux/arm64`. ROKS workers are `amd64`. (The `:v0.5.0` image's `linux/arm64` variant holds
+an `amd64` binary, which fails on an arm64 node with `exec format error`
+([#17](https://github.com/jgruberf5/roksbnkargoctl/issues/17)); images built after v0.5.0
+carry the right binary for each architecture.)
 
 | Tag | Published from |
 |---|---|

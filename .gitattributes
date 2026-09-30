@@ -1,0 +1,7 @@
+# Shell scripts and Dockerfiles run on Linux (install.sh through `curl | sh`,
+# Dockerfiles in BuildKit): keep them LF on every checkout, including Windows
+# with core.autocrlf=true, where CRLF breaks `sh` and Dockerfile continuations.
+*.sh        text eol=lf
+.githooks/* text eol=lf
+Dockerfile  text eol=lf
+*.ps1       text eol=crlf

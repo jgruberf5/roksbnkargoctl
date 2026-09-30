@@ -86,6 +86,13 @@ created. For the UI, log in as `admin` with the password from that file.
 
 ## Pointing a workspace at the hub
 
+Answer `n` to `Use an existing Argo CD instance (3.3 or later)?` in the `init` interview
+and `init` asks for `test_hub.cidr` and `test_hub.allowed_cidr`, then sets `argocd.server`
+to the placeholder `https://argocd.placeholder.invalid` ([Workspaces and
+init](./05-workspaces-and-init.md#use-an-existing-argo-cd-instance)). In a config file, set
+that placeholder and `test_hub.cidr` yourself. `init` does not check Argo CD while `argocd.server` is the
+placeholder (any host ending in `.invalid`); run `argocd up` before `install`.
+
 On success `argocd up` updates the workspace's `config.yaml`:
 
 | Key | Set to |

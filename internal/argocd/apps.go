@@ -377,3 +377,18 @@ func Jobs(tree *ApplicationTree, op *OperationState) []JobStatus {
 	}
 	return out
 }
+
+// Manifests reads GET /api/v1/applications/{name}/manifests: the manifests
+// the Application would sync from its source right now, one JSON document per
+// object, and the Git revision they came from.
+func (c *Client) Manifests(ctx context.Context, name, appNamespace string) (revision string, manifests []string, err error) {
+	var out struct {
+		Manifests []string `json:"manifests"`
+		Revision  string   `json:"revision"`
+	}
+	if err := c.do(ctx, "read manifests of "+name, "GET",
+		withQuery("/api/v1/applications/"+url.PathEscape(name)+"/manifests", c.appQuery(appNamespace)), nil, &out); err != nil {
+		return "", nil, err
+	}
+	return out.Revision, out.Manifests, nil
+}

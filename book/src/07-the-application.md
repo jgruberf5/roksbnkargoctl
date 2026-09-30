@@ -295,6 +295,53 @@ needs only kind, namespace and name; keep it in the workspace until you have uni
 
 *The network view: the Application's pods, among them FLO and the check pods. The Sync hooks' pods show `completed`, the node probes and the Gateway API sweep `running`.*
 
+## Without letting roksbnkargoctl push to Git
+
+Some teams do not let tools push to the repository Argo CD syncs from: every change goes
+through their own review. For them, `export` packs the Git content into a zip you commit
+yourself, and `install --no-publish` does the rest of the install without touching Git.
+
+```sh
+roksbnkargoctl render                    # writes manifests/git/
+roksbnkargoctl export                    # roksbnkargoctl-<workspace>.zip
+# unzip at the root of your repository, review, commit, push to git.branch
+roksbnkargoctl install --no-publish
+```
+
+`export` zips the workspace's `manifests/git/` (so run `render` first). The paths in the
+zip start at `git.path`, so unzipping it at the root of your repository puts every file
+where the Application reads them:
+
+```text
+bnk/demo/NNN-<kind>-<ns>-<name>.yaml       every file of manifests/git, under git.path
+ROKSBNKARGOCTL-EXPORT.md                   what to do with the zip, for this workspace
+roksbnkargoctl-application.yaml            the Application install creates, for reference
+```
+
+| Property | Detail |
+|---|---|
+| Output | `-o`, `--output <file>`; default `roksbnkargoctl-<workspace>.zip` in the current directory, mode 0600 |
+| No Secret, ever | The Git content never holds one (see [above](#what-is-not-in-git-and-why)), and `export` checks again: a file of `kind: Secret` stops it with `<file> is a Secret; refusing to export it for Git` |
+| Deterministic | Files are in sorted order and every entry carries the same fixed timestamp, so an unchanged render exports a byte-identical zip |
+| Stale render | If `config.yaml` changed after the last `render`, `export` warns: `config.yaml changed after the last render; run `roksbnkargoctl render` to export the current configuration` |
+| Nothing rendered | `nothing rendered in <workspace>/manifests/git: run `roksbnkargoctl render` first` |
+
+`ROKSBNKARGOCTL-EXPORT.md` repeats the steps with your repository, branch and path filled
+in. When you unzip, **replace** the directory's previous contents: a file left over from
+an earlier export would be synced too. `roksbnkargoctl-application.yaml` is for review
+only; do not apply it by hand, because `install` also registers the cluster and writes
+the Secrets the Application depends on.
+
+`install --no-publish` does everything `install` does except push to Git: the transit
+gateway attachment, the IAM trusted profile, the render, the Secrets and other objects
+written straight into ROKS, the cluster registration in Argo CD, the Application and the
+sync. **Push the export before you run it.** Before it syncs, `install` asks Argo CD
+for what the Application would sync from `git.url`, `git.branch` and `git.path` and
+compares it, object by object, with this workspace's render. If the repository holds an
+older export, a partial one, or nothing, it lists the differences and does not sync;
+otherwise it syncs exactly the revision it compared. See
+[install](./08-install.md#without-letting-roksbnkargoctl-push-to-git).
+
 ## See also
 
 - [How an install flows](./02-how-an-install-flows.md)

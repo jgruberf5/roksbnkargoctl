@@ -23,6 +23,7 @@ It is a day-0 tool: it puts BNK on, and it takes BNK off.
 | Prepare the cluster | Writes the pull secret, the subscription JWT, the license proxy CA and the check namespace and RBAC directly into ROKS; registers ROKS with Argo CD. |
 | Publish to Git | Renders every manifest on your workstation and commits it to one path in your repository. Argo CD's only source is that repository. |
 | Check before and after | Argo CD runs the `check` container as hooks in ROKS: before anything of BNK is applied, while it comes up, after it is healthy, and around uninstall. |
+| Optional components | Keep the F5 files in COS (`cos`), fill a private registry (`registry`), build a license proxy (`flp`) or a test Argo CD hub (`argocd`), and register the cluster with BNK Forge (`forge`). `cos`, `registry`, `flp` and `forge` also run without a workspace, from flags alone. |
 
 ### Two modes
 

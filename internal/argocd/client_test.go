@@ -559,3 +559,52 @@ func TestCheckServerRejectsATokenTheServerDoesNotAccept(t *testing.T) {
 		t.Fatalf("a rejected token passed: %v", err)
 	}
 }
+
+func TestManifestsReadsWhatTheApplicationWouldSync(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		writeJSON(w, 200, map[string]any{"revision": "abc123", "manifests": []string{`{"kind":"Namespace"}`, `{"kind":"ConfigMap"}`}})
+	})
+	c.Project = "default"
+	rev, ms, err := c.Manifests(context.Background(), "bnk-demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != "abc123" || len(ms) != 2 || ms[1] != `{"kind":"ConfigMap"}` {
+		t.Fatalf("revision %q manifests %v", rev, ms)
+	}
+	if got := rc.reqs[0]; got.Method != "GET" || got.Path != "/api/v1/applications/bnk-demo/manifests" {
+		t.Fatalf("request %s %s", got.Method, got.Path)
+	}
+}
+
+// RepositoryBranches asks for the escaped repo's refs with the project first,
+// then falls back to the global registration.
+func TestRepositoryBranches(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if r.URL.Query().Get("appProject") != "" {
+			writeJSON(w, 404, map[string]any{"message": "repo not in project"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"branches": []string{"main", "dev"}, "tags": []string{"v1"}})
+	})
+	got, err := c.RepositoryBranches(context.Background(), "git@g.example.com:o/r.git", "bnk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "main,dev" {
+		t.Errorf("branches %v", got)
+	}
+	if len(rc.reqs) != 2 || rc.reqs[0].Query != "appProject=bnk" || rc.reqs[1].Query != "" {
+		t.Fatalf("requests %+v", rc.reqs)
+	}
+	if p := rc.reqs[1].RawPath; !strings.HasPrefix(p, "/api/v1/repositories/") || !strings.HasSuffix(p, "/refs") || !strings.Contains(p, "o%2Fr.git") {
+		t.Errorf("path %s, want the repo URL escaped as one segment", p)
+	}
+	c2, _ := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		writeJSON(w, 500, map[string]any{"message": "authentication required: Repository not found."})
+	})
+	_, err = c2.RepositoryBranches(context.Background(), "https://g/x.git", "bnk")
+	if err == nil || strings.Count(err.Error(), "Repository not found") != 1 {
+		t.Errorf("unreadable repo, same answer with and without the project, said once: %v", err)
+	}
+}

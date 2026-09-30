@@ -29,9 +29,11 @@ roksbnkargoctl uninstall   # delete the Application; uninstall checks run in ROK
  |-- ROKS API (public endpoint)- install: Secrets, check namespace + RBAC,
  |                               ServiceAccount Argo CD manages ROKS with
  |
- |-- Git (HTTPS or SSH) -------- install: commit manifests/git to <branch>:<path>
+ |-- Git (HTTPS or SSH) -------- init, install: access check; install: commit
+ |                               manifests/git to <branch>:<path>
  |
- '-- Argo CD API --------------- install: cluster, repository, Application, sync
+ '-- Argo CD API --------------- init: version + token; install: cluster,
+                                 repository, Application, sync
                                   |
                                   v
    +--------------------------------+          +-----------------------------------+
@@ -65,8 +67,11 @@ Two things to notice:
 ## 1. init
 
 `init` builds the workspace, `~/.roksbnkargoctl/<workspace>/`. It either interviews you
-or reads a `config.yaml` (`--config-file`), then resolves everything against IBM Cloud
-and records the result in the `resolved:` section of the config:
+or reads a `config.yaml` (`--config-file`) and validates it. Before it saves anything it
+checks the Argo CD (3.3 or later, and the token accepted; skipped while `argocd.server`
+is the test-hub placeholder) and the Git repository (it must be readable; missing push
+rights or a missing credential are only warnings). Then it resolves everything against
+IBM Cloud and records the result in the `resolved:` section of the config:
 
 - the cluster by name or ID: it must be OpenShift, in `ibmcloud.region`, in exactly one
   VPC; its private and public service endpoints and worker zones are recorded (fewer than
@@ -109,7 +114,7 @@ byte for byte, and re-publishing it commits nothing.
 
 | Step | Talks to | What happens |
 |---|---|---|
-| 1. Argo CD | Argo CD | Reads the server version; refuses anything older than 3.3 (PreDelete hooks are needed for a clean uninstall), and proves the token works (`GET /api/v1/session/userinfo` must report `loggedIn`) |
+| 1. Argo CD and Git | Argo CD, Git | Reads the server version; refuses anything older than 3.3 (PreDelete hooks are needed for a clean uninstall), and proves the token works (`GET /api/v1/session/userinfo` must report `loggedIn`). Then proves the Git credential may push, without pushing (with `--no-publish`: that the repository is readable and has `git.branch`) |
 | 2. Transit gateway | IBM Transit Gateway, VPC | If the cluster's VPC is not attached, checks its address prefixes do not overlap any VPC already on the gateway, then attaches it and waits (up to 10 minutes) |
 | 3. Trusted profile | IBM IAM | Creates `<cluster>-f5-cne-controller-<bnk namespace>`, links it to ServiceAccount `f5-cne-controller` in the BNK namespace of this cluster, and grants Viewer + Editor on VPC Infrastructure (`is`) scoped to the cluster's VPC and Viewer on `containers-kubernetes` scoped to the cluster |
 | 4. Render | FAR or mirror, ROKS | As `render` above |
@@ -117,6 +122,11 @@ byte for byte, and re-publishing it commits nothing.
 | 6. Register ROKS | ROKS, Argo CD | Creates ServiceAccount `roksbnkargoctl-argocd-manager` in `kube-system` bound to `cluster-admin` with a long-lived token Secret, then adds the cluster to Argo CD with that token |
 | 7. Publish | Git | Commits `manifests/git/` to `git.path` on `git.branch` |
 | 8. Application | Argo CD | Adds SSH known hosts if configured, adds the repository, creates or updates the Application, then syncs it and waits (`--timeout`, default 75 minutes); `--no-sync` stops before the sync |
+
+With `install --no-publish`, step 7 is skipped: you push the Git content yourself (for
+example the zip `export` writes). Before the sync, `install` checks that what Argo CD
+reads from Git matches this render, and syncs that exact revision only if it does. See
+[Without letting roksbnkargoctl push to Git](./07-the-application.md#without-letting-roksbnkargoctl-push-to-git).
 
 ### Out-of-band objects
 

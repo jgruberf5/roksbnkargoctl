@@ -11,173 +11,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
-	"github.com/jgruberf5/roksbnkargoctl/internal/flp"
 	"github.com/jgruberf5/roksbnkargoctl/internal/hub"
 	"github.com/jgruberf5/roksbnkargoctl/internal/ibm"
 	"github.com/jgruberf5/roksbnkargoctl/internal/vsi"
 )
-
-// ---- flp ------------------------------------------------------------------------
-
-type flpRecord struct {
-	vsi.Record
-	URL       string `json:"url"`
-	RootCAPEM string `json:"root_ca_pem"`
-	// The CA key stays with the record (mode 0600, like roksbnkctl's Terraform
-	// state) so a re-run reuses the CA BNK already trusts instead of re-keying.
-	RootCAKeyPEM string `json:"root_ca_key_pem"`
-	Version      string `json:"version"`
-}
-
-func newFLPCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "flp",
-		Short: "F5 License Proxy VSI for disconnected mode",
-		Long: `In disconnected mode BNK licenses through an F5 License Proxy instead of reaching
-F5 directly. ` + "`flp up`" + ` builds one: an Ubuntu VSI running the f5-license-proxy stack as a
-podman pod, in its own VPC (flp.vsi.cidr) with a public gateway for egress to F5,
-attached to the transit gateway so the ROKS workers reach it privately on :8443.
-BNK trusts it through a CA generated here; install writes that CA into ROKS.`,
-	}
-	up := &cobra.Command{Use: "up", Short: "Build the license proxy VSI", RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := newSession(cmd)
-		if err != nil {
-			return err
-		}
-		return runFLPUp(cmd.Context(), s)
-	}}
-	down := &cobra.Command{Use: "down", Short: "Delete what flp up built", RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := newSession(cmd)
-		if err != nil {
-			return err
-		}
-		if !confirm(cmd, "Delete the license proxy VSI and its network?") {
-			return errors.New("not confirmed (pass --yes)")
-		}
-		var rec flpRecord
-		if err := readJSON(s.ws.FLPOutputsPath(), &rec); err != nil {
-			return err
-		}
-		c, err := s.IBM()
-		if err != nil {
-			return err
-		}
-		if err := vsi.Teardown(cmd.Context(), c.WithRegion(rec.Region), &rec.Record, s.p.step); err != nil {
-			return err
-		}
-		_ = os.Remove(s.ws.FLPOutputsPath())
-		s.p.ok("license proxy removed")
-		return nil
-	}}
-	status := &cobra.Command{Use: "status", Short: "Show the license proxy VSI", RunE: func(cmd *cobra.Command, _ []string) error {
-		s, err := newSession(cmd)
-		if err != nil {
-			return err
-		}
-		var rec flpRecord
-		if err := readJSON(s.ws.FLPOutputsPath(), &rec); err != nil {
-			return err
-		}
-		c, err := s.IBM()
-		if err != nil {
-			return err
-		}
-		inst, err := c.WithRegion(rec.Region).GetInstance(cmd.Context(), rec.InstanceID)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Instance:   %s (%s) %s\nURL:        %s   (what BNK uses)\nFloating:   %s\nVersion:    %s\n",
-			inst.Name, inst.ID, inst.Status, rec.URL, rec.FloatingIP, rec.Version)
-		fmt.Fprintln(cmd.OutOrStdout(), "Reachability from the ROKS nodes is checked by `check pre-install` on every sync.")
-		return nil
-	}}
-	cmd.AddCommand(up, down, status)
-	return cmd
-}
-
-func runFLPUp(ctx context.Context, s *session) error {
-	c, p := s.cfg, s.p
-	r, err := s.resolved()
-	if err != nil {
-		return err
-	}
-	v := c.FLP.VSI
-	if v.CIDR == "" {
-		return errors.New("flp.vsi.cidr is required: a /24–/28 not used by any VPC on the transit gateway (e.g. 10.248.0.0/28)")
-	}
-	zone := v.Zone
-	if zone == "" {
-		zone = c.IBMCloud.Region + "-1"
-	}
-	ibmc, err := s.IBM()
-	if err != nil {
-		return err
-	}
-	sa, err := s.FARServiceAccount(ctx)
-	if err != nil {
-		return err
-	}
-	jwt, err := s.JWT(ctx)
-	if err != nil {
-		return err
-	}
-	pl, err := s.Puller(ctx, true)
-	if err != nil {
-		return err
-	}
-	version := flp.DefaultVersion
-	p.step("reading prod_jwks from f5-license-proxy %s", version)
-	chart, err := pl.PullChart(ctx, c.Registry.FARHost+"/charts/f5-license-proxy:"+version)
-	if err != nil {
-		return err
-	}
-	jwks, err := flp.ProdJWKS(chart)
-	if err != nil {
-		return err
-	}
-	// Reuse the CA from an earlier run: BNK may already trust it.
-	var prev flpRecord
-	_ = readJSON(s.ws.FLPOutputsPath(), &prev)
-	ca := &flp.CA{CertPEM: []byte(prev.RootCAPEM), KeyPEM: []byte(prev.RootCAKeyPEM)}
-	if prev.RootCAPEM == "" || prev.RootCAKeyPEM == "" {
-		if ca, err = flp.NewCA(); err != nil {
-			return err
-		}
-	} else {
-		p.info("keeping the CA from the previous flp up")
-	}
-	var inbound []vsi.Rule
-	for _, cidr := range v.AllowedCIDRs {
-		inbound = append(inbound, vsi.Rule{PortMin: flp.Port, PortMax: flp.Port, CIDR: cidr})
-		if v.SSHKey != "" {
-			inbound = append(inbound, vsi.Rule{PortMin: 22, PortMax: 22, CIDR: cidr})
-		}
-	}
-	floating := v.FloatingIP == nil || *v.FloatingIP
-	name := s.ws.Name + "-flp"
-	rec, perr := vsi.Provision(ctx, ibmc, vsi.Spec{
-		Name: name, Zone: zone, CIDR: v.CIDR, ExistingVPC: v.VPC, Profile: v.Profile, BootVolumeGB: 100,
-		SSHKeyName: v.SSHKey, FloatingIP: floating, Inbound: inbound, ResourceGroupID: r.ResourceGroupID,
-		TransitGateway: r.TransitGatewayID, Log: p.step,
-		BeforeInstance: func(fip string) (string, error) {
-			return flp.CloudInit(flp.CloudInitInput{JWT: jwt, FARServiceAccount: sa, FARHost: c.Registry.FARHost,
-				Version: version, ExternalIP: fip, ProdJWKS: jwks, CA: ca})
-		},
-	})
-	out := flpRecord{Record: *rec, RootCAPEM: string(ca.CertPEM), RootCAKeyPEM: string(ca.KeyPEM), Version: version}
-	if rec.PrivateIP != "" {
-		out.URL = flp.URL(rec.PrivateIP)
-	}
-	if err := writeJSON(s.ws.FLPOutputsPath(), out); err != nil {
-		return err
-	}
-	if perr != nil {
-		return fmt.Errorf("%w (partial state saved; `flp down` cleans it up)", perr)
-	}
-	p.ok("license proxy VSI %s at %s (floating %s)", name, out.URL, rec.FloatingIP)
-	p.info("the pod takes ~5 minutes to come up; `check pre-install` verifies every node reaches it")
-	return nil
-}
 
 // ---- argocd (test hub) --------------------------------------------------------------
 
@@ -247,6 +84,13 @@ The admin password is generated here and kept in argocd-hub.json (mode 0600).`,
 	return cmd
 }
 
+// errTestHubCIDR is what `argocd up` says without test_hub.cidr. Operators
+// reach it while meaning to use the Argo CD they already run, so it says
+// first what `argocd up` is for and how to skip it.
+var errTestHubCIDR = errors.New("`argocd up` builds a NEW test Argo CD (k3s + Argo CD on a VSI in its own VPC); it is not needed to use an Argo CD you already have.\n" +
+	"  To use an existing Argo CD: skip `argocd up`, set argocd.server to its URL (config.yaml, " + config.EnvName("argocd.server") + ", or `init`), and put its API token in ARGOCD_AUTH_TOKEN (argocd.token_env).\n" +
+	"  To build the test Argo CD: set test_hub.cidr, a /24–/28 not used by any VPC on the transit gateway (e.g. 10.248.1.0/28)")
+
 func runHubUp(ctx context.Context, s *session, cmd *cobra.Command) error {
 	c, p := s.cfg, s.p
 	r, err := s.resolved()
@@ -255,7 +99,7 @@ func runHubUp(ctx context.Context, s *session, cmd *cobra.Command) error {
 	}
 	h := c.TestHub
 	if h.CIDR == "" {
-		return errors.New("test_hub.cidr is required: a /24–/28 not used by any VPC on the transit gateway (e.g. 10.248.1.0/28)")
+		return errTestHubCIDR
 	}
 	region := h.Region
 	if region == "" {
@@ -313,14 +157,21 @@ func runHubUp(ctx context.Context, s *session, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	c.ArgoCD.Server, c.ArgoCD.Insecure = out.URL, true
-	if err := s.save(); err != nil {
+	if err := recordTestHub(s, out.URL); err != nil {
 		return err
 	}
 	p.ok("test Argo CD %s at %s; argocd.server updated", h.Version, out.URL)
 	p.info("UI login: admin / (admin_password in %s)", s.ws.HubOutputsPath())
 	fmt.Fprintf(cmd.OutOrStdout(), "export %s=%s\n", c.ArgoCD.TokenEnv, tok)
 	return nil
+}
+
+// recordTestHub points the workspace's Argo CD at the test hub: a change to
+// saved settings, made through update so that save writes it (and nothing an
+// override supplied).
+func recordTestHub(s *session, url string) error {
+	s.update(func(c *config.Config) { c.ArgoCD.Server, c.ArgoCD.Insecure = url, true })
+	return s.save()
 }
 
 // ---- small JSON file helpers -----------------------------------------------------------
