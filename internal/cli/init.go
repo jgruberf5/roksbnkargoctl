@@ -321,17 +321,18 @@ func resolve(ctx context.Context, s *session) error {
 
 	if c.COS.LocalFARAuthFile == "" {
 		p.step("resolving COS instance %s", c.COS.Instance)
-		si, err := ibmc.FindServiceInstance(ctx, c.COS.Instance, "cloud-object-storage", "")
-		if err != nil {
-			return fmt.Errorf("COS instance %q: %w", c.COS.Instance, err)
-		}
-		r.COSInstanceCRN = si.CRN
-		c.Resolved = r
-		cc, err := s.COS(ctx)
+		si, err := s.resolveCOSInstance(ctx)
 		if err != nil {
 			return err
 		}
-		objs, err := cc.ListObjects(ctx, c.COS.Bucket, "")
+		r.COSInstanceCRN = si.CRN
+		c.Resolved = r
+		s.cosCRN = ""
+		cc, bucket, err := s.cosBucket(ctx, false)
+		if err != nil {
+			return err
+		}
+		objs, err := cc.ListObjects(ctx, bucket, "")
 		if err != nil {
 			return fmt.Errorf("COS bucket %s: %w", c.COS.Bucket, err)
 		}

@@ -52,16 +52,32 @@ type session struct {
 	// substitute a fake.
 	lookup ibmLookup
 	cosCRN string
-	rgID   string
-	tgwID  string
+	// ignoreBucketCRN stops a bucket CRN in cos.bucket from naming the
+	// instance (for commands about the instance, not the bucket).
+	ignoreBucketCRN bool
+	rgID            string
+	tgwID           string
 }
 
 // ibmLookup is the part of the IBM Cloud client the session resolves names with.
 type ibmLookup interface {
 	ResolveResourceGroup(ctx context.Context, nameOrID string) (id, name string, err error)
 	ResolveTransitGateway(ctx context.Context, nameOrID string) (*ibm.TransitGateway, error)
-	FindServiceInstance(ctx context.Context, name, serviceName, resourceGroupID string) (*ibm.ServiceInstance, error)
+	ListServiceInstances(ctx context.Context, serviceName string) ([]ibm.ServiceInstance, error)
+	ListResourceGroups(ctx context.Context) ([]ibm.ResourceGroup, error)
 }
+
+// cosService is the CRN service segment of a COS instance.
+const cosService = "cloud-object-storage"
+
+// newCOSClient builds COS clients; tests point it at a fake.
+var newCOSClient = cos.New
+
+// newIBMLookup is the lookup a session uses when none is set: the IBM Cloud
+// client. Tests that drive a command through the root substitute a fake.
+var newIBMLookup = defaultIBMLookup
+
+func defaultIBMLookup(s *session) (ibmLookup, error) { return s.IBM() }
 
 // newSession opens the selected workspace, as every workspace command always
 // has: no workspace is an error.
@@ -267,67 +283,110 @@ func (s *session) ibmLookup() (ibmLookup, error) {
 	return newIBMLookup(s)
 }
 
-// newIBMLookup is the lookup a session uses when none is set on it. A variable
-// so a test driving a command through the root command can fake IBM Cloud.
-var newIBMLookup = defaultIBMLookup
-
-func defaultIBMLookup(s *session) (ibmLookup, error) { return s.IBM() }
-
-// cosObjectReader is the part of the COS client the FAR key and JWT are read with.
-type cosObjectReader interface {
-	GetObject(ctx context.Context, bucket, key string) ([]byte, error)
-}
-
-// openCOSReader opens COS for reading. A variable so a test driving a command
-// through the root command can serve the objects without IBM Cloud; the
-// instance lookup (COSInstanceCRN) is still the session's.
-var openCOSReader = defaultOpenCOSReader
-
-func defaultOpenCOSReader(ctx context.Context, apiKey, instanceCRN, region string) (cosObjectReader, error) {
-	return cos.New(ctx, apiKey, instanceCRN, region)
-}
-
-// cosObject reads one object from cos.bucket in the supply-chain instance.
-func (s *session) cosObject(ctx context.Context, key string) ([]byte, error) {
-	apiKey, err := s.cfg.APIKey()
-	if err != nil {
-		return nil, err
-	}
-	crn, err := s.COSInstanceCRN(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cc, err := openCOSReader(ctx, apiKey, crn, s.cfg.COS.Region)
-	if err != nil {
-		return nil, err
-	}
-	return cc.GetObject(ctx, s.cfg.COS.Bucket, key)
-}
-
 // COSInstanceCRN is the supply-chain COS instance's CRN: the one `init`
-// recorded, unless an override names another instance or there is none, in
-// which case it is looked up by cos.instance (and cached for the session).
+// recorded, unless an override names another instance (or cos.bucket is a
+// bucket CRN, which names its own) or there is no record, in which case it is
+// looked up (and cached for the session).
 func (s *session) COSInstanceCRN(ctx context.Context) (string, error) {
 	if s.cosCRN != "" {
 		return s.cosCRN, nil
 	}
-	if r := s.cfg.Resolved; r != nil && r.COSInstanceCRN != "" && !s.overridden("cos.instance") {
+	_, _, bucketCRN := cos.ParseBucketCRN(s.cfg.COS.Bucket)
+	bucketCRN = bucketCRN && !s.ignoreBucketCRN
+	if r := s.cfg.Resolved; r != nil && r.COSInstanceCRN != "" && !s.overridden("cos.instance") && !bucketCRN {
 		s.cosCRN = r.COSInstanceCRN
 		return s.cosCRN, nil
 	}
-	if s.cfg.COS.Instance == "" {
-		return "", fmt.Errorf("cos.instance is not set (config.yaml, %s, or a flag)", config.EnvName("cos.instance"))
-	}
-	l, err := s.ibmLookup()
+	si, err := s.resolveCOSInstance(ctx)
 	if err != nil {
 		return "", err
 	}
-	si, err := l.FindServiceInstance(ctx, s.cfg.COS.Instance, "cloud-object-storage", "")
-	if err != nil {
-		return "", fmt.Errorf("COS instance %q: %w", s.cfg.COS.Instance, err)
-	}
 	s.cosCRN = si.CRN
 	return s.cosCRN, nil
+}
+
+// resolveCOSInstance looks the COS instance up, never from the record:
+// cos.instance is its name, GUID or CRN. When cos.bucket is a bucket CRN, the
+// instance is the one that CRN names, and a cos.instance override naming a
+// different one is an error rather than a silent pick.
+func (s *session) resolveCOSInstance(ctx context.Context) (*ibm.ServiceInstance, error) {
+	ref := s.cfg.COS.Instance
+	guid, bucket, bucketCRN := cos.ParseBucketCRN(s.cfg.COS.Bucket)
+	bucketCRN = bucketCRN && !s.ignoreBucketCRN
+	if bucketCRN {
+		ref = guid
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("cos.instance is not set (config.yaml, %s, or --instance)", config.EnvName("cos.instance"))
+	}
+	l, err := s.ibmLookup()
+	if err != nil {
+		return nil, err
+	}
+	all, err := l.ListServiceInstances(ctx, cosService)
+	if err != nil {
+		return nil, err
+	}
+	si, err := ibm.MatchServiceInstance(all, ref)
+	if err != nil {
+		if bucketCRN {
+			return nil, fmt.Errorf("COS instance %s (from the CRN of bucket %s): %w", guid, bucket, err)
+		}
+		return nil, fmt.Errorf("COS instance %q: %w", ref, err)
+	}
+	if bucketCRN && s.overridden("cos.instance") && s.cfg.COS.Instance != "" {
+		named, err := ibm.MatchServiceInstance(all, s.cfg.COS.Instance)
+		if err != nil {
+			return nil, fmt.Errorf("COS instance %q (%s): %w", s.cfg.COS.Instance, s.overrideFor("cos.instance"), err)
+		}
+		if named.GUID != si.GUID {
+			return nil, fmt.Errorf("%s names COS instance %s (%s), but bucket %s belongs to %s (%s); drop one",
+				s.overrideFor("cos.instance"), named.Name, named.GUID, bucket, si.Name, si.GUID)
+		}
+	}
+	return si, nil
+}
+
+// cosBucketName is cos.bucket, or the name inside it when it is a bucket CRN.
+func (s *session) cosBucketName() string {
+	if _, name, ok := cos.ParseBucketCRN(s.cfg.COS.Bucket); ok {
+		return name
+	}
+	return strings.TrimSpace(s.cfg.COS.Bucket)
+}
+
+// cosBucket returns cos.bucket's name and a client in the bucket's region,
+// which is found from the bucket's location: a request to another region's
+// endpoint fails with an error that does not say the region is the problem.
+//
+// strict makes a bucket that cannot be located an error. Otherwise the client
+// falls back to cos.region: reading the FAR key and JWT worked before
+// discovery existed, with a key that may be allowed to read those objects but
+// not to list the instance's buckets, and must keep working.
+func (s *session) cosBucket(ctx context.Context, strict bool) (*cos.Client, string, error) {
+	name := s.cosBucketName()
+	if name == "" {
+		return nil, "", fmt.Errorf("cos.bucket is not set (config.yaml, %s, or --bucket)", config.EnvName("cos.bucket"))
+	}
+	cc, err := s.COS(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	b, err := cc.FindBucket(ctx, name)
+	if err != nil {
+		if strict {
+			return nil, "", err
+		}
+		if flagVerbose {
+			s.p.info("locating bucket %s: %v; using cos.region %s", name, err, cc.Region())
+		}
+		return cc, name, nil
+	}
+	rc, err := cc.InRegion(b.Region)
+	if err != nil {
+		return nil, "", err
+	}
+	return rc, name, nil
 }
 
 // ResourceGroupID is the resource group new resources go into: the cluster's
@@ -402,8 +461,9 @@ func (s *session) Kube(ctx context.Context) (*kube.Client, error) {
 	return k, nil
 }
 
-// COS returns the supply-chain COS client. It works without a workspace: the
-// instance CRN is looked up from cos.instance when none is recorded.
+// COS returns the supply-chain COS client in cos.region. It works without a
+// workspace: the instance CRN is looked up from cos.instance when none is
+// recorded. For a bucket's objects use cosBucket, which finds its region.
 func (s *session) COS(ctx context.Context) (*cos.Client, error) {
 	key, err := s.cfg.APIKey()
 	if err != nil {
@@ -413,7 +473,7 @@ func (s *session) COS(ctx context.Context) (*cos.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cos.New(ctx, key, crn, s.cfg.COS.Region)
+	return newCOSClient(ctx, key, crn, s.cfg.COS.Region)
 }
 
 // FARServiceAccount returns the FAR password (the service-account key inside
@@ -427,7 +487,11 @@ func (s *session) FARServiceAccount(ctx context.Context) (string, error) {
 	if f := s.cfg.COS.LocalFARAuthFile; f != "" {
 		tgz, err = os.ReadFile(f)
 	} else {
-		tgz, err = s.cosObject(ctx, s.cfg.COS.FARAuthObject)
+		var cc *cos.Client
+		var bucket string
+		if cc, bucket, err = s.cosBucket(ctx, false); err == nil {
+			tgz, err = cc.GetObject(ctx, bucket, s.cfg.COS.FARAuthObject)
+		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("FAR auth tarball: %w", err)
@@ -447,7 +511,11 @@ func (s *session) JWT(ctx context.Context) (string, error) {
 	if f := s.cfg.COS.LocalJWTFile; f != "" {
 		b, err = os.ReadFile(f)
 	} else {
-		b, err = s.cosObject(ctx, s.cfg.COS.JWTObject)
+		var cc *cos.Client
+		var bucket string
+		if cc, bucket, err = s.cosBucket(ctx, false); err == nil {
+			b, err = cc.GetObject(ctx, bucket, s.cfg.COS.JWTObject)
+		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("subscription JWT: %w", err)

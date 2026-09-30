@@ -26,6 +26,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/jgruberf5/roksbnkargoctl/internal/cos"
+	"github.com/jgruberf5/roksbnkargoctl/internal/cos/costest"
+	"github.com/jgruberf5/roksbnkargoctl/internal/ibm"
 	"github.com/spf13/cobra"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
@@ -328,53 +331,49 @@ func TestRegistryNeedsAMirrorHost(t *testing.T) {
 
 // ---- the FAR key ---------------------------------------------------------------
 
-type fakeCOS struct {
-	objects map[string][]byte // bucket/key
-	opened  []string          // crn@region
-	reads   []string          // bucket/key
-}
-
-func (f *fakeCOS) GetObject(_ context.Context, bucket, key string) ([]byte, error) {
-	f.reads = append(f.reads, bucket+"/"+key)
-	if b, ok := f.objects[bucket+"/"+key]; ok {
-		return b, nil
-	}
-	return nil, errors.New("NoSuchKey")
-}
-
-// Without --far-auth-file the key is read from COS: the instance looked up by
-// --cos-instance, the object --far-auth-object in --cos-bucket, the client in
-// --cos-region. The FAR then accepts only that key.
+// Without --far-auth-file the key is read from COS: the instance found by
+// --cos-instance, the object --far-auth-object in --cos-bucket, from the
+// bucket's OWN region. The bucket is in eu-de while --cos-region says
+// us-south: a read through us-south would get NoSuchBucket. The FAR then
+// accepts only that key.
 func TestRegistryFARKeyFromCOS(t *testing.T) {
 	e := newRegistryEnv(t)
 	t.Setenv("IBMCLOUD_API_KEY", "not-a-real-key")
-	fl := &fakeLookup{calls: map[string]int{}}
-	fc := &fakeCOS{objects: map[string][]byte{"supply/keys/far.tgz": farTarball(t, testSA)}}
+	s3 := costest.New(t, "us-south", "eu-de")
+	s3.AddBucket(testCOSCRN("g-supply"), "supply", "eu-de-smart", map[string][]byte{"keys/far.tgz": farTarball(t, testSA)})
+	fl := &fakeLookup{calls: map[string]int{}, instances: []ibm.ServiceInstance{
+		{Name: "supply-cos", GUID: "g-supply", CRN: testCOSCRN("g-supply"), ResourceGroupID: "rg-1", State: "active"},
+	}}
 	newIBMLookup = func(*session) (ibmLookup, error) { return fl, nil }
-	openCOSReader = func(_ context.Context, apiKey, crn, region string) (cosObjectReader, error) {
-		if apiKey != "not-a-real-key" {
-			t.Errorf("COS opened with API key %q", apiKey)
+	newCOSClient = func(ctx context.Context, key, crn, region string) (*cos.Client, error) {
+		if key != "not-a-real-key" {
+			t.Errorf("COS opened with API key %q", key)
 		}
-		fc.opened = append(fc.opened, crn+"@"+region)
-		return fc, nil
+		if crn != testCOSCRN("g-supply") {
+			t.Errorf("COS opened for instance %q", crn)
+		}
+		return cos.NewWith(ctx, key, crn, region, cos.Options{EndpointFor: s3.Endpoint, TokenURL: s3.TokenURL()})
 	}
-	t.Cleanup(func() {
-		newIBMLookup, openCOSReader = defaultIBMLookup, defaultOpenCOSReader
-	})
+	t.Cleanup(func() { newIBMLookup, newCOSClient = defaultIBMLookup, cos.New })
 	out, err := runRoot(t, "registry", "bom", "--no-workspace", "--far-host", e.far, "--check-image", e.check, "--cert-manager-install=false",
-		"--cos-instance", "supply-cos", "--cos-bucket", "supply", "--cos-region", "eu-de", "--far-auth-object", "keys/far.tgz")
+		"--cos-instance", "supply-cos", "--cos-bucket", "supply", "--cos-region", "us-south", "--far-auth-object", "keys/far.tgz")
 	if err != nil || !strings.Contains(out, "4 artifacts") {
 		t.Fatalf("bom with the key from COS: %v\n%s", err, out)
 	}
-	if fl.calls["si:supply-cos:cloud-object-storage"] != 1 {
-		t.Errorf("COS instance lookups %v", fl.calls)
+	var read bool
+	for _, r := range s3.Served() {
+		if strings.HasPrefix(r, "eu-de GET ") && strings.HasSuffix(r, "/supply/keys/far.tgz") {
+			read = true
+		}
+		if strings.HasPrefix(r, "us-south GET ") && strings.Contains(r, "/supply/") {
+			t.Errorf("an object read went to the wrong region: %s", r)
+		}
 	}
-	if strings.Join(fc.opened, ",") != "crn-supply-cos@eu-de" || strings.Join(fc.reads, ",") != "supply/keys/far.tgz" {
-		t.Errorf("COS opened %v, read %v", fc.opened, fc.reads)
+	if !read {
+		t.Errorf("the FAR key was not read from the bucket's region (eu-de): %v", s3.Served())
 	}
 
 	// The wrong object: the FAR key is not found, and the error says so.
-	fc.reads = nil
 	_, err = runRoot(t, "registry", "bom", "--no-workspace", "--far-host", e.far, "--check-image", e.check, "--cert-manager-install=false",
 		"--cos-instance", "supply-cos", "--cos-bucket", "supply", "--far-auth-object", "nope.tgz")
 	if err == nil || !strings.Contains(err.Error(), "FAR auth tarball") {
@@ -386,11 +385,11 @@ func TestRegistryFARKeyFromCOS(t *testing.T) {
 // and a wrong key is refused by FAR rather than silently replaced.
 func TestRegistryFARKeyFromAFile(t *testing.T) {
 	e := newRegistryEnv(t)
-	openCOSReader = func(context.Context, string, string, string) (cosObjectReader, error) {
+	newCOSClient = func(context.Context, string, string, string) (*cos.Client, error) {
 		t.Error("COS was opened although --far-auth-file was given")
 		return nil, errors.New("no COS")
 	}
-	t.Cleanup(func() { openCOSReader = defaultOpenCOSReader })
+	t.Cleanup(func() { newCOSClient = cos.New })
 	if out, err := runRoot(t, args([]string{"registry", "bom", "--no-workspace"}, e.bomArgs())...); err != nil || !strings.Contains(out, "4 artifacts") {
 		t.Fatalf("bom: %v\n%s", err, out)
 	}

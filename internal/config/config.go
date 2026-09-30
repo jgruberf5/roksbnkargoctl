@@ -103,9 +103,9 @@ type Mirror struct {
 // COS locates the FAR auth tarball and the subscription JWT. LocalFARAuthFile /
 // LocalJWTFile bypass COS for operators who hold the files directly.
 type COS struct {
-	Instance         string `yaml:"instance,omitempty" help:"COS instance name"`
-	Bucket           string `yaml:"bucket,omitempty" help:"COS bucket"`
-	Region           string `yaml:"region,omitempty" help:"COS bucket region"`
+	Instance         string `yaml:"instance,omitempty" help:"COS instance: name, GUID or CRN"`
+	Bucket           string `yaml:"bucket,omitempty" help:"COS bucket: name or CRN"`
+	Region           string `yaml:"region,omitempty" help:"COS region: where a new bucket is created and buckets are listed from (an existing bucket's own region is found from its location)"`
 	FARAuthObject    string `yaml:"far_auth_object,omitempty" help:"object key of the FAR auth tarball"`
 	JWTObject        string `yaml:"jwt_object,omitempty" help:"object key of the subscription JWT"`
 	LocalFARAuthFile string `yaml:"local_far_auth_file,omitempty" help:"local FAR auth tarball, instead of COS"`
