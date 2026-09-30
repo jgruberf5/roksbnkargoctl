@@ -85,9 +85,9 @@ GitHub releases, for the same BNK version).`,
 	root.PersistentFlags().BoolVarP(&flagYes, "yes", "y", false, "do not ask for confirmation")
 	root.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	root.AddCommand(
-		newInitCmd(), newRenderCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
+		newInitCmd(), newRenderCmd(), newExportCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
 		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(),
-		newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
+		newShowCmd(), newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
 	)
 	return root
 }
