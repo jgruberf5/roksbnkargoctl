@@ -9,14 +9,17 @@
 # Dockerfile.dockerignore beside this file limits the context to what the
 # binary needs (BuildKit).
 
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 RUN apk add --no-cache ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd/check/ ./cmd/check/
 ARG VERSION=dev
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# No defaults: a default (ARG TARGETARCH=amd64) wins over the value BuildKit
+# sets per platform, and v0.5.0's linux/arm64 image held an x86-64 binary (#17).
+# The build stage runs on the build platform and cross-compiles.
+ARG TARGETOS
+ARG TARGETARCH
 # Standard library only: nothing to download, so no module cache step.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/check ./cmd/check

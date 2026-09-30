@@ -183,3 +183,26 @@ func TestCLIImageSetsTheMarkerAndStampsTheVersion(t *testing.T) {
 		t.Error("build/cli/Dockerfile does not build for GOOS=${TARGETOS} GOARCH=${TARGETARCH}")
 	}
 }
+
+// #17: every image this repo builds must compile for the platform BuildKit asks
+// for. The check image had ARG TARGETARCH=amd64, so its linux/arm64 variant
+// shipped an x86-64 binary; the CLI image had the same bug before release.
+func TestEveryDockerfileBuildsForTheTargetPlatform(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "build", "*", "Dockerfile"))
+	if err != nil || len(files) < 2 {
+		t.Fatalf("found %v (%v); want the check and cli Dockerfiles", files, err)
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		df := strings.ReplaceAll(string(b), "\\\n", " ")
+		if m := regexp.MustCompile(`(?m)^ARG\s+TARGET(OS|ARCH|PLATFORM)\s*=.*$`).FindString(df); m != "" {
+			t.Errorf("%s gives a platform ARG a default (%q)", f, m)
+		}
+		if !regexp.MustCompile(`\bGOOS=\$\{TARGETOS\}\s+GOARCH=\$\{TARGETARCH\}`).MatchString(df) {
+			t.Errorf("%s does not build for GOOS=${TARGETOS} GOARCH=${TARGETARCH}", f)
+		}
+	}
+}
