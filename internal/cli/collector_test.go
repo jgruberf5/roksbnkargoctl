@@ -60,14 +60,30 @@ func TestCollectorThrottles(t *testing.T) {
 
 // The live gap polling left: a PreDelete check that finishes and is deleted
 // between two snapshots. The watch must catch it with no Snapshot at all.
-func TestCollectorWatchCatchesAPodBetweenSnapshots(t *testing.T) {
+// startWatch runs c.Watch until the test ends, then cancels it and waits for it
+// to return, so the watch never outlives the test and its temporary directory
+// (#20: a watch goroutine left running into later tests). It also fails the
+// test if Watch does not stop when its context is cancelled.
+func startWatch(t *testing.T, c *checkLogCollector) context.Context {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); c.Watch(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the collector's watch did not stop when its context was cancelled")
+		}
+	})
+	return ctx
+}
+
+func TestCollectorWatchCatchesAPodBetweenSnapshots(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
-	started := make(chan struct{})
-	go func() { close(started); c.Watch(ctx) }()
-	<-started
+	ctx := startWatch(t, c)
 	time.Sleep(100 * time.Millisecond) // let the watch register
 	pods := cs.CoreV1().Pods(render.CheckNamespace)
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "check-pre-uninstall-xyz", Namespace: render.CheckNamespace}}
@@ -159,8 +175,6 @@ func TestCollectDuringSavesOnFailure(t *testing.T) {
 // Review finding: the watch stream ends (client timeout, server expiry, error
 // event) and the old Watch returned for good. It must re-establish itself.
 func TestCollectorRewatchesWhenTheStreamEnds(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	cs := fake.NewSimpleClientset()
 	var watches atomic.Int32
 	cs.PrependWatchReactor("pods", func(k8stesting.Action) (bool, watch.Interface, error) {
@@ -172,7 +186,7 @@ func TestCollectorRewatchesWhenTheStreamEnds(t *testing.T) {
 		return false, nil, nil // later watches: the fake clientset's real tracker
 	})
 	c := newCheckLogCollector(cs, cs, filepath.Join(t.TempDir(), "u"))
-	go c.Watch(ctx)
+	ctx := startWatch(t, c)
 	deadline := time.Now().Add(5 * time.Second)
 	for watches.Load() < 2 {
 		if time.Now().After(deadline) {
