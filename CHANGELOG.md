@@ -4,6 +4,19 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.6.1] - 2026-09-30
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Fixed
+- Ctrl-C at any question (the `init` interview, a confirmation, the BNK Forge password)
+  now stops the command with exit code 130; before, it was ignored until Enter was
+  pressed. At the questions other than the password, the end of input (Ctrl-D) stops it
+  too, instead of silently taking the default. An interrupted password prompt restores
+  the terminal's echo. Nothing is saved by an interrupted `init` (#23).
+- Two collector tests left a watch running past their end; they now stop it and wait,
+  and a watch that ignores cancellation fails the test (#20).
+
 ## [0.6.0] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**. This release makes the tool

@@ -33,13 +33,13 @@ var (
 
 // Execute runs the CLI.
 func Execute() int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalContext()
 	defer stop()
 	// Best-effort: remove a <self>.old left by an earlier Windows self update
 	// (see installByMoveAside). A no-op elsewhere and when there is none.
 	sweepStaleBinary()
 	root := newRoot()
-	if err := root.ExecuteContext(ctx); err != nil {
+	if err := executeRoot(ctx, root); err != nil {
 		fmt.Fprintln(os.Stderr, "roksbnkargoctl:", err)
 		var ee exitError
 		if errors.As(err, &ee) {
@@ -48,6 +48,21 @@ func Execute() int {
 		return 1
 	}
 	return 0
+}
+
+// signalContext is cancelled by Ctrl-C or SIGTERM, and is what prompts wait on
+// (promptCtx): catching SIGINT turns off Go's own exit on Ctrl-C.
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	promptCtx = ctx
+	return ctx, stop
+}
+
+// executeRoot runs the command tree; a prompt interrupted by Ctrl-C or the end
+// of input ends it with errInterrupted (exit 130).
+func executeRoot(ctx context.Context, root *cobra.Command) (err error) {
+	defer recoverInterrupted(&err)
+	return root.ExecuteContext(ctx)
 }
 
 type exitError struct {
@@ -246,7 +261,6 @@ func confirm(cmd *cobra.Command, prompt string) bool {
 		return false
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s [y/N]: ", prompt)
-	line, _ := stdin().ReadString('\n')
-	line = strings.ToLower(strings.TrimSpace(line))
+	line := strings.ToLower(strings.TrimSpace(readLine()))
 	return line == "y" || line == "yes"
 }
