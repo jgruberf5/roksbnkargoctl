@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,19 +10,6 @@ import (
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/agent"
 )
-
-// runRoot runs the real command tree and returns its combined output.
-func runRoot(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	defer func() { flagWorkspace, flagYes = "", false }()
-	root := newRoot()
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs(args)
-	err := root.Execute()
-	return out.String(), err
-}
 
 // fakeGitHubForHost is a fake GitHub carrying v0.6.0 for this host's platform,
 // with githubAPI pointed at it for the test.

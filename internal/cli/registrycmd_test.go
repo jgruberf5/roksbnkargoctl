@@ -113,18 +113,6 @@ func writeFARKey(t *testing.T, sa string) string {
 	return p
 }
 
-// runRoot runs the real root command with args and returns everything it printed.
-func runRoot(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	root := newRoot()
-	var out bytes.Buffer
-	root.SetOut(&out)
-	root.SetErr(&out)
-	root.SetArgs(args)
-	err := root.Execute()
-	return out.String(), err
-}
-
 // registryEnv is an isolated home, a FAR holding a 4-artifact BOM behind the
 // FAR key, and a mirror behind user "robot" and the password in $TEST_MIRROR_PW.
 type registryEnv struct {
