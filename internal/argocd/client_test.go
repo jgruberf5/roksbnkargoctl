@@ -559,3 +559,20 @@ func TestCheckServerRejectsATokenTheServerDoesNotAccept(t *testing.T) {
 		t.Fatalf("a rejected token passed: %v", err)
 	}
 }
+
+func TestManifestsReadsWhatTheApplicationWouldSync(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		writeJSON(w, 200, map[string]any{"revision": "abc123", "manifests": []string{`{"kind":"Namespace"}`, `{"kind":"ConfigMap"}`}})
+	})
+	c.Project = "default"
+	rev, ms, err := c.Manifests(context.Background(), "bnk-demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev != "abc123" || len(ms) != 2 || ms[1] != `{"kind":"ConfigMap"}` {
+		t.Fatalf("revision %q manifests %v", rev, ms)
+	}
+	if got := rc.reqs[0]; got.Method != "GET" || got.Path != "/api/v1/applications/bnk-demo/manifests" {
+		t.Fatalf("request %s %s", got.Method, got.Path)
+	}
+}

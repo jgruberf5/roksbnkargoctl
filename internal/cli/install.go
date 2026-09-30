@@ -27,7 +27,7 @@ import (
 const MinArgoCD = "3.3.0"
 
 func newInstallCmd() *cobra.Command {
-	var noSync bool
+	var noSync, noPublish bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -41,8 +41,15 @@ func newInstallCmd() *cobra.Command {
   5. writes the out-of-band objects into ROKS: Secrets (FAR or mirror pull
      secret, subscription JWT, FLP CA), the check namespace and its RBAC
   6. registers ROKS with Argo CD (a cluster-admin ServiceAccount token)
-  7. publishes manifests/git/ to the Git repo
+  7. publishes manifests/git/ to the Git repo (skipped with --no-publish)
   8. creates the Application and, unless --no-sync, syncs it and waits
+
+--no-publish is for a repository roksbnkargoctl should not push to: commit the
+output of ` + "`roksbnkargoctl export`" + ` yourself first. install then compares what the
+Application would sync (Argo CD reads git.url, git.branch, git.path) with this
+workspace's render, refuses to sync if they differ, and otherwise syncs exactly
+the revision it compared. With no Git token or SSH key set, Argo CD reads the
+repository anonymously (a public repository, or one already registered in it).
 
 The sync runs the pre-install check in ROKS first; nothing of BNK is applied if
 it fails.`,
@@ -51,15 +58,16 @@ it fails.`,
 			if err != nil {
 				return err
 			}
-			return runInstall(cmd.Context(), s, noSync, timeout)
+			return runInstall(cmd.Context(), s, noSync, noPublish, timeout)
 		},
 	}
 	cmd.Flags().BoolVar(&noSync, "no-sync", false, "create the Application but do not sync it (sync from the Argo CD UI)")
+	cmd.Flags().BoolVar(&noPublish, "no-publish", false, "do not push to Git: sync what you committed from `export`, after checking it matches this render")
 	cmd.Flags().DurationVar(&timeout, "timeout", 75*time.Minute, "how long to wait for the sync")
 	return cmd
 }
 
-func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Duration) error {
+func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout time.Duration) error {
 	c, p := s.cfg, s.p
 	if err := c.Validate(); err != nil {
 		return err
@@ -69,7 +77,7 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 		return err
 	}
 	gitOpts, err := gitOptions(c, p.warn)
-	if err != nil {
+	if err != nil && !(noPublish && missingGitCredential(err)) {
 		return err
 	}
 
@@ -141,22 +149,28 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 	p.ok("cluster registered")
 
 	// 7. Git.
-	p.step("publishing manifests/git to %s (%s:%s)", c.Git.URL, c.Git.Branch, c.Git.Path)
-	pubOpts := gitOpts
-	pubOpts.Message = fmt.Sprintf("roksbnkargoctl: BNK %s on %s (%s mode, %s registry)", c.BNK.Version, r.ClusterName, c.BNK.Mode, c.Registry.Source)
-	pubOpts.SrcDir = s.ws.ManifestsDir() + "/git"
-	sha, changed, err := gitpub.Publish(ctx, pubOpts)
-	if err != nil {
-		return fmt.Errorf("publishing to Git: %w", err)
-	}
-	r.LastPublishedCommitSHA = sha
-	if err := s.save(); err != nil {
-		p.warn("%v", err)
-	}
-	if changed {
-		p.ok("published commit %s", short(sha))
+	var sha string
+	if noPublish {
+		p.info("--no-publish: not pushing to %s; the Application syncs what is at %s:%s after a check", c.Git.URL, c.Git.Branch, c.Git.Path)
 	} else {
-		p.ok("Git already up to date at %s", short(sha))
+		p.step("publishing manifests/git to %s (%s:%s)", c.Git.URL, c.Git.Branch, c.Git.Path)
+		pubOpts := gitOpts
+		pubOpts.Message = fmt.Sprintf("roksbnkargoctl: BNK %s on %s (%s mode, %s registry)", c.BNK.Version, r.ClusterName, c.BNK.Mode, c.Registry.Source)
+		pubOpts.SrcDir = s.ws.ManifestsDir() + "/git"
+		var changed bool
+		sha, changed, err = gitpub.Publish(ctx, pubOpts)
+		if err != nil {
+			return fmt.Errorf("publishing to Git: %w", err)
+		}
+		r.LastPublishedCommitSHA = sha
+		if err := s.save(); err != nil {
+			p.warn("%v", err)
+		}
+		if changed {
+			p.ok("published commit %s", short(sha))
+		} else {
+			p.ok("Git already up to date at %s", short(sha))
+		}
 	}
 
 	// 8. Repository + Application.
@@ -170,9 +184,15 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 			p.warn("not added to Argo CD (add it there by hand): %s", sk)
 		}
 	}
-	repo := argocd.Repo{URL: c.Git.URL, Username: c.Git.Username, Password: gitOpts.Token, SSHPrivateKey: string(gitOpts.SSHKeyPEM), Project: c.ArgoCD.Project}
-	if _, err := ac.UpsertRepository(ctx, repo); err != nil {
-		return fmt.Errorf("adding the Git repo to Argo CD: %w", err)
+	if noPublish && gitOpts.Token == "" && len(gitOpts.SSHKeyPEM) == 0 {
+		// No credential given: an upsert would replace a registration that has
+		// one with an anonymous one. Leave Argo CD's repository settings alone.
+		p.info("no Git credential set: leaving Argo CD's registration of %s as it is (it reads the repository anonymously if none exists)", c.Git.URL)
+	} else {
+		repo := argocd.Repo{URL: c.Git.URL, Username: c.Git.Username, Password: gitOpts.Token, SSHPrivateKey: string(gitOpts.SSHKeyPEM), Project: c.ArgoCD.Project}
+		if _, err := ac.UpsertRepository(ctx, repo); err != nil {
+			return fmt.Errorf("adding the Git repo to Argo CD: %w", err)
+		}
 	}
 	app, err := toArgoApp(o.Application)
 	if err != nil {
@@ -191,6 +211,13 @@ func runInstall(ctx context.Context, s *session, noSync bool, timeout time.Durat
 		return fmt.Errorf("creating the Application: %w", err)
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
+	if noPublish {
+		rev, err := checkGitMatchesRender(ctx, s, ac)
+		if err != nil {
+			return err
+		}
+		sha = rev
+	}
 	if noSync {
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
 		return nil
@@ -331,8 +358,14 @@ func gitCredentials(c *config.Config) (token string, sshKey []byte, err error) {
 		return "", b, nil
 	}
 	t, err := config.Env(c.Git.TokenEnv, "Git token")
-	return t, nil, err
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %w", errNoGitCredential, err)
+	}
+	return t, nil, nil
 }
+
+// errNoGitCredential: neither git.ssh_key_file nor a token in git.token_env.
+var errNoGitCredential = errors.New("no Git credential")
 
 // registrationCA is the CA Argo CD verifies the ROKS API with. The two ROKS
 // endpoints differ, verified live: the public endpoint presents a publicly
