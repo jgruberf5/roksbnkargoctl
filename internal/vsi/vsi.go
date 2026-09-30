@@ -278,14 +278,18 @@ func provision(ctx context.Context, c API, spec *Spec, rec *Record) error {
 		if err != nil && !ibm.IsNotFound(err) {
 			return err
 		}
+		created := false
 		if conn == nil {
 			spec.log("attaching %s to the transit gateway", spec.Name+"-vpc")
 			if conn, err = c.CreateVPCConnection(ctx, spec.TransitGateway, spec.Name, rec.VPCCRN); err != nil {
 				return err
 			}
+			created = true
 		}
-		if rec.VPCCreated {
-			rec.TGWConnectionID = conn.ID // ours to remove with the VPC
+		// Ours to remove: the connection of a VPC we created, or one we made
+		// for an adopted VPC. A connection the adopted VPC already had is not.
+		if rec.VPCCreated || created {
+			rec.TGWConnectionID = conn.ID
 		}
 		if _, err := c.WaitConnectionAttached(ctx, spec.TransitGateway, conn.ID, 10*time.Minute); err != nil {
 			return err
@@ -313,6 +317,11 @@ func checkOverlap(ctx context.Context, c API, gatewayID, cidr string) error {
 	return nil
 }
 
+// DetachTimeout bounds each wait of a transit gateway detach. IBM has held a
+// connection in "deleting" for more than 10 minutes, which failed flp down
+// with the VPC still attached; 30 covers what has been seen.
+const DetachTimeout = 30 * time.Minute
+
 // Teardown deletes what rec says was created, in dependency order, and waits
 // for each to go. It is safe to re-run.
 func Teardown(ctx context.Context, c API, rec *Record, log func(string, ...any)) error {
@@ -328,7 +337,9 @@ func Teardown(ctx context.Context, c API, rec *Record, log func(string, ...any))
 	const wait = 10 * time.Minute
 	if rec.TGWConnectionID != "" && rec.TGWID != "" {
 		log("detaching from the transit gateway")
-		step("transit gateway connection", func() error { return c.DeleteConnection(ctx, rec.TGWID, rec.TGWConnectionID, wait) })
+		step("transit gateway connection", func() error {
+			return c.DeleteConnection(ctx, rec.TGWID, rec.TGWConnectionID, DetachTimeout)
+		})
 	}
 	if rec.InstanceID != "" {
 		log("deleting instance")
@@ -363,9 +374,9 @@ type DiscoverSpec struct {
 	// Zone locates the public gateway when the subnet is already gone.
 	Zone string
 	// ExistingVPC is the VPC Provision adopted (Spec.ExistingVPC), if any. Its
-	// subnet, security group, floating IP and instance are searched inside it;
-	// the VPC and its gateway connection were not Provision's, so they are
-	// never taken (a public gateway named <Name>-pgw was).
+	// subnet, security group, floating IP and instance are searched inside it.
+	// The VPC was not Provision's and is never taken; a public gateway named
+	// <Name>-pgw and a gateway connection named <Name> were.
 	ExistingVPC string
 	// TransitGateway limits the connection search to one gateway (id); empty
 	// searches every gateway in the account.
@@ -476,9 +487,9 @@ func Discover(ctx context.Context, c API, d DiscoverSpec) (*Record, []Found, err
 		add("instance", inst.Name, inst.ID)
 	}
 
-	// Provision records a gateway connection only for a VPC it created; a VPC
-	// that is gone cannot still be attached.
-	if rec.VPCCreated {
+	// Provision names the connections it creates <Name>, for a VPC it created
+	// or one it adopted; a VPC that is gone cannot still be attached.
+	if vpc != nil {
 		gws := []string{d.TransitGateway}
 		if d.TransitGateway == "" {
 			all, err := c.ListTransitGateways(ctx)

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/vsi"
 	"github.com/jgruberf5/roksbnkargoctl/internal/vsi/vsitest"
@@ -101,8 +102,9 @@ func TestDiscoverTakesOnlyExactNames(t *testing.T) {
 	}
 }
 
-// In a VPC Provision adopted, the VPC and its gateway connection are never
-// taken; what Provision named inside it is.
+// In a VPC Provision adopted, the VPC is never taken; what Provision named
+// inside it is, and so is the gateway connection it made for it (it used to be
+// left attached, holding the VPC on the gateway after flp down).
 func TestDiscoverInAnExistingVPCLeavesTheVPC(t *testing.T) {
 	ctx := context.Background()
 	c := vsitest.New("us-east")
@@ -116,17 +118,74 @@ func TestDiscoverInAnExistingVPCLeavesTheVPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"floating IP:t-flp-fip", "instance:t-flp", "public gateway:t-flp-pgw", "security group:t-flp-sg", "subnet:t-flp-subnet"}
+	want := []string{"floating IP:t-flp-fip", "instance:t-flp", "public gateway:t-flp-pgw", "security group:t-flp-sg",
+		"subnet:t-flp-subnet", "transit gateway connection:t-flp"}
 	if k := kinds(found); !reflect.DeepEqual(k, want) {
 		t.Fatalf("found %v, want %v", k, want)
 	}
-	if rec.VPCCreated || rec.TGWConnectionID != "" {
+	if rec.VPCCreated {
 		t.Fatalf("an adopted VPC must not be deleted: %+v", rec)
 	}
 	if err := vsi.Teardown(ctx, c, rec, nil); err != nil {
 		t.Fatal(err)
 	}
-	if n, want := c.Names(), []string{"conn:tgw-1:t-flp", "vpc:shared"}; !reflect.DeepEqual(n, want) {
+	if n, want := c.Names(), []string{"vpc:shared"}; !reflect.DeepEqual(n, want) {
 		t.Errorf("left %v, want %v", n, want)
+	}
+}
+
+// Provision's own record of an adopted VPC holds the connection it created,
+// so flp down detaches it; a connection the VPC already had is left alone.
+func TestProvisionInAnExistingVPCRecordsOnlyItsOwnConnection(t *testing.T) {
+	ctx := context.Background()
+	c := vsitest.New("us-east")
+	c.AddVPC("shared")
+	sp := spec("t-flp")
+	sp.ExistingVPC = "shared"
+	rec, err := vsi.Provision(ctx, c, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.TGWConnectionID == "" {
+		t.Fatalf("the connection Provision created is not recorded: %+v", rec)
+	}
+	if err := vsi.Teardown(ctx, c, rec, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, want := c.Names(), []string{"vpc:shared"}; !reflect.DeepEqual(n, want) {
+		t.Errorf("left %v, want %v", n, want)
+	}
+
+	c = vsitest.New("us-east")
+	v := c.AddVPC("shared")
+	c.AddConnection("tgw-1", "someone-elses", v.CRN)
+	if rec, err = vsi.Provision(ctx, c, sp); err != nil {
+		t.Fatal(err)
+	}
+	if rec.TGWConnectionID != "" {
+		t.Fatalf("a connection the VPC already had is recorded for removal: %+v", rec)
+	}
+	if err := vsi.Teardown(ctx, c, rec, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, want := c.Names(), []string{"conn:tgw-1:someone-elses", "vpc:shared"}; !reflect.DeepEqual(n, want) {
+		t.Errorf("left %v, want %v", n, want)
+	}
+}
+
+// A detach IBM holds in "deleting" for over 10 minutes must not fail flp down:
+// Teardown gives the detach longer than that.
+func TestTeardownWaitsLongerThanIBMHasHeldADetach(t *testing.T) {
+	ctx := context.Background()
+	c := vsitest.New("us-east")
+	rec, err := vsi.Provision(ctx, c, spec("t-flp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vsi.Teardown(ctx, c, rec, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DetachTimeouts) != 1 || c.DetachTimeouts[0] < 20*time.Minute {
+		t.Errorf("detach timeouts %v: IBM has held a detach in deleting for more than 10 minutes", c.DetachTimeouts)
 	}
 }

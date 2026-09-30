@@ -32,7 +32,9 @@ type Cloud struct {
 	FIPs      map[string]*ibm.FloatingIP
 	Instances map[string]*ibm.Instance
 	Gateways  map[string]*Gateway
-	SSHKeys   map[string]*ibm.SSHKey
+	// DetachTimeouts is the timeout of every DeleteConnection call.
+	DetachTimeouts []time.Duration
+	SSHKeys        map[string]*ibm.SSHKey
 
 	// InstanceSpecs is what each instance was created with, by id.
 	InstanceSpecs map[string]ibm.InstanceSpec
@@ -543,9 +545,10 @@ func (c *Cloud) WaitConnectionAttached(ctx context.Context, id, connID string, _
 }
 
 // DeleteConnection implements vsi.API.
-func (c *Cloud) DeleteConnection(_ context.Context, id, connID string, _ time.Duration) error {
+func (c *Cloud) DeleteConnection(_ context.Context, id, connID string, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.DetachTimeouts = append(c.DetachTimeouts, timeout)
 	g, err := c.gw(id)
 	if err != nil {
 		return err
