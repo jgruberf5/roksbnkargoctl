@@ -69,6 +69,12 @@ func TestKeyNamesFollowTheYAMLPaths(t *testing.T) {
 		"bnk.namespace":                {"ROKSBNKARGOCTL_BNK_NAMESPACE", KindString},
 		"flp.vsi.cidr":                 {"ROKSBNKARGOCTL_FLP_VSI_CIDR", KindString},
 		"test_hub.version":             {"ROKSBNKARGOCTL_TEST_HUB_VERSION", KindString},
+		"forge.url":                    {"ROKSBNKARGOCTL_FORGE_URL", KindString},
+		"forge.project":                {"ROKSBNKARGOCTL_FORGE_PROJECT", KindString},
+		"forge.username":               {"ROKSBNKARGOCTL_FORGE_USERNAME", KindString},
+		"forge.endpoint":               {"ROKSBNKARGOCTL_FORGE_ENDPOINT", KindString},
+		"forge.insecure":               {"ROKSBNKARGOCTL_FORGE_INSECURE", KindBool},
+		"forge.ca_file":                {"ROKSBNKARGOCTL_FORGE_CA_FILE", KindString},
 	} {
 		k, ok := LookupKey(path)
 		if !ok {
@@ -87,7 +93,7 @@ func TestKeyNamesFollowTheYAMLPaths(t *testing.T) {
 	if _, ok := LookupKey("bnk.version"); ok {
 		t.Error("bnk.version must have no override (one valid value; the name is install.sh's)")
 	}
-	if n := len(Keys()); n != 64 {
+	if n := len(Keys()); n != 70 {
 		t.Errorf("%d keys; update this count (and the documentation) when adding one", n)
 	}
 }

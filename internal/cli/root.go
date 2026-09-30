@@ -75,7 +75,8 @@ their APIs.
 
 Optional components: cos (FAR key + JWT), registry (private mirror),
 flp (license proxy VSI for disconnected mode), argocd (a test Argo CD hub),
-agent (troubleshooting with an agentic CLI).
+agent (troubleshooting with an agentic CLI), forge (register the cluster with
+BNK Forge).
 
 The binary itself: self install (copy it onto PATH), self update (from the
 GitHub releases, for the same BNK version).`,
@@ -88,7 +89,7 @@ GitHub releases, for the same BNK version).`,
 	root.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "verbose output")
 	root.AddCommand(
 		newInitCmd(), newRenderCmd(), newExportCmd(), newInstallCmd(), newUninstallCmd(), newStatusCmd(), newDiagnoseCmd(),
-		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(),
+		newCOSCmd(), newRegistryCmd(), newFLPCmd(), newArgoCDCmd(), newAgentCmd(), newForgeCmd(),
 		newShowCmd(), newWorkspacesCmd(), newVersionCmd(), newSelfCmd(),
 	)
 	return root

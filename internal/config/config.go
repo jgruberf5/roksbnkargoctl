@@ -48,6 +48,7 @@ type Config struct {
 	Git            Git       `yaml:"git"`
 	Check          Check     `yaml:"check,omitempty"`
 	TestHub        TestHub   `yaml:"test_hub,omitempty"`
+	Forge          Forge     `yaml:"forge,omitempty"`
 	Resolved       *Resolved `yaml:"resolved,omitempty"`
 }
 
@@ -183,6 +184,19 @@ type TestHub struct {
 	K3sChannel   string `yaml:"k3s_channel,omitempty" help:"k3s release channel"`
 	AttachToTGW  *bool  `yaml:"attach_to_tgw,omitempty" help:"attach the test hub VPC to the transit gateway"`
 	ResourceName string `yaml:"name,omitempty" help:"name of the test hub VSI and its resources"`
+}
+
+// Forge is where `forge register` and `forge unregister` find BNK Forge. The
+// password is never stored: it comes from BNK_FORGE_PASSWORD or a prompt. No
+// field has a default written to config.yaml; an empty endpoint means public
+// and an empty project means the cluster name.
+type Forge struct {
+	URL      string `yaml:"url,omitempty" help:"BNK Forge server URL (default: BNK_FORGE_URL)"`
+	Project  string `yaml:"project,omitempty" help:"BNK Forge project the cluster is registered in (default: the cluster name)"`
+	Username string `yaml:"username,omitempty" help:"BNK Forge login username (default: BNK_FORGE_USER)"`
+	Endpoint string `yaml:"endpoint,omitempty" help:"ROKS endpoint in the kubeconfig given to BNK Forge: public or private (default public)"`
+	Insecure bool   `yaml:"insecure,omitempty" help:"skip TLS verification of BNK Forge (the password and token are then sent unauthenticated; prefer ca_file)"`
+	CAFile   string `yaml:"ca_file,omitempty" help:"PEM file with the CA BNK Forge's certificate must chain to"`
 }
 
 // Resolved caches what `init` looked up, so later commands and the rendered
