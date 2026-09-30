@@ -109,6 +109,29 @@ func (o *flpOpts) statePath(s *session) (path string, explicit bool, err error) 
 	return n + "-flp.json", false, nil
 }
 
+// spareClusterAttachment drops the gateway connection from rec when the
+// license proxy lives in the ROKS cluster's own VPC (flp.vsi.vpc): Argo CD
+// reaches the cluster through that connection, install adopts it, and flp down
+// must not detach it. Only a workspace knows the cluster's VPC.
+func spareClusterAttachment(s *session, rec *vsi.Record) {
+	r := s.cfg.Resolved
+	if rec.VPCCreated || rec.TGWConnectionID == "" || r == nil || r.VPCID == "" || rec.VPCID != r.VPCID {
+		return
+	}
+	s.p.warn("the license proxy is in the cluster's VPC; its transit gateway connection is the cluster's too and is left attached")
+	rec.TGWConnectionID = ""
+}
+
+// matchesRecord refuses a --name that is not the license proxy the state
+// records: with a current workspace the state is the workspace's, and acting on
+// it would delete (or report) a different proxy than the one named.
+func (o *flpOpts) matchesRecord(rec *flpRecord, path string) error {
+	if o.name == "" || rec.Name == o.name+"-flp" {
+		return nil
+	}
+	return fmt.Errorf("--name %s is not the license proxy recorded in %s (%s): pass --no-workspace (or --state) to act on %s-flp", o.name, path, rec.Name, o.name)
+}
+
 // caPath is where up writes the CA certificate: --ca-out, else
 // ./<name>-flp-ca.pem without a workspace. With a workspace install reads the
 // CA from the state, so no file is written unless asked for.
@@ -269,6 +292,7 @@ func runFLPUp(ctx context.Context, s *session, o *flpOpts, stdout io.Writer) err
 				Version: version, ExternalIP: fip, ProdJWKS: jwks, CA: ca})
 		},
 	})
+	spareClusterAttachment(s, rec)
 	out := flpRecord{Record: *rec, RootCAPEM: string(ca.CertPEM), RootCAKeyPEM: string(ca.KeyPEM), Version: version, CAFile: prev.CAFile}
 	if rec.PrivateIP != "" {
 		out.URL = flp.URL(rec.PrivateIP)
@@ -310,7 +334,7 @@ flp:
 		if runtime.GOOS == "windows" {
 			fmt.Fprintf(w, "$env:%s = '%s'\n", kv[0], strings.ReplaceAll(kv[1], "'", "''"))
 		} else {
-			fmt.Fprintf(w, "export %s=%s\n", kv[0], kv[1])
+			fmt.Fprintf(w, "export %s='%s'\n", kv[0], strings.ReplaceAll(kv[1], "'", `'\''`))
 		}
 	}
 }
@@ -322,6 +346,9 @@ func runFLPStatus(ctx context.Context, s *session, o *flpOpts, stdout io.Writer)
 	}
 	var rec flpRecord
 	if err := readJSON(path, &rec); err != nil {
+		return err
+	}
+	if err := o.matchesRecord(&rec, path); err != nil {
 		return err
 	}
 	api, err := flpVSIAPI(s, rec.Region)
@@ -352,6 +379,9 @@ func runFLPDown(ctx context.Context, s *session, o *flpOpts, cmd *cobra.Command)
 	case err != nil:
 		return err
 	case exists:
+		if err := o.matchesRecord(&rec, path); err != nil {
+			return err
+		}
 		s.p.step("deleting license proxy %s in %s, recorded in %s", rec.Name, rec.Region, path)
 		if !confirm(cmd, "Delete the license proxy VSI and its network?") {
 			return errors.New("not confirmed (pass --yes)")
@@ -382,6 +412,7 @@ func runFLPDown(ctx context.Context, s *session, o *flpOpts, cmd *cobra.Command)
 	default:
 		return fmt.Errorf("%s does not exist (nothing was built, or it is elsewhere: pass the right --state, or --name to find the resources by name)", path)
 	}
+	spareClusterAttachment(s, &rec.Record)
 	api, err := flpVSIAPI(s, rec.Region)
 	if err != nil {
 		return err

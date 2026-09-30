@@ -189,3 +189,50 @@ func TestTeardownWaitsLongerThanIBMHasHeldADetach(t *testing.T) {
 		t.Errorf("detach timeouts %v: IBM has held a detach in deleting for more than 10 minutes", c.DetachTimeouts)
 	}
 }
+
+// A second Provision in an adopted VPC (a retry after a timeout) keeps
+// ownership of the connection and public gateway the first run made, so
+// Teardown of the re-run record removes them.
+func TestARerunInAnAdoptedVPCKeepsWhatTheFirstRunMade(t *testing.T) {
+	ctx := context.Background()
+	c := vsitest.New("us-east")
+	c.AddVPC("shared")
+	sp := spec("t-flp")
+	sp.ExistingVPC = "shared"
+	first, err := vsi.Provision(ctx, c, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TGWConnectionID == "" {
+		t.Fatal("first run did not record the connection it made")
+	}
+	second, err := vsi.Provision(ctx, c, sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.TGWConnectionID == "" {
+		t.Errorf("re-run of Provision dropped TGWConnectionID %s (made by the first run, named %s)", first.TGWConnectionID, sp.Name)
+	}
+	if err := vsi.Teardown(ctx, c, second, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, want := c.Names(), []string{"vpc:shared"}; !reflect.DeepEqual(n, want) {
+		t.Errorf("left %v, want %v", n, want)
+	}
+}
+
+// With no <name>-vpc and no ExistingVPC, an instance of the exact name in
+// another VPC is not Provision's: it used to be taken, and flp down deleted it.
+func TestDiscoverWithoutTheVPCTakesNoInstance(t *testing.T) {
+	ctx := context.Background()
+	c := vsitest.New("us-east")
+	prod := c.AddVPC("prod-vpc")
+	c.AddInstance("t-flp", prod.ID, "us-east-1")
+	rec, found, err := vsi.Discover(ctx, c, vsi.DiscoverSpec{Name: "t-flp", Zone: "us-east-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.InstanceID != "" {
+		t.Errorf("took instance %s in unrelated VPC prod-vpc: %v", rec.InstanceID, found)
+	}
+}

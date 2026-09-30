@@ -228,7 +228,7 @@ func TestFLPWithoutAWorkspace(t *testing.T) {
 	}
 	caAbs := filepath.Join(dir, "flptest-flp-ca.pem")
 	for _, want := range []string{"url: " + rec.URL, "root_ca_file: " + caAbs,
-		"export ROKSBNKARGOCTL_FLP_EXTERNAL_URL=" + rec.URL, "export ROKSBNKARGOCTL_FLP_EXTERNAL_ROOT_CA_FILE=" + caAbs} {
+		"export ROKSBNKARGOCTL_FLP_EXTERNAL_URL='" + rec.URL + "'", "export ROKSBNKARGOCTL_FLP_EXTERNAL_ROOT_CA_FILE='" + caAbs + "'"} {
 		if runtime.GOOS == "windows" {
 			break
 		}

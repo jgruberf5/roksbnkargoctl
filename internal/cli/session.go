@@ -236,17 +236,25 @@ func (s *session) resolved() (*config.Resolved, error) {
 	if r == nil || r.ClusterID == "" {
 		return nil, fmt.Errorf("workspace %q is not resolved; run `roksbnkargoctl init -w %s --refresh`", s.ws.Name, s.ws.Name)
 	}
+	// Always compared, not only under an override: init run with an override
+	// records the override's cluster while config.yaml keeps its own, and a
+	// later command without the override would mix the two (the record's VPC
+	// and endpoint, config.yaml's cluster for the kubeconfig).
 	stale := func(path, want, recorded string) error {
-		return fmt.Errorf("%s overrides %s to %q, but workspace %q was resolved for %s; unset it, or run `roksbnkargoctl init -w %s --refresh` with it set",
-			s.overrideSource(path), path, want, s.ws.Name, recorded, s.ws.Name)
+		if src := s.overrideSource(path); src != "" {
+			return fmt.Errorf("%s overrides %s to %q, but workspace %q was resolved for %s; unset it, or run `roksbnkargoctl init -w %s --refresh` with it set",
+				src, path, want, s.ws.Name, recorded, s.ws.Name)
+		}
+		return fmt.Errorf("config.yaml sets %s to %q, but workspace %q was resolved for %s (was init run with an override?); run `roksbnkargoctl init -w %s --refresh`",
+			path, want, s.ws.Name, recorded, s.ws.Name)
 	}
-	if c := s.cfg.Cluster; s.overridden("cluster") && c != r.ClusterID && c != r.ClusterName {
+	if c := s.cfg.Cluster; c != r.ClusterID && c != r.ClusterName {
 		return nil, stale("cluster", c, r.ClusterName)
 	}
-	if g := s.cfg.TransitGateway; s.overridden("transit_gateway") && g != r.TransitGatewayID && g != r.TransitGatewayName {
+	if g := s.cfg.TransitGateway; g != r.TransitGatewayID && g != r.TransitGatewayName {
 		return nil, stale("transit_gateway", g, r.TransitGatewayName)
 	}
-	if e := s.cfg.ArgoCD.ClusterEndpoint; s.overridden("argocd.cluster_endpoint") {
+	if e := s.cfg.ArgoCD.ClusterEndpoint; r.ArgoCDClusterServer != "" {
 		want := r.PrivateEndpoint
 		if e == "public" {
 			want = r.PublicEndpoint

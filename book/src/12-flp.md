@@ -207,8 +207,8 @@ flp:
     url: https://10.248.0.4:8443
     root_ca_file: /home/you/edge1-flp-ca.pem
 # or in the environment:
-export ROKSBNKARGOCTL_FLP_EXTERNAL_URL=https://10.248.0.4:8443
-export ROKSBNKARGOCTL_FLP_EXTERNAL_ROOT_CA_FILE=/home/you/edge1-flp-ca.pem
+export ROKSBNKARGOCTL_FLP_EXTERNAL_URL='https://10.248.0.4:8443'
+export ROKSBNKARGOCTL_FLP_EXTERNAL_ROOT_CA_FILE='/home/you/edge1-flp-ca.pem'
 ```
 
 On Windows the last two lines are PowerShell, `$env:ROKSBNKARGOCTL_FLP_EXTERNAL_URL = '…'`,

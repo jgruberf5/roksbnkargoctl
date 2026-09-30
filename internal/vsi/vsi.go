@@ -167,7 +167,8 @@ func provision(ctx context.Context, c API, spec *Spec, rec *Record) error {
 	}
 	// In a VPC we created, the gateway is ours even when a re-run finds it
 	// already there; otherwise Teardown would leave it and the VPC delete fails.
-	rec.PublicGatewayID, rec.PGWCreated = pgw.ID, created || rec.VPCCreated
+	// In an adopted VPC, one of the name we give is ours from an earlier run.
+	rec.PublicGatewayID, rec.PGWCreated = pgw.ID, created || rec.VPCCreated || pgw.Name == spec.Name+"-pgw"
 
 	// Subnet.
 	subnets, err := c.ListSubnets(ctx, rec.VPCID)
@@ -287,8 +288,9 @@ func provision(ctx context.Context, c API, spec *Spec, rec *Record) error {
 			created = true
 		}
 		// Ours to remove: the connection of a VPC we created, or one we made
-		// for an adopted VPC. A connection the adopted VPC already had is not.
-		if rec.VPCCreated || created {
+		// for an adopted VPC, now or on an earlier run (it has the name we
+		// give). A connection the adopted VPC already had is not.
+		if rec.VPCCreated || created || conn.Name == spec.Name {
 			rec.TGWConnectionID = conn.ID
 		}
 		if _, err := c.WaitConnectionAttached(ctx, spec.TransitGateway, conn.ID, 10*time.Minute); err != nil {
@@ -481,8 +483,9 @@ func Discover(ctx context.Context, c API, d DiscoverSpec) (*Record, []Found, err
 	if err != nil && !ibm.IsNotFound(err) {
 		return nil, nil, err
 	}
-	// An instance of that name in another VPC is not the one Provision built.
-	if inst != nil && (vpc == nil || inst.VPCID == vpc.ID) {
+	// An instance of that name in another VPC is not the one Provision built,
+	// and without the VPC there is none: a VPC cannot be deleted under one.
+	if inst != nil && vpc != nil && inst.VPCID == vpc.ID {
 		rec.InstanceID, rec.PrivateIP = inst.ID, inst.PrimaryIP
 		add("instance", inst.Name, inst.ID)
 	}

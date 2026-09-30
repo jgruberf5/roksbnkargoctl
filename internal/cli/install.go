@@ -196,15 +196,11 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 			p.warn("not added to Argo CD (add it there by hand): %s", sk)
 		}
 	}
-	if noPublish && gitOpts.Token == "" && len(gitOpts.SSHKeyPEM) == 0 {
-		// No credential given: an upsert would replace a registration that has
-		// one with an anonymous one. Leave Argo CD's repository settings alone.
-		p.info("no Git credential set: leaving Argo CD's registration of %s as it is (it reads the repository anonymously if none exists)", c.Git.URL)
-	} else {
-		repo := argocd.Repo{URL: c.Git.URL, Username: c.Git.Username, Password: gitOpts.Token, SSHPrivateKey: string(gitOpts.SSHKeyPEM), Project: c.ArgoCD.Project}
-		if _, err := ac.UpsertRepository(ctx, repo); err != nil {
-			return fmt.Errorf("adding the Git repo to Argo CD: %w", err)
-		}
+	if err := registerRepo(p, c, gitOpts, noPublish, func(r argocd.Repo) error {
+		_, err := ac.UpsertRepository(ctx, r)
+		return err
+	}); err != nil {
+		return err
 	}
 	app, err := toArgoApp(o.Application)
 	if err != nil {
@@ -223,18 +219,40 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return fmt.Errorf("creating the Application: %w", err)
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
-	if noPublish {
-		rev, err := checkGitMatchesRender(ctx, s, ac)
-		if err != nil {
-			return err
-		}
-		sha = rev
+	if sha, err = revisionToSync(noPublish, sha, func() (string, error) { return checkGitMatchesRender(ctx, s, ac) }); err != nil {
+		return err
 	}
 	if noSync {
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
 		return nil
 	}
 	return syncAndWait(ctx, s, ac, sha, timeout)
+}
+
+// registerRepo registers the Git repository in Argo CD with the credential
+// install holds. With --no-publish and none, it leaves Argo CD's registration
+// alone: an upsert would replace a registration that has a credential with an
+// anonymous one.
+func registerRepo(p printer, c *config.Config, o gitpub.Options, noPublish bool, upsert func(argocd.Repo) error) error {
+	if noPublish && o.Token == "" && len(o.SSHKeyPEM) == 0 {
+		p.info("no Git credential set: leaving Argo CD's registration of %s as it is (it reads the repository anonymously if none exists)", c.Git.URL)
+		return nil
+	}
+	repo := argocd.Repo{URL: c.Git.URL, Username: c.Git.Username, Password: o.Token, SSHPrivateKey: string(o.SSHKeyPEM), Project: c.ArgoCD.Project}
+	if err := upsert(repo); err != nil {
+		return fmt.Errorf("adding the Git repo to Argo CD: %w", err)
+	}
+	return nil
+}
+
+// revisionToSync is the revision install syncs: the commit it pushed, or with
+// --no-publish exactly the revision compared with the render, so a push that
+// lands between the comparison and the sync is not synced unchecked.
+func revisionToSync(noPublish bool, pushed string, compare func() (string, error)) (string, error) {
+	if !noPublish {
+		return pushed, nil
+	}
+	return compare()
 }
 
 func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, timeout time.Duration) error {

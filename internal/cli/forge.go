@@ -18,9 +18,10 @@ import (
 )
 
 // BNK Forge's own connection variables, the names roksbnkctl reads. They are
-// not config overrides: forge.url and forge.username (config.yaml, flags and
-// their ROKSBNKARGOCTL_* variables) take precedence over them. The password has
-// no config key and no flag, so it is never on a command line or in a file.
+// not config overrides: a --url/--username flag or its ROKSBNKARGOCTL_*
+// variable beats them, and they beat config.yaml's forge.url and
+// forge.username (see forgeSetting). The password has no config key and no
+// flag, so it is never on a command line or in a file.
 const (
 	envForgeURL      = "BNK_FORGE_URL"
 	envForgeUser     = "BNK_FORGE_USER"
@@ -127,6 +128,10 @@ func forgeTarget(ctx context.Context, s *session) (forgeCluster, error) {
 		if err != nil {
 			return forgeCluster{}, err
 		}
+		// The workspace was resolved in config.yaml's region.
+		if src := s.overrideSource("ibmcloud.region"); src != "" && s.file != nil && s.file.IBMCloud.Region != s.cfg.IBMCloud.Region {
+			return forgeCluster{}, fmt.Errorf("%s sets region %s, but cluster %s was resolved in %s: Forge would be told the wrong region", src, s.cfg.IBMCloud.Region, r.ClusterName, s.file.IBMCloud.Region)
+		}
 		return forgeCluster{
 			ID: r.ClusterID, Name: r.ClusterName, Region: s.cfg.IBMCloud.Region,
 			ResourceGroup: s.cfg.IBMCloud.ResourceGroup,
@@ -207,7 +212,10 @@ func forgeConnect(cmd *cobra.Command, s *session) (*forgeConn, error) {
 		return nil, fmt.Errorf("no BNK Forge URL: pass --url, or set %s or %s", envForgeURL, config.EnvName("forge.url"))
 	}
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
-		return nil, fmt.Errorf("BNK Forge URL %q must start with https://", url)
+		return nil, fmt.Errorf("BNK Forge URL %q must start with https:// (or http://)", url)
+	}
+	if strings.HasPrefix(url, "http://") {
+		s.p.warn("forge: %s is plain http: the Forge password and the IBM Cloud API key in the credential template go to it unencrypted", url)
 	}
 	user := forgeSetting(s, "forge.username", envForgeUser)
 	if user == "" && forgeTerminal() {
