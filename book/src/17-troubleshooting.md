@@ -71,9 +71,61 @@ secret is read only from the environment. Set the variable named in the message
 **`argocd: … token rejected (401)`** — `ARGOCD_AUTH_TOKEN` is not a valid,
 unexpired Argo CD token for `argocd.server`.
 
+**`Argo CD API token: set the environment variable ARGOCD_AUTH_TOKEN: an API token for
+the Argo CD at <server> (Argo CD UI: Settings → Accounts → <account> → Tokens → Generate
+New)`** (from `init`). `init` checks an existing Argo CD before it saves the workspace,
+so the token must be set first. Generate one where the message says, export it and run
+`init` again. To build a test hub instead, answer `n` to `Use an existing Argo CD
+instance (3.3 or later)?` ([chapter 15](./15-test-hub.md)).
+
+**`checking the Argo CD at <server>: argocd: the server at <server> did not accept the
+API token (session/userinfo: not logged in); check ARGOCD_AUTH_TOKEN`.** The server
+answered, but not for this token: it belongs to another Argo CD, was revoked, or has
+expired. `init` and `install` both report Argo CD failures with the `checking the Argo
+CD at <server>:` prefix.
+
 **`argocd: server version … is older than the required 3.3.0 (PreDelete hooks need
 Argo CD >= 3.3)`.** The uninstall checks are PreDelete/PostDelete hooks; an older
 Argo CD would delete BNK without draining it. Upgrade Argo CD.
+
+**Git access (`init`, and `install` step 1).** `init` and `install` check the Git
+repository before they change anything. Every message below stops `install`. At
+`init`, a repository that cannot be read with the credential stops it too, but missing
+push rights and a missing credential are only warnings, because the `export` and
+`install --no-publish` flow pushes nothing:
+
+| Message | Cause | Fix |
+|---|---|---|
+| `git: <url> not found, or the credential cannot see it: …` | Wrong `git.url`, or the token or deploy key has no access to that repository (private repositories answer "not found" to an outsider) | Correct `git.url`, or grant the credential access |
+| `git: <url> needs a credential (a token in git.token_env, ROKSBNKARGOCTL_GIT_TOKEN by default, or git.ssh_key_file): …` | No credential was sent, or it was rejected | Set the token variable, or `git.ssh_key_file` |
+| `git: the credential may not push to <url> (a read-only token or deploy key?): …` | The credential can read but not push | Give it write access (a deploy key with write access, a token with push scope), or commit an `export` yourself and run `install --no-publish` |
+| `git: cannot read <url>: …` / `git: cannot push to <url>: …` | Anything else: unreachable host, TLS, an SSH host-key failure (below) | Read the quoted cause |
+| `git: <url> has no branch <branch>: push the export there first (roksbnkargoctl export)` | `install --no-publish`, and `git.branch` does not exist yet | Push the export to that branch first |
+| `no Git credential: Git token: set the environment variable ROKSBNKARGOCTL_GIT_TOKEN` | `install` without `--no-publish` and no credential set | Set the token, or `git.ssh_key_file` |
+| `gitpub: an ssh URL needs SSHKeyPEM` | A `git@…` URL without `git.ssh_key_file` (for example `install --no-publish` with no credential) | Set `git.ssh_key_file`, or use the `https://` URL |
+
+At `init` the warnings read `⚠ no Git credential ($ROKSBNKARGOCTL_GIT_TOKEN or
+git.ssh_key_file): install needs one to push, unless you commit `roksbnkargoctl export`
+yourself and run install --no-publish` and `⚠ git: the credential may not push to <url>
+(…): …: install will fail at the push; fix the credential, or commit `roksbnkargoctl
+export` yourself and run install --no-publish`. See [init's
+checks](./05-workspaces-and-init.md#the-checks-init-makes-before-it-saves).
+
+**`the Application was created but NOT synced: what is in Git (revision <rev>) does not
+match this workspace's render (N difference(s)): …`** (`install --no-publish`). The
+repository at `git.branch`/`git.path` does not hold this render: the export was not
+pushed, was pushed to another branch or path, is from before a change to `config.yaml`
+or an upgrade of roksbnkargoctl, or the old contents of `git.path` were not replaced.
+Each listed line says `missing in Git`, `different in Git` or `in Git but not in this
+render`. Run `roksbnkargoctl export`, replace `git.path` in the repository with its
+contents, push, and run `install --no-publish` again. Nothing was synced.
+
+**`the Application was created but not synced: Argo CD could not read <url>
+<branch>:<path>: … (was the export pushed there?)`** (`install --no-publish`). Argo CD
+itself cannot produce manifests from that location: the path does not exist on the
+branch, or Argo CD has no access to the repository. With no Git credential set, `install`
+leaves Argo CD's repository registration as it is, so a private repository must already
+be registered in Argo CD with a credential.
 
 **`refusing to attach: the cluster VPC overlaps VPCs already on <gateway>`.** A
 transit gateway silently blackholes one of two overlapping VPCs, so `install`

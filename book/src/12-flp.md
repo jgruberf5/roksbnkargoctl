@@ -80,7 +80,7 @@ reuses what exists.
 | Security group | `<ws>-flp-sg` | Outbound: all. Inbound TCP `8443` from each `allowed_cidrs` entry; TCP `22` from each entry when `ssh_key` is set |
 | Floating IP | `<ws>-flp-fip` | Unless `floating_ip: false`. Reserved before the VSI so its address can go into the proxy certificate |
 | Instance | `<ws>-flp` | Latest public `ibm-ubuntu-24-04-*-minimal-amd64-*` image, 100 GB boot volume, cloud-init user data |
-| Transit gateway connection | `<ws>-flp` | Attaches the FLP VPC to the cluster's transit gateway so the ROKS workers reach the FLP privately |
+| Transit gateway connection | `<ws>-flp` | Attaches the FLP VPC to the cluster's transit gateway so the ROKS workers reach the FLP privately. With `flp.vsi.vpc`, only if that VPC is not already on the gateway; a connection it already had is used as it is and is not recorded |
 
 If a step fails, the partial record is still written and `flp up` ends with
 `(partial state saved in <state file>; `flp down` cleans it up)`. On success it prints the
@@ -218,11 +218,17 @@ with the value quoted literally. An install then uses the FLP as an existing one
 ## Teardown
 
 `flp down` reads the state file and deletes, in order, waiting for each: the transit
-gateway connection (only if `flp up` created the VPC), the instance, the floating IP, the
-subnet, the security group, the public gateway (if created) and the VPC (if created, and
-only if everything before it succeeded). Then it removes the state file and the CA file it
+gateway connection (if `flp up` created it), the instance, the floating IP, the subnet,
+the security group, the public gateway (if created) and the VPC (if created, and only if
+everything before it succeeded). Then it removes the state file and the CA file it
 recorded. It is safe to re-run. If a disconnected install still licenses through this FLP,
 uninstall it first.
+
+The state file records the transit gateway connection whenever `flp up` created it: for
+the VPC it created, and also for a VPC you gave it with `flp.vsi.vpc` that was not yet on
+the gateway. A connection that VPC already had is never recorded, so `flp down` leaves it
+attached. IBM Cloud can hold a connection in `deleting` for more than 10 minutes, so
+`flp down` waits up to 30 minutes for the detach; every other deletion waits up to 10.
 
 ### When the state file is lost
 
@@ -245,8 +251,9 @@ instance `<name>-flp` and the transit gateway connection `<name>-flp`), never a 
 near miss, in `--region` (required) and the zone (`--zone`, default `<region>-1`). The
 connection is searched on `--transit-gateway`, or on every gateway in the account when
 none is set. With `--vpc`, the FLP was built in your VPC: its subnet, security group,
-floating IP and instance are searched there, and the VPC and its gateway connection, not
-being the FLP's, are never taken. It lists what it found and asks before deleting;
+floating IP and instance are searched there, and so is a gateway connection named
+`<name>-flp` for that VPC, which is the one `flp up` creates; the VPC itself, not being
+the FLP's, is never taken. It lists what it found and asks before deleting;
 nothing found is success (`nothing named <name>-flp* in <region>`).
 
 A `--state` you named that does not exist is an error instead, since the file may simply

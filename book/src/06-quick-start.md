@@ -80,9 +80,9 @@ export ARGOCD_AUTH_TOKEN=…           # Argo CD API token
 export ROKSBNKARGOCTL_GIT_TOKEN=…    # Git token with push rights to the repo
 ```
 
-They are read from the environment on each run and never written to disk. With an
-existing Argo CD, `init` already checks the token against the server, so export them
-before `init`.
+They are read from the environment on each run and never written to disk. `init`
+already checks the Argo CD token against the server and the Git token against the
+repository, so export them before `init`.
 
 ## 3. init
 
@@ -91,6 +91,9 @@ roksbnkargoctl init -w demo --config-file config.yaml
 ```
 
 ```text
+✓ Argo CD v3.5.1+… at https://argocd.example.internal accepts the token in $ARGOCD_AUTH_TOKEN
+✓ Git https://github.com/example-org/platform-gitops.git: readable, branch main present
+✓ Git https://github.com/example-org/platform-gitops.git: the credential can push
 → resolving cluster my-roks
 ✓ cluster my-roks (<cluster-id>), OpenShift 4.21.31, VPC my-roks-vpc, zones us-south-1,us-south-2,us-south-3
 → resolving transit gateway my-tgw

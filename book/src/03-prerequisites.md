@@ -13,7 +13,7 @@ checklist; most failed installs trace back to one line of it.
 | A transit gateway | `init` (resolves it), `install` (attaches the cluster VPC if needed) |
 | Argo CD 3.3 or later, outside the cluster, reachable over the transit gateway to the ROKS private endpoint | `install` (version), the first sync wave (reachability) |
 | An Argo CD API token | `init` (when you use an existing Argo CD), `install` |
-| A Git repository, and a token or SSH key that can push to it | `install` (publish), Argo CD (clone) |
+| A Git repository, and a token or SSH key that can push to it (read access is enough for `install --no-publish`) | `init` and `install` (access check), `install` (publish), Argo CD (clone) |
 | The FAR auth tarball and the subscription JWT from MyF5, in COS or as local files | `init` (objects exist), `render` / `install` (read them) |
 | `IBMCLOUD_API_KEY` in the environment, with the IAM access below | every command that calls IBM Cloud |
 | Node egress for your mode | `check-node-probe` and `check pre-install`, before any BNK object is applied |
@@ -75,13 +75,16 @@ equivalent RBAC works. Generate the token in the Argo CD UI or with the Argo CD 
 |---|---|
 | Repository | `git.url`, over HTTPS (`https://…`) or SSH (`git@…`). Argo CD must be able to read it. |
 | Branch and path | `git.branch` (default `main`) and `git.path` (default `bnk/<workspace>`), a relative path inside the repo. Only that path is written. |
-| HTTPS credential | A token that can push, from `ROKSBNKARGOCTL_GIT_TOKEN` (or `git.token_env`), with `git.username` (default `git`). |
+| HTTPS credential | A token that can push, from `ROKSBNKARGOCTL_GIT_TOKEN` (or `git.token_env`), with `git.username` (default `git`). `init` checks the repository can be read and warns if the token cannot push; `install` refuses to start without push rights. With `install --no-publish` read access is enough, and the credential is optional for a repository readable without one. |
 | SSH credential | A private key file, `git.ssh_key_file`. |
 | SSH host keys | Always verified. The keys of `github.com`, `gitlab.com` and `bitbucket.org` are built in. For any other Git server, set `git.known_hosts_file`; its entries are also added to Argo CD so the hub's clone verifies the same host. |
 
 The same credential is given to Argo CD as the repository credential, so a token with
-push rights is stored in Argo CD. If your policy requires a read-only credential on the
-hub, replace the repository credential in Argo CD after the first install.
+push rights is stored in Argo CD. Every `install` sets it again (an upsert). If your
+policy requires a read-only credential on the hub, commit an `export` yourself and run
+`install --no-publish` with a read-only token or deploy key: `--no-publish` needs only
+read access, and that credential is the one registered in Argo CD (see
+[install](./08-install.md#without-letting-roksbnkargoctl-push-to-git)).
 
 `ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1` switches SSH host-key verification off. It is an
 escape hatch that prints a loud warning; prefer `git.known_hosts_file`.

@@ -24,7 +24,7 @@ roksbnkargoctl install [--no-sync] [--no-publish] [--timeout 1h15m0s] [-w <works
 |---|---|---|
 | `IBMCLOUD_API_KEY` (or `IC_API_KEY`) | `ibmcloud.api_key_env` | IBM Cloud: transit gateway, IAM, cluster kubeconfig, COS |
 | `ARGOCD_AUTH_TOKEN` | `argocd.token_env` | The Argo CD API |
-| `ROKSBNKARGOCTL_GIT_TOKEN` | `git.token_env` | HTTPS Git push (not needed with `git.ssh_key_file`) |
+| `ROKSBNKARGOCTL_GIT_TOKEN` | `git.token_env` | HTTPS Git: the access check in step 1 and the push (not needed with `git.ssh_key_file`; optional with `--no-publish`) |
 | `ROKSBNKARGOCTL_MIRROR_PASSWORD` | `registry.mirror.password_env` | Mirror pull secret, when `registry.mirror.username` is set |
 
 ## Idempotent by design
@@ -37,12 +37,13 @@ converged, not duplicated.
 ## The steps, in order
 
 Before step 1, `install` validates `config.yaml` (every invalid key is listed at once),
-checks that the workspace was resolved by `init`, and loads the Git credentials and any
-`git.known_hosts_file`.
+checks that the workspace was resolved by `init`, and loads the Git credential and any
+`git.known_hosts_file`. A missing Git credential stops it here, except with
+`--no-publish`.
 
 | # | Step | What can fail | On re-run |
 |---|---|---|---|
-| 1 | Argo CD version and token | Token missing or not accepted; server older than 3.3 | Re-checked |
+| 1 | Argo CD version and token, then Git access | Token missing or not accepted; server older than 3.3; the Git credential cannot push (with `--no-publish`: the repository cannot be read, or has no `git.branch`) | Re-checked |
 | 2 | Transit gateway attachment | Prefix overlap with a VPC already on the gateway; attach timeout (10 min) | Found attached, skipped |
 | 3 | IAM trusted profile | IAM permissions | Found by name; missing link or policies added |
 | 4 | Render | FAR or mirror unreachable or unauthorized; JWT or FAR key not found; check image missing from the mirror; a secret value in a Git object | Re-rendered; identical output for unchanged inputs |
@@ -68,6 +69,30 @@ argocd: the server at https://… did not accept the API token (session/userinfo
 On success it prints the version and server, for example `Argo CD v3.5.1+… at https://…`.
 If the Argo CD server uses a private CA, set `argocd.ca_file`; `argocd.insecure: true`
 skips verification (the test hub uses it).
+
+#### Git access, before anything changes
+
+Still in step 1, before the transit gateway, IAM, ROKS or Argo CD are touched, `install`
+proves it can use the Git repository with the credential it has (the same authentication
+and SSH host-key verification as the push in step 7):
+
+| Run | What must hold | On success |
+|---|---|---|
+| `install` | The credential may **push** to `git.url`. `install` asks for the ref list a push starts with (the `git-receive-pack` advertisement), which Git hosts serve only to a credential allowed to push. Nothing is pushed | `✓ Git <url>: the credential can push`, or `✓ Git <url> is empty; the first push creates <branch>` |
+| `install --no-publish` | The repository can be **read** (the clone advertisement), and `git.branch` exists in it, since the Application syncs what is already there | `✓ Git <url>: readable, branch <branch> present` |
+
+A failure stops the install with nothing changed, for example:
+
+```text
+git: https://… not found, or the credential cannot see it: …
+git: the credential may not push to https://… (a read-only token or deploy key?): …
+git: https://… has no branch main: push the export there first (roksbnkargoctl export)
+```
+
+The [troubleshooting guide](./17-troubleshooting.md#before-the-sync-init-render-install)
+lists every message. With `--no-publish` and no Git credential set, the check reads the
+repository anonymously, so it must be readable without one (an `https://` URL; an SSH
+URL always needs `git.ssh_key_file`).
 
 ### 2. Transit gateway attachment
 
@@ -200,11 +225,16 @@ Argo CD's known hosts so the hub verifies the same key. The environment variable
 ### 8. Repository, Application and sync
 
 1. Upsert the repository in Argo CD (`POST /api/v1/repositories`) with the Git URL and the
-   token or SSH key, in `argocd.project`.
+   token or SSH key, in `argocd.project`. With `--no-publish` and no Git credential set,
+   this is skipped, so that an existing registration that carries a credential is not
+   replaced by an anonymous one: `no Git credential set: leaving Argo CD's registration of
+   <url> as it is (it reads the repository anonymously if none exists)`.
 2. Upsert the Application described in [chapter 7](./07-the-application.md).
-3. With `--no-sync`, stop here.
-4. Otherwise start a sync at the published commit and wait up to `--timeout`, printing a
-   line whenever the state changes:
+3. With `--no-publish`, compare what is in Git with this render
+   ([below](#without-letting-roksbnkargoctl-push-to-git)).
+4. With `--no-sync`, stop here.
+5. Otherwise start a sync at the published commit (with `--no-publish`, the revision just
+   compared) and wait up to `--timeout`, printing a line whenever the state changes:
 
    ```text
    [14:02:11] sync=OutOfSync health=Missing  Running waiting for completion of hook batch/Job/check-pre-install
@@ -255,11 +285,36 @@ skip step 7:
    then review, commit and push to `git.branch`, through whatever process your team uses.
 3. `roksbnkargoctl install --no-publish`.
 
-`install --no-publish` runs every step except the push to Git. The Application syncs
-whatever is at `git.url`, `git.branch` and `git.path` at that moment, so the export must be
-pushed first; `install` does not compare the repository with its own render. Repeat the
-three steps after every change to `config.yaml`, or after upgrading roksbnkargoctl, since
-either can change the rendered files.
+`install --no-publish` runs every step except the push to Git, and differs in three places:
+
+- **Step 1** needs read access to the repository and `git.branch` present in it, not push
+  rights ([above](#git-access-before-anything-changes)). A Git credential is optional.
+- **Step 8** leaves Argo CD's repository registration alone when no Git credential is set.
+- **Before the sync**, `install` checks that Git holds exactly this render. It asks Argo CD
+  for the manifests the Application would sync from `git.url`, `git.branch` and
+  `git.path` (Argo CD's own view of Git, at the branch's current revision) and compares
+  them with `manifests/git/`, which step 4 has just rendered. Objects are matched by API
+  group, kind, namespace and name, and compared by content, ignoring the tracking
+  annotation and `app.kubernetes.io/instance` label Argo CD adds. Any difference stops
+  the install before the sync, with up to ten differences listed:
+
+  ```text
+  the Application was created but NOT synced: what is in Git (revision 3f2a9c1d0e) does not match this workspace's render (2 difference(s)):
+    different in Git: apps/Deployment f5-utils/…
+    missing in Git: /ConfigMap f5-bnk/…
+  run `roksbnkargoctl export`, replace bnk/demo in the repository with its contents, push, and run install --no-publish again
+  ```
+
+  Each line reads `missing in Git`, `different in Git`, or `in Git but not in this
+  render`. When Argo CD cannot read the path at all, the error is `the Application was
+  created but not synced: Argo CD could not read <url> <branch>:<path>: … (was the export
+  pushed there?)`. On a match it prints `✓ Git at <revision> matches this render (<n>
+  objects)` and syncs **that revision**, not the branch, so a push landing between the
+  check and the sync is not what gets applied. With `--no-sync` it checks and stops.
+
+Repeat the three steps after every change to `config.yaml`, or after upgrading
+roksbnkargoctl, since either can change the rendered files; the check above catches an
+export you forgot to refresh.
 
 ## Re-running install
 

@@ -43,6 +43,7 @@ flag  >  ROKSBNKARGOCTL_* variable  >  config.yaml  >  default
 | Rule | Detail |
 |---|---|
 | Never saved | An override applies to the run it is set for and is never written into `config.yaml`. `init` warns `<source>: <key> was used but not saved (config.yaml keeps its own value)` for each one it used |
+| Seeing them | `roksbnkargoctl show --effective` prints the settings a command would use, with the overrides applied and the defaults filled in, and lists each override on standard error ([show](./05-workspaces-and-init.md#show)) |
 | Empty is unset | A variable set to an empty value is ignored, so a variable cannot clear a key |
 | Value syntax | Strings as written; integers in decimal; booleans as `true` or `false` (`1` and `0` also parse); lists comma-separated, with blanks trimmed and empty entries dropped |
 | Bad values | A variable that does not parse stops the command, naming it: `ROKSBNKARGOCTL_BNK_TMM_REPLICAS (overrides bnk.tmm_replicas): "three" is not an integer`. Every bad variable is reported at once |
@@ -149,7 +150,7 @@ See [The F5 License Proxy](./12-flp.md).
 
 | Key | Type | Default | Override | Meaning |
 |---|---|---|---|---|
-| `server` | string | **required** | `ROKSBNKARGOCTL_ARGOCD_SERVER` | URL of your existing Argo CD; must start with `https://` (or `http://`) |
+| `server` | string | **required** | `ROKSBNKARGOCTL_ARGOCD_SERVER` | URL of your existing Argo CD; must start with `https://` (or `http://`). `https://argocd.placeholder.invalid` (any host ending in `.invalid`) marks a workspace waiting for `argocd up`: `init` then skips its Argo CD check |
 | `token_env` | string | `ARGOCD_AUTH_TOKEN` | `ROKSBNKARGOCTL_ARGOCD_TOKEN_ENV` | environment variable holding the API token |
 | `insecure` | bool | `false` | `ROKSBNKARGOCTL_ARGOCD_INSECURE` | skip TLS verification of the Argo CD server (self-signed) |
 | `ca_file` | string | `""` | `ROKSBNKARGOCTL_ARGOCD_CA_FILE` | PEM of the CA that signed the Argo CD server's certificate |

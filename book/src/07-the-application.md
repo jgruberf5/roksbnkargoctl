@@ -335,9 +335,12 @@ the Secrets the Application depends on.
 `install --no-publish` does everything `install` does except push to Git: the transit
 gateway attachment, the IAM trusted profile, the render, the Secrets and other objects
 written straight into ROKS, the cluster registration in Argo CD, the Application and the
-sync. The Application syncs whatever is at `git.url`, `git.branch` and `git.path`, so
-**push the export before you run it**: if the repository still holds an older export, or
-nothing, that is what Argo CD applies. See [install](./08-install.md#without-letting-roksbnkargoctl-push-to-git).
+sync. **Push the export before you run it.** Before it syncs, `install` asks Argo CD
+for what the Application would sync from `git.url`, `git.branch` and `git.path` and
+compares it, object by object, with this workspace's render. If the repository holds an
+older export, a partial one, or nothing, it lists the differences and does not sync;
+otherwise it syncs exactly the revision it compared. See
+[install](./08-install.md#without-letting-roksbnkargoctl-push-to-git).
 
 ## See also
 
