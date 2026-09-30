@@ -9,7 +9,8 @@ name: Release
 # 2. book: the book as a PDF and an HTML archive, attached to the same release.
 #
 # The check image for the tag (ghcr.io/jgruberf5/roksbnkargoctl-check:vX.Y.Z),
-# which a release binary runs, is built by check-image.yml on the same push.
+# which a release binary runs, is built by check-image.yml on the same push, and
+# the CLI image (ghcr.io/jgruberf5/roksbnkargoctl:vX.Y.Z) by cli-image.yml.
 #
 # workflow_dispatch re-runs both jobs against an existing tag.
 

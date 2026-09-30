@@ -229,6 +229,26 @@ A binary installs one BNK release (`config.BNKVersion`), and its release archive
   release lacks it. They verify the checksum (mandatory) and hand off to
   `self install --force`.
 
+## The CLI image
+
+`ghcr.io/jgruberf5/roksbnkargoctl` runs the tool with only Docker (`build/cli/Dockerfile`,
+`.github/workflows/cli-image.yml`): `:vX.Y.Z` (+ `:latest` for a final release) on a tag,
+`:dev` from main, `:pr-N` for a same-repo PR; linux/amd64 and arm64. The binary is stamped
+like a release (`Version` is the tag, so it runs the check image of the same tag).
+
+- `distroless/static:nonroot`, not scratch: CA roots, tzdata and a writable `/tmp`
+  (gitpub writes known_hosts to `os.TempDir()`). Runs as 65532; works under any `--user`.
+- `HOME=/work`, the working directory and the mount point: workspaces land in
+  `/work/.roksbnkargoctl`, i.e. the host directory, owned by the host user under
+  `--user "$(id -u):$(id -g)"`. An unknown uid would otherwise get `HOME=/`.
+- The image sets `ROKSBNKARGOCTL_CONTAINER=1`, and only exactly `1` counts. There, `self
+  update` and `self install` refuse before any network call and name the image tag to pull;
+  `self update --check` works and names it too. `agent <cli>` refuses before scaffolding
+  (the image has no agent CLI); `agent <cli> --show` works.
+- Secrets pass with `-e`; a TLS-intercepting proxy's CA can be mounted into
+  `/etc/ssl/certs/` (Go reads every file there). Building behind one takes the optional
+  `extra_ca` build secret, used by `go mod download` only.
+
 ## Not in scope
 
 Cluster or gateway creation, the gateway (Infra/GatewaySettings/Gateway) phase, traffic

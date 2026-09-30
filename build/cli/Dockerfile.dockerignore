@@ -1,0 +1,7 @@
+*
+!go.mod
+!go.sum
+!cmd/roksbnkargoctl/
+!internal/
+**/*_test.go
+**/testdata/
