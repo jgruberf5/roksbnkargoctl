@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 )
@@ -16,8 +18,16 @@ import (
 // fakeChart builds a tiny chart that, like FLO, renders a CRD, a Deployment and a
 // Secret (FLO renders external-otelsvr-secret), with no namespace on the
 // Deployment (Helm leaves namespacing to the installer).
-func fakeChart(t *testing.T, name string) []byte {
+func fakeChart(t *testing.T, name string) []byte { return fakeChartNS(t, name, "") }
+
+// fakeChartNS is fakeChart with every namespaced object naming nsTmpl as its
+// namespace, as the real cert-manager chart does ({{ .Release.Namespace }}).
+func fakeChartNS(t *testing.T, name, nsTmpl string) []byte {
 	t.Helper()
+	nsLine := ""
+	if nsTmpl != "" {
+		nsLine = "\n  namespace: " + nsTmpl
+	}
 	files := map[string]string{
 		name + "/Chart.yaml": "apiVersion: v2\nname: " + name + "\nversion: 0.1.0\n",
 		name + "/templates/all.yaml": `apiVersion: apiextensions.k8s.io/v1
@@ -33,7 +43,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-op
+  name: {{ .Release.Name }}-op` + nsLine + `
 spec:
   selector: {matchLabels: {app: x}}
   template:
@@ -43,7 +53,7 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: chart-shipped-secret
+  name: chart-shipped-secret` + nsLine + `
 data:
   tls.key: c2VjcmV0
 `,
@@ -82,7 +92,8 @@ func manifest() *far.Manifest {
 func doRender(t *testing.T, c *config.Config, mutate func(*Inputs)) *Output {
 	t.Helper()
 	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"),
-		CertManagerChart: fakeChart(t, "cm"), KubeVersion: "v1.34.0", CheckImage: "ghcr.io/x/check:1", RunID: "r1",
+		CertManagerChart: fakeChartNS(t, "cm", "{{ .Release.Namespace }}"), KubeVersion: "v1.34.0",
+		FLOChartRef: "repo.f5.com/charts/f5-lifecycle-operator:v2.30.0-0.5.2", CertManagerChartRef: "quay.io/jetstack/charts/cert-manager:v1.17.3", CheckImage: "ghcr.io/x/check:1", RunID: "r1",
 		Secrets: Secrets{PullHost: "repo.f5.com", PullUsername: "_json_key_base64", PullPassword: "FARKEYVALUE-123456", JWT: "hdr.payloadJWT.sig"}}
 	if c.BNK.Mode == config.ModeDisconnected {
 		in.FLPURL = "https://10.248.0.4:8443"
@@ -107,8 +118,10 @@ func find(objs []Object, kind, name string) Object {
 	return nil
 }
 
-// DESIGN.md: no secret value is ever published. Every Secret — ours and any a
-// chart renders — must be Direct, and no secret VALUE may appear in Git.
+// DESIGN.md: no secret value is ever published. Every Secret of ours is Direct;
+// a Secret a chart ships stays chart content (Argo CD renders it from the
+// chart), so it is neither in Git nor applied directly as well. No secret VALUE
+// may appear in Git, values files included.
 func TestNoSecretReachesGit(t *testing.T) {
 	out := doRender(t, baseConfig(config.ModeConnected, config.SourceFAR), nil)
 	for _, o := range out.Git {
@@ -122,8 +135,24 @@ func TestNoSecretReachesGit(t *testing.T) {
 			}
 		}
 	}
-	if find(out.Direct, "Secret", "chart-shipped-secret") == nil {
-		t.Fatal("a chart-rendered Secret must be moved to the direct set, not dropped")
+	files, err := out.ValuesFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, b := range files {
+		for _, v := range []string{"FARKEYVALUE-123456", "hdr.payloadJWT.sig"} {
+			if strings.Contains(string(b), v) {
+				t.Fatalf("%s leaked into %s", v, name)
+			}
+		}
+	}
+	if find(out.Direct, "Secret", "chart-shipped-secret") != nil {
+		t.Fatal("a chart-shipped Secret is applied by Argo CD from the chart; applying it directly too would fight it")
+	}
+	for _, ch := range out.Charts {
+		if find(ch.Objects, "Secret", "chart-shipped-secret") == nil {
+			t.Errorf("chart %s: its Secret is missing from what Argo CD will render", ch.Name)
+		}
 	}
 	if find(out.Direct, "Secret", LicenseJWTSecret) == nil || find(out.Direct, "Secret", "far-secret") == nil {
 		t.Fatal("the JWT and FAR pull secrets must be written directly")
@@ -138,10 +167,20 @@ func TestSecretGuardFires(t *testing.T) {
 	_ = doRender(t, c, nil)
 	c = baseConfig(config.ModeConnected, config.SourceFAR)
 	c.BNK.NADAddress = "FARKEYVALUE-123456" // lands in the NAD, which IS Git
-	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"), CertManagerChart: fakeChart(t, "cm"),
+	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"),
+		CertManagerChart: fakeChartNS(t, "cm", "{{ .Release.Namespace }}"),
+		FLOChartRef:      "r/charts/f5-lifecycle-operator:1", CertManagerChartRef: "q/charts/cert-manager:1",
 		CheckImage: "i", RunID: "r", Secrets: Secrets{PullHost: "h", PullUsername: "u", PullPassword: "FARKEYVALUE-123456", JWT: "a.b.c"}}
 	if _, err := Render(in); err == nil || !strings.Contains(err.Error(), "refusing to publish") {
 		t.Fatalf("expected the no-secrets-in-Git guard to refuse, got %v", err)
+	}
+	// A value that reaches a chart's values file is caught there: the FLO
+	// values carry bnk.namespace.
+	c = baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.Namespace = "farkeyvalue-123456"
+	in.Config, in.Secrets.PullPassword = c, "farkeyvalue-123456"
+	if _, err := Render(in); err == nil || !strings.Contains(err.Error(), "appears in values/flo.yaml") {
+		t.Fatalf("expected the values-file guard to refuse, got %v", err)
 	}
 }
 
@@ -176,12 +215,11 @@ func TestWaveOrder(t *testing.T) {
 	order := []int{
 		wave("Namespace", "f5-bnk"),
 		wave("Job", "check-pre-install"),
-		wave("Deployment", "cert-manager-op"),
+		WaveCharts, // cert-manager and FLO, from their Helm sources
 		wave("Job", "check-cert-manager-ready"),
 		wave("ClusterIssuer", ClusterIssuerSelfSigned),
 		wave("Certificate", CACertName),
 		wave("ClusterIssuer", ClusterIssuerCA),
-		wave("Deployment", "flo-op"),
 		wave("CNEManifest", CNEManifestName(config.BNKVersion)),
 		wave("CNEInstance", CNEInstanceName("f5-bnk")),
 		wave("Job", "check-license"),
@@ -191,8 +229,19 @@ func TestWaveOrder(t *testing.T) {
 			t.Fatalf("waves out of order at step %d: %v", i, order)
 		}
 	}
-	if w := wave("Deployment", SweepDeployment); w >= wave("Deployment", "flo-op") {
+	if w := wave("Deployment", SweepDeployment); w >= WaveCharts {
 		t.Fatal("the Gateway API sweep must be running before FLO's CRD installer")
+	}
+	if w := wave("ClusterRoleBinding", "system:openshift:scc:privileged:f5-bnk:flo-f5-lifecycle-operator"); w >= WaveCharts {
+		t.Fatal("FLO's SCC binding must exist before FLO's pods")
+	}
+	// Chart objects carry no wave: Argo CD renders them from the chart.
+	for _, ch := range out.Charts {
+		for _, o := range ch.Objects {
+			if o.Annotation(AnnoWave) != "" {
+				t.Errorf("chart %s: %s %s has a wave; Argo CD's render would not", ch.Name, o.Kind(), o.Name())
+			}
+		}
 	}
 }
 
@@ -225,7 +274,12 @@ func TestMirrorRedirectsEveryPull(t *testing.T) {
 		in.Secrets = Secrets{PullHost: "harbor.x:8443", PullUsername: "robot", PullPassword: "MIRRORPASS-99", JWT: "a.b.c"}
 		in.CheckImage = "harbor.x:8443/bnk-mirror/jgruberf5/roksbnkargoctl-check:1"
 	})
-	flo := find(out.Git, "Deployment", "flo-op")
+	var flo Object
+	for _, ch := range out.Charts {
+		if ch.Name == "flo" {
+			flo = find(ch.Objects, "Deployment", "flo-op")
+		}
+	}
 	b, _ := flo.YAML()
 	if !strings.Contains(string(b), "harbor.x:8443/bnk-mirror/images/x:1") {
 		t.Fatalf("FLO image not redirected to the mirror:\n%s", b)
@@ -375,4 +429,95 @@ func TestApplicationIgnoresOnlyOpenShiftPullSecrets(t *testing.T) {
 	if want := `{"imagePullSecrets":[{"name":"mirror-secret"}]}`; strings.TrimSpace(string(got)) != want {
 		t.Fatalf("after ignoring: %s, want %s", got, want)
 	}
+}
+
+// Git holds none of the charts' objects, only their values files; the
+// Application installs each chart as a Helm source rendered exactly as here.
+func TestChartsAreHelmSourcesNotGitObjects(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.Git.Path = "/bnk/c1/"
+	out := doRender(t, c, nil)
+	for _, o := range out.Git {
+		if o.Kind() == "CustomResourceDefinition" || o.Name() == "flo-op" || o.Name() == "cm-op" {
+			t.Errorf("chart object %s %s is in Git", o.Kind(), o.Name())
+		}
+	}
+	files, err := out.ValuesFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files["values/flo.yaml"] == nil || files["values/cert-manager.yaml"] == nil {
+		t.Fatalf("values files %v", keys(files))
+	}
+	var flo map[string]any
+	if err := yaml.Unmarshal(files["values/flo.yaml"], &flo); err != nil {
+		t.Fatal(err)
+	}
+	if flo["namespace"] != "f5-bnk" || flo["skipCertMgr"] != true || flo["crds"].(map[string]any)["keep"] != true {
+		t.Errorf("values/flo.yaml: %v", flo)
+	}
+	// Both charts' CRDs must carry helm.sh/resource-policy: keep, which Argo CD
+	// honours on delete: uninstall leaves them (and every CR with them) alone.
+	var cm map[string]any
+	if err := yaml.Unmarshal(files["values/cert-manager.yaml"], &cm); err != nil {
+		t.Fatal(err)
+	}
+	if crds, _ := cm["crds"].(map[string]any); crds["enabled"] != true || crds["keep"] != true {
+		t.Errorf("values/cert-manager.yaml crds: %v", cm["crds"])
+	}
+
+	spec := out.Application["spec"].(map[string]any)
+	if _, single := spec["source"]; single {
+		t.Fatal("the Application still has a single source")
+	}
+	srcs := spec["sources"].([]any)
+	if len(srcs) != 3 {
+		t.Fatalf("%d sources, want cert-manager, FLO and Git", len(srcs))
+	}
+	want := []struct{ repo, chart, version, release, ns, values string }{
+		{"quay.io/jetstack/charts", "cert-manager", "v1.17.3", "cert-manager", "cert-manager", "$values/bnk/c1/values/cert-manager.yaml"},
+		{"repo.f5.com/charts", "f5-lifecycle-operator", "v2.30.0-0.5.2", "flo", "f5-bnk", "$values/bnk/c1/values/flo.yaml"},
+	}
+	for i, w := range want {
+		s := srcs[i].(map[string]any)
+		h := s["helm"].(map[string]any)
+		if s["repoURL"] != w.repo || s["chart"] != w.chart || s["targetRevision"] != w.version ||
+			h["releaseName"] != w.release || h["namespace"] != w.ns || h["valueFiles"].([]any)[0] != w.values || h["kubeVersion"] != "v1.34.0" {
+			t.Errorf("source %d = %v, want %+v", i, s, w)
+		}
+		if fmt.Sprint(h["apiVersions"]) != fmt.Sprint(toAnySlice(OpenShiftAPIVersions)) {
+			t.Errorf("source %d apiVersions %v: Argo CD must render with the API versions render uses", i, h["apiVersions"])
+		}
+	}
+	g := srcs[2].(map[string]any)
+	if g["repoURL"] != c.Git.URL || g["path"] != c.Git.Path || g["ref"] != "values" || g["directory"].(map[string]any)["recurse"] != false {
+		t.Errorf("Git source %v: must be the objects (no recursion into values/) and the $values ref", g)
+	}
+
+	// Without cert-manager installed by us, only FLO and Git.
+	c.BNK.CertManager.Install = new(bool)
+	out = doRender(t, c, nil)
+	if n := len(out.Application["spec"].(map[string]any)["sources"].([]any)); n != 2 || len(out.Charts) != 1 {
+		t.Errorf("cert_manager.install false: %d sources, %d charts", n, len(out.Charts))
+	}
+}
+
+// A chart released into a namespace other than the Application's must name it
+// on every namespaced object: Argo CD would put one that names none in the
+// destination namespace instead.
+func TestChartWithoutNamespacesIsRefusedOutsideTheDestination(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"), CertManagerChart: fakeChart(t, "cm"),
+		FLOChartRef: "r/charts/f5-lifecycle-operator:1", CertManagerChartRef: "q/charts/cert-manager:1", CheckImage: "i", RunID: "r"}
+	if _, err := Render(in); err == nil || !strings.Contains(err.Error(), "Argo CD would put it in f5-bnk, not cert-manager") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func keys(m map[string][]byte) []string {
+	var out []string
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

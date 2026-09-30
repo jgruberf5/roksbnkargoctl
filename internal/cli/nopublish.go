@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -123,16 +124,26 @@ func missingGitCredential(err error) bool { return errors.Is(err, errNoGitCreden
 // checkGitMatchesRender asks Argo CD what the Application would sync and
 // compares it with manifests/git. It returns the revision it compared, which
 // install then syncs, so a push landing in between is not what gets applied.
-func checkGitMatchesRender(ctx context.Context, s *session, ac *argocd.Client) (string, error) {
+func checkGitMatchesRender(ctx context.Context, s *session, ac *argocd.Client, gitPos int) (string, error) {
 	c, p := s.cfg, s.p
-	rendered, err := readYAMLDir(filepath.Join(s.ws.ManifestsDir(), "git"))
+	rendered, err := expectedInArgoCD(s.ws.ManifestsDir())
 	if err != nil {
 		return "", fmt.Errorf("reading this workspace's render (run `roksbnkargoctl render`): %w", err)
 	}
 	p.step("checking %s %s:%s against this workspace's render", c.Git.URL, c.Git.Branch, c.Git.Path)
-	rev, manifests, err := ac.Manifests(ctx, c.ArgoCD.Application, "")
+	// The commit git.branch resolves to now, pinned for both the comparison
+	// and the sync: a push in between is not synced unchecked.
+	revs, err := ac.SourceRevisions(ctx, c.ArgoCD.Application, "")
+	if err == nil && len(revs) < gitPos {
+		err = fmt.Errorf("it reports %d source revisions, not %d", len(revs), gitPos)
+	}
+	var rev string
+	var manifests []string
+	if err == nil {
+		rev, manifests, err = ac.ManifestsAt(ctx, c.ArgoCD.Application, "", gitPos, revs[gitPos-1])
+	}
 	if err != nil {
-		return "", fmt.Errorf("the Application was created but not synced: Argo CD could not read %s %s:%s: %w (was the export pushed there?)", c.Git.URL, c.Git.Branch, c.Git.Path, err)
+		return "", fmt.Errorf("the Application was created but not synced: Argo CD could not render it from %s %s:%s and its chart registries: %w (was the export pushed there? can Argo CD pull the charts?)", c.Git.URL, c.Git.Branch, c.Git.Path, err)
 	}
 	diffs, err := gitMatchesRender(manifests, rendered)
 	if err != nil {
@@ -148,6 +159,32 @@ func checkGitMatchesRender(ctx context.Context, s *session, ac *argocd.Client) (
 	}
 	p.ok("Git at %s matches this render (%d objects)", short(rev), len(rendered))
 	return rev, nil
+}
+
+// expectedInArgoCD is what the Application renders from this workspace: the
+// Git objects, and each chart as render wrote it, rendered the way Argo CD
+// renders it from its values file in Git.
+func expectedInArgoCD(manifestsDir string) ([]render.Object, error) {
+	objs, err := readYAMLDir(filepath.Join(manifestsDir, "git"))
+	if err != nil {
+		return nil, err
+	}
+	charts := filepath.Join(manifestsDir, "charts")
+	ents, err := os.ReadDir(charts)
+	if err != nil {
+		return nil, fmt.Errorf("%w (render again: this render predates the charts as Helm sources)", err)
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		more, err := readYAMLDir(filepath.Join(charts, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, more...)
+	}
+	return objs, nil
 }
 
 // checkGitAccess is the Git pre-flight shared by install and init (#18).

@@ -17,7 +17,7 @@ roksbnkargoctl uninstall [flags] [-y] [-w <workspace>]
 | `--purge-git` | `false` | Also remove `git.path` from the Git repository (one commit) |
 | `--keep-trusted-profile` | `false` | Keep the IAM trusted profile |
 | `--detach-tgw` | `false` | Detach the cluster VPC from the transit gateway, but only if `install` attached it |
-| `--remove-repo` | `false` | Remove the Git repository credential from Argo CD (other Applications may use it) |
+| `--remove-repo` | `false` | Remove the Git repository and the chart registries, with their credentials, from Argo CD (other Applications may use them) |
 | `--force` | `false` | Delete the Application even when the pre-uninstall check fails or the cluster cannot be reached |
 | `-y`, `--yes` | `false` | Do not ask for confirmation |
 
@@ -100,10 +100,11 @@ a re-run after a partial uninstall finishes the job.
 
 ### 3. Argo CD prunes
 
-Argo CD deletes everything it synced, in reverse wave order: the CNEManifest, FLO, the
-networking objects, the issuers, cert-manager and the check DaemonSets and Deployment.
-Objects marked `Delete=false` are skipped: the BNK namespaces and every CRD (see
-[chapter 7](./07-the-application.md#deletefalse-what-argo-cd-must-not-delete)).
+Argo CD deletes everything it synced, in reverse wave order: the CNEInstance and
+CNEManifest, the issuers, the FLO and cert-manager charts, the networking objects and the
+check DaemonSets and Deployment. Two things are skipped: the BNK namespaces, which carry
+`Delete=false`, and the charts' CRDs, which carry `helm.sh/resource-policy: keep` (see
+[chapter 7](./07-the-application.md#what-argo-cd-must-not-delete)).
 
 ### 4. `check post-uninstall`
 
@@ -131,10 +132,10 @@ Once the checks have passed and the BNK namespaces are gone, `uninstall`:
 
 | Removed | Details |
 |---|---|
-| Out-of-band objects | Read back from `manifests/direct/` and deleted in reverse apply order: the Secrets (pull secret, `bnk-license-jwt`, `licenseserver-rootca`, chart-rendered Secrets), then the `check` ServiceAccount, ClusterRole and ClusterRoleBindings, then namespace `roksbnkargoctl-check`. The BNK namespaces are skipped: they are the post-uninstall check's to delete |
+| Out-of-band objects | Read back from `manifests/direct/` and deleted in reverse apply order: the Secrets (pull secret, `bnk-license-jwt`, `licenseserver-rootca`), then the `check` ServiceAccount, ClusterRole and ClusterRoleBindings, then namespace `roksbnkargoctl-check`. The BNK namespaces are skipped: they are the post-uninstall check's to delete |
 | Argo CD manager | `kube-system/roksbnkargoctl-argocd-manager-token`, ClusterRoleBinding `roksbnkargoctl-argocd-manager`, ServiceAccount `kube-system/roksbnkargoctl-argocd-manager` |
 | Cluster registration | The Argo CD cluster entry for `resolved.argocd_cluster_server` |
-| Repository credential | Only with `--remove-repo` |
+| Repository entries | Only with `--remove-repo`: the Git repository and each chart registry the last render's `manifests/application.yaml` names, with the credentials they carry |
 | Trusted profile | Its policies, then the profile, unless `--keep-trusted-profile` |
 | Transit gateway connection | Only with `--detach-tgw`, and only the connection `install` created (`resolved.tgw_connection_created_id`); a VPC that was already attached stays attached |
 | Git content | Only with `--purge-git`: commit `roksbnkargoctl: remove BNK from <cluster>` removes `git.path` |
@@ -175,9 +176,9 @@ log captured for this pod)`. The CLI prints
 | Left behind | Why |
 |---|---|
 | F5 CRDs | Cluster-scoped and shared by any BNK on the cluster; deleting a CRD deletes every CR of that kind and can hang namespaces. `check post-uninstall` lists them. A reinstall reuses them |
-| cert-manager's CRDs | Every CRD in Git carries `Delete=false`, cert-manager's included (and the chart is rendered with `crds.keep: true`) |
+| cert-manager's CRDs | The chart is installed with `crds.keep: true`, so its CRDs carry `helm.sh/resource-policy: keep`, which Argo CD honours on delete. FLO's chart CRDs are kept the same way |
 | The Git history, and the manifests themselves unless `--purge-git` | Your repository's history is yours |
-| The Argo CD repository credential unless `--remove-repo`; SSH known-host entries added from `git.known_hosts_file` | Other Applications may use them |
+| The Argo CD repository entries unless `--remove-repo`: the Git repository credential, and the chart registries with the FAR key or mirror login; SSH known-host entries added from `git.known_hosts_file`; the mirror's CA certificate added for `registry.mirror.ca_file` | Other Applications may use them. `--remove-repo` does not remove the SSH known-host entries or the mirror's CA certificate |
 | The transit gateway attachment, unless `--detach-tgw` and `install` made it | Other workloads may depend on the route |
 | The mirror CA file on each node (`/etc/containers/certs.d/<host>/ca.crt`, `/etc/docker/certs.d/<host>/ca.crt`) | The `registry-ca-trust` DaemonSet is pruned, but nothing removes the file it wrote |
 | The FLP VSI, the test Argo CD hub, the mirror contents, COS objects | Separate components with their own lifecycle: `flp down`, `argocd down` |

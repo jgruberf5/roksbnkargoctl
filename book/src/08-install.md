@@ -46,11 +46,11 @@ checks that the workspace was resolved by `init`, and loads the Git credential a
 | 1 | Argo CD version and token, then Git access | Token missing or not accepted; server older than 3.3; the Git credential cannot push (with `--no-publish`: the repository cannot be read, or has no `git.branch`) | Re-checked |
 | 2 | Transit gateway attachment | Prefix overlap with a VPC already on the gateway; attach timeout (10 min) | Found attached, skipped |
 | 3 | IAM trusted profile | IAM permissions | Found by name; missing link or policies added |
-| 4 | Render | FAR or mirror unreachable or unauthorized; JWT or FAR key not found; check image missing from the mirror; a secret value in a Git object | Re-rendered; identical output for unchanged inputs |
+| 4 | Render | FAR or mirror unreachable or unauthorized; JWT or FAR key not found; check image missing from the mirror; a secret value in a Git object or a values file | Re-rendered; identical output for unchanged inputs |
 | 5 | Out-of-band objects into ROKS | Cluster API unreachable; RBAC | Server-side apply converges |
 | 6 | Register ROKS with Argo CD | Token Secret not populated in 2 min; Argo CD API errors | Apply and upsert converge |
 | 7 | Publish to Git | Credentials, host key, branch protection | No commit when nothing changed |
-| 8 | Repository, Application, sync | Argo CD API errors; a check fails; timeout | Upsert, then a new sync |
+| 8 | Repositories, Application, sync | Argo CD API errors; Argo CD cannot pull a chart; a check fails; timeout | Upsert, then a new sync |
 
 ### 1. Argo CD 3.3 or later, and a token it accepts
 
@@ -148,9 +148,10 @@ This is the same render as [`render`](./07-the-application.md), reading the clus
 4. Read the FAR service-account key (FAR mode) and the subscription JWT, from COS or the
    local files named in `cos.local_far_auth_file` / `cos.local_jwt_file`.
 5. Resolve the check image to a digest (below).
-6. Template everything and write `manifests/`.
+6. Build the Git and direct objects and the charts' values files, template both charts
+   the way Argo CD will, and write `manifests/`.
 
-It prints `rendered N Git objects, M direct objects`.
+It prints `rendered N Git objects, M Helm charts, K direct objects`.
 
 #### Deterministic render
 
@@ -230,19 +231,28 @@ Argo CD's known hosts so the hub verifies the same key. The environment variable
    this is skipped, so that an existing registration that carries a credential is not
    replaced by an anonymous one: `no Git credential set: leaving Argo CD's registration of
    <url> as it is (it reads the repository anonymously if none exists)`.
-2. Upsert the Application described in [chapter 7](./07-the-application.md).
-3. With `--no-publish`, compare what is in Git with this render
+2. With a private-CA mirror, add the mirror's CA to Argo CD as a TLS certificate for its
+   host: `✓ Argo CD trusts the mirror's CA for <host>`.
+3. Upsert each chart registry as an OCI Helm repository, with the registry login (FAR's
+   service account, or the mirror user and password) only on the registry that login is
+   for: `✓ Argo CD pulls the <chart> chart from <registry>`. This stores the registry
+   credential in Argo CD; see
+   [the chart registries in Argo CD](./07-the-application.md#the-chart-registries-in-argo-cd).
+4. Upsert the Application described in [chapter 7](./07-the-application.md).
+5. With `--no-publish`, compare what is in Git with this render
    ([below](#without-letting-roksbnkargoctl-push-to-git)).
-4. With `--no-sync`, stop here.
-5. Otherwise start a sync at the published commit (with `--no-publish`, the revision just
-   compared) and wait up to `--timeout`, printing a line whenever the state changes:
+6. With `--no-sync`, stop here.
+7. Otherwise start a sync with the Git source pinned to the published commit (with
+   `--no-publish`, the commit just compared) and the charts at their versions, and wait up
+   to `--timeout`, printing a line whenever the state changes:
 
    ```text
    [14:02:11] sync=OutOfSync health=Missing  Running waiting for completion of hook batch/Job/check-pre-install
    ```
 
-The sync runs the waves in order: pre-install check, cert-manager, the webhook gate, the
-issuers, networking and FLO, the CNEManifest and CNEInstance, then the license check, which
+The sync runs the waves in order: pre-install check, networking, the cert-manager and FLO
+charts, the webhook gate, the issuers, the CNEManifest and CNEInstance, then the license
+check, which
 waits for the `License` to become `Active` and the CNEInstance `Available`, then the
 post-install check. The pre-install check runs before any BNK object is applied, so a
 failed prerequisite leaves the cluster untouched. A connected install on a verified cluster
@@ -272,7 +282,7 @@ hook, which fails the sync if BNK does not come up.
 
 ![Argo CD Settings, Repositories](images/argocd/settings-repositories.png)
 
-*Settings → Repositories after step 8: the Git repository `install` added, with its connection status.*
+*Settings → Repositories after step 8: the Git repository `install` added, with its connection status. The screenshot predates the chart registries, which this page now also lists, as Helm repositories with OCI enabled.*
 
 ## Without letting roksbnkargoctl push to Git
 
@@ -290,14 +300,19 @@ skip step 7:
 
 - **Step 1** needs read access to the repository and `git.branch` present in it, not push
   rights ([above](#git-access-before-anything-changes)). A Git credential is optional.
-- **Step 8** leaves Argo CD's repository registration alone when no Git credential is set.
-- **Before the sync**, `install` checks that Git holds exactly this render. It asks Argo CD
-  for the manifests the Application would sync from `git.url`, `git.branch` and
-  `git.path` (Argo CD's own view of Git, at the branch's current revision) and compares
-  them with `manifests/git/`, which step 4 has just rendered. Objects are matched by API
-  group, kind, namespace and name, and compared by content, ignoring the tracking
-  annotation and `app.kubernetes.io/instance` label Argo CD adds. Any difference stops
-  the install before the sync, with up to ten differences listed:
+- **Step 8** leaves Argo CD's Git repository registration alone when no Git credential is
+  set. The chart registries are registered as usual.
+- **Before the sync**, `install` checks that Git holds exactly this render. It refreshes
+  the Application and reads the commit its Git source resolves to now
+  (`status.sync.revisions`), then asks Argo CD for the manifests the Application would
+  sync with the Git source pinned to that commit: the objects under `git.path`, and both
+  charts templated with the values files at that commit. It compares them with
+  `manifests/git/` and `manifests/charts/`, which step 4 has just rendered. Objects are
+  matched by API group, kind, namespace and name, and compared by content, ignoring the
+  tracking annotation and `app.kubernetes.io/instance` label Argo CD adds; Secret values
+  compare as `++++++++`, as Argo CD returns them. A values file that differs shows up as
+  differences in that chart's objects. Any difference stops the install before the sync,
+  with up to ten differences listed:
 
   ```text
   the Application was created but NOT synced: what is in Git (revision 3f2a9c1d0e) does not match this workspace's render (2 difference(s)):
@@ -310,8 +325,9 @@ skip step 7:
   render`. When Argo CD cannot read the path at all, the error is `the Application was
   created but not synced: Argo CD could not read <url> <branch>:<path>: … (was the export
   pushed there?)`. On a match it prints `✓ Git at <revision> matches this render (<n>
-  objects)` and syncs **that revision**, not the branch, so a push landing between the
-  check and the sync is not what gets applied. With `--no-sync` it checks and stops.
+  objects)`, counting the Git objects and the charts' objects, and syncs **that commit**,
+  not the branch, so a push landing between the check and the sync is not what gets
+  applied. With `--no-sync` it checks and stops.
 
 Repeat the three steps after every change to `config.yaml`, or after upgrading
 roksbnkargoctl, since either can change the rendered files; the check above catches an

@@ -249,7 +249,10 @@ func floValues(c *config.Config, pullSecret string) map[string]any {
 			"imagePullSecrets": ips,
 			"certmgr":          map[string]any{"clusterIssuer": ClusterIssuerCA},
 		},
-		"skipCertMgr":              true,
+		"skipCertMgr": true,
+		// Explicit, though they are the chart's defaults: uninstall relies on
+		// helm.sh/resource-policy: keep to leave FLO's CRDs (Argo CD honours it).
+		"crds":                     map[string]any{"enabled": true, "keep": true},
 		"namespace":                c.BNK.Namespace,
 		"containerPlatform":        "IBM",
 		"sharedComponentNamespace": c.BNK.UtilsNamespace,

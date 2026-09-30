@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -606,5 +607,107 @@ func TestRepositoryBranches(t *testing.T) {
 	_, err = c2.RepositoryBranches(context.Background(), "https://g/x.git", "bnk")
 	if err == nil || strings.Count(err.Error(), "Repository not found") != 1 {
 		t.Errorf("unreadable repo, same answer with and without the project, said once: %v", err)
+	}
+}
+
+// A Helm OCI registry is registered as type helm with enableOCI and a name;
+// a Git repository stays type git without them.
+func TestUpsertRepositoryHelmOCI(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) { writeJSON(w, 200, map[string]any{}) })
+	ctx := context.Background()
+	if _, err := c.UpsertRepository(ctx, Repo{URL: "harbor.x:8443/bnk/charts", HelmOCI: true, Name: "f5-lifecycle-operator", Username: "u", Password: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.UpsertRepository(ctx, Repo{URL: "https://g/r.git", Username: "git", Password: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	var helm, git map[string]any
+	_ = json.Unmarshal(rc.reqs[0].Body, &helm)
+	_ = json.Unmarshal(rc.reqs[1].Body, &git)
+	if helm["type"] != "helm" || helm["enableOCI"] != true || helm["name"] != "f5-lifecycle-operator" || helm["repo"] != "harbor.x:8443/bnk/charts" || helm["username"] != "u" {
+		t.Errorf("helm OCI body %v", helm)
+	}
+	if git["type"] != "git" || git["enableOCI"] != nil || git["name"] != nil {
+		t.Errorf("git body %v", git)
+	}
+}
+
+// A private CA is added as an https certificate for the host, without a port.
+func TestUpsertTLSCert(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) { writeJSON(w, 200, map[string]any{}) })
+	if err := c.UpsertTLSCert(context.Background(), "harbor.x", "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"); err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Items []struct {
+			ServerName, CertType string
+			CertData             []byte
+		}
+	}
+	_ = json.Unmarshal(rc.reqs[0].Body, &body)
+	if rc.reqs[0].Path != "/api/v1/certificates" || rc.reqs[0].Query != "upsert=true" || len(body.Items) != 1 ||
+		body.Items[0].ServerName != "harbor.x" || body.Items[0].CertType != "https" || !strings.HasPrefix(string(body.Items[0].CertData), "-----BEGIN CERTIFICATE") {
+		t.Errorf("request %+v body %+v", rc.reqs[0], body)
+	}
+	if err := c.UpsertTLSCert(context.Background(), "harbor.x:8443", "x"); err == nil {
+		t.Error("a server name with a port was accepted; Argo CD matches TLS certificates by host")
+	}
+}
+
+// A multi-source sync pins one source: revisions + sourcePositions, no
+// revision; a single-source sync keeps revision.
+func TestSyncPinsOneSource(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) { writeJSON(w, 200, map[string]any{}) })
+	ctx := context.Background()
+	if _, err := c.Sync(ctx, "a", SyncOptions{Revision: "abc", SourcePosition: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Sync(ctx, "a", SyncOptions{Revision: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	var multi, single map[string]any
+	_ = json.Unmarshal(rc.reqs[0].Body, &multi)
+	_ = json.Unmarshal(rc.reqs[1].Body, &single)
+	if multi["revision"] != nil || fmt.Sprint(multi["revisions"]) != "[abc]" || fmt.Sprint(multi["sourcePositions"]) != "[3]" {
+		t.Errorf("multi-source body %v", multi)
+	}
+	if single["revision"] != "abc" || single["revisions"] != nil {
+		t.Errorf("single-source body %v", single)
+	}
+	// A position without a revision pins nothing (no revisions: [""]).
+	if _, err := c.Sync(ctx, "a", SyncOptions{SourcePosition: 3}); err != nil {
+		t.Fatal(err)
+	}
+	var none map[string]any
+	_ = json.Unmarshal(rc.reqs[2].Body, &none)
+	if none["revisions"] != nil || none["sourcePositions"] != nil {
+		t.Errorf("no revision: body %v", none)
+	}
+}
+
+// ManifestsAt pins one source's revision; SourceRevisions refreshes and reads
+// status.sync.revisions.
+func TestManifestsAtAndSourceRevisions(t *testing.T) {
+	c, rc := newTest(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if strings.HasSuffix(r.URL.Path, "/manifests") {
+			writeJSON(w, 200, map[string]any{"manifests": []string{"{}"}})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"metadata": map[string]any{"name": "a"}, "status": map[string]any{"sync": map[string]any{"revisions": []string{"v1", "sha1"}}}})
+	})
+	ctx := context.Background()
+	rev, ms, err := c.ManifestsAt(ctx, "a", "", 2, "sha1")
+	if err != nil || rev != "sha1" || len(ms) != 1 {
+		t.Fatalf("%q %v %v", rev, ms, err)
+	}
+	if q := rc.reqs[0].Query; !strings.Contains(q, "sourcePositions=2") || !strings.Contains(q, "revisions=sha1") {
+		t.Errorf("manifests query %q", q)
+	}
+	revs, err := c.SourceRevisions(ctx, "a", "")
+	if err != nil || strings.Join(revs, ",") != "v1,sha1" {
+		t.Fatalf("%v %v", revs, err)
+	}
+	if q := rc.reqs[1].Query; !strings.Contains(q, "refresh=normal") {
+		t.Errorf("refresh query %q", q)
 	}
 }

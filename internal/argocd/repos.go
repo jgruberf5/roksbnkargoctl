@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-// Repo is a Git repository credential entry.
+// Repo is a repository credential entry: a Git repository, or with HelmOCI an
+// OCI registry path Helm charts are pulled from (URL without a scheme).
 type Repo struct {
 	URL           string
 	Username      string
@@ -15,6 +16,8 @@ type Repo struct {
 	SSHPrivateKey string
 	Insecure      bool // skip TLS verification / SSH host key checking
 	Project       string
+	HelmOCI       bool
+	Name          string // required by Argo CD for a Helm repository
 }
 
 type repoBody struct {
@@ -26,6 +29,8 @@ type repoBody struct {
 	Insecure              bool   `json:"insecure,omitempty"`
 	InsecureIgnoreHostKey bool   `json:"insecureIgnoreHostKey,omitempty"`
 	Project               string `json:"project,omitempty"`
+	EnableOCI             bool   `json:"enableOCI,omitempty"`
+	Name                  string `json:"name,omitempty"`
 }
 
 // RepoInfo is the subset of v1alpha1.Repository read back.
@@ -50,6 +55,9 @@ func (c *Client) UpsertRepository(ctx context.Context, r Repo) (*RepoInfo, error
 		Insecure:              r.Insecure,
 		InsecureIgnoreHostKey: r.Insecure && r.SSHPrivateKey != "",
 		Project:               r.Project,
+	}
+	if r.HelmOCI {
+		body.Type, body.EnableOCI, body.Name = "helm", true, r.Name
 	}
 	var out RepoInfo
 	if err := c.do(ctx, "add repository "+r.URL, "POST", "/api/v1/repositories?upsert=true", body, &out); err != nil {

@@ -70,9 +70,9 @@ The workloads Argo CD syncs from Git:
 |---|---|---|---|
 | `node-probe` | DaemonSet | `check-node-probe` | Sync wave −18 |
 | `pre-install` | Job (Sync hook) | `check-pre-install` | Sync wave −18 |
-| `cert-manager-ready` | Job (Sync hook) | `check-cert-manager-ready` | Sync wave −11 |
+| `cert-manager-ready` | Job (Sync hook) | `check-cert-manager-ready` | Sync wave 1 |
 | `gateway-api-sweep` | Deployment | `check-gateway-api-sweep` | Sync wave −6 |
-| `license` | Job (Sync hook) | `check-license` | Sync wave 0 |
+| `license` | Job (Sync hook) | `check-license` | Sync wave 10 |
 | `post-install` | Job (PostSync hook) | `check-post-install` | after the sync |
 | `pre-uninstall` | Job run by `uninstall`, and PreDelete hook | `check-pre-uninstall-cli`, `check-pre-uninstall` | before the Application is deleted |
 | `post-uninstall` | Job run by `uninstall`, and PostDelete hook | `check-post-uninstall-cli`, `check-post-uninstall` | after pruning |
@@ -293,8 +293,8 @@ at once.
 
 ## cert-manager-ready
 
-**When:** Sync hook `check-cert-manager-ready`, wave −11 — after the cert-manager
-chart (−12) and before the issuer chain (−10 to −8). `activeDeadlineSeconds` 720.
+**When:** Sync hook `check-cert-manager-ready`, wave 1 — after the cert-manager
+chart (wave 0) and before the issuer chain (2 to 4). `activeDeadlineSeconds` 720.
 
 Argo CD moves to the next wave once cert-manager's Deployments are healthy, but
 Deployment health is not webhook readiness: the cainjector may not yet have written
@@ -336,8 +336,8 @@ the policy, until both of these CRDs exist:
 
 Then it passes, reporting how many deletions it made, and idles.
 
-**Why a Deployment, not a hook.** The CRDs it waits for are installed by FLO in the
-*next* wave (−5), and Argo CD will not start a wave until the previous wave's hooks
+**Why a Deployment, not a hook.** The CRDs it waits for are installed by FLO in a
+*later* wave (0, the charts' wave), and Argo CD will not start a wave until the previous wave's hooks
 have finished. A blocking hook would deadlock the sync. A Deployment is healthy as
 soon as it runs, so Argo CD moves on, and the sweep keeps working in the background.
 It idles only on success: a failed sweep exits 1 and the Deployment restarts it,
@@ -356,7 +356,7 @@ which keeps sweeping — the right thing while FLO is late.
 
 ## license
 
-**When:** Sync hook `check-license`, wave 0 — after the CNEInstance (−2).
+**When:** Sync hook `check-license`, wave 10 — after the CNEInstance (8).
 `activeDeadlineSeconds` 4200 (70m): the sum of its four waits plus 5 minutes, so the
 check reports which wait ran out rather than dying of `DeadlineExceeded`. This is the gate that decides whether the sync
 succeeds: without custom health checks in your Argo CD, F5 custom resources look
@@ -581,8 +581,9 @@ Design notes:
   F5 finalizer on some other kind. An extra namespace such as `cert-manager` is
   waited for, but its finalizers are never touched.
 - **CRDs stay.** Deleting a CRD deletes every CR with it, and F5 CRs whose
-  finalizer's controller is gone hang their namespace. F5 CRDs and the cert-manager
-  CRDs carry `Delete=false`.
+  finalizer's controller is gone hang their namespace. The FLO and cert-manager charts
+  are installed with `crds.keep: true`, so their CRDs carry
+  `helm.sh/resource-policy: keep`, which Argo CD honours on delete.
 
 | Flag | Default | Rendered | Meaning |
 |---|---|---|---|

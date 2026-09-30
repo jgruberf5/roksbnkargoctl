@@ -14,6 +14,7 @@ import (
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/gitpub"
 	"github.com/jgruberf5/roksbnkargoctl/internal/ibm"
+	"github.com/jgruberf5/roksbnkargoctl/internal/render"
 	"github.com/jgruberf5/roksbnkargoctl/internal/vsi"
 )
 
@@ -265,4 +266,144 @@ func connID(t *testing.T, c interface {
 		t.Fatalf("connections %v %v", cs, err)
 	}
 	return cs[0].ID
+}
+
+// Argo CD pulls each chart with the registry login only from the registry the
+// login is for; quay.io's cert-manager chart is pulled anonymously. Each
+// registry path is registered once.
+func TestChartRepos(t *testing.T) {
+	c := &config.Config{ArgoCD: config.ArgoCD{Project: "bnk"}}
+	charts := []render.Chart{
+		{RepoURL: "quay.io/jetstack/charts", Chart: "cert-manager"},
+		{RepoURL: "harbor.x:8443/bnk-mirror/charts", Chart: "f5-lifecycle-operator"},
+		{RepoURL: "harbor.x:8443/bnk-mirror/charts", Chart: "other"},
+	}
+	got := chartRepos(c, charts, "harbor.x:8443", "robot", "pw")
+	if len(got) != 2 {
+		t.Fatalf("%d repos: %+v", len(got), got)
+	}
+	if got[0].Username != "" || got[0].Password != "" || !got[0].HelmOCI || got[0].Project != "bnk" {
+		t.Errorf("quay.io: %+v", got[0])
+	}
+	if got[1].Username != "robot" || got[1].Password != "pw" || got[1].Name != "f5-lifecycle-operator" {
+		t.Errorf("mirror: %+v", got[1])
+	}
+	if anon := chartRepos(c, charts[1:2], "harbor.x:8443", "", ""); anon[0].Username != "" {
+		t.Errorf("an anonymous mirror got a login: %+v", anon[0])
+	}
+}
+
+// uninstall --remove-repo finds the chart registries in the last render's
+// application.yaml, each once, and never the Git source.
+func TestChartRepoURLsFromTheRenderedApplication(t *testing.T) {
+	home := isolate(t)
+	writeWorkspace(t, home, "w", "cluster: c\ntransit_gateway: t\n")
+	dir := filepath.Join(home, "w", "manifests")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	app := `spec:
+  sources:
+  - {repoURL: quay.io/jetstack/charts, chart: cert-manager}
+  - {repoURL: harbor.x/bnk/charts, chart: f5-lifecycle-operator}
+  - {repoURL: harbor.x/bnk/charts, chart: again}
+  - {repoURL: "https://g/r.git", path: bnk/c, ref: values}
+`
+	if err := os.WriteFile(filepath.Join(dir, "application.yaml"), []byte(app), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, out, err := probe(t, false, nil, "-w", "w")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := chartRepoURLs(s); strings.Join(got, ",") != "quay.io/jetstack/charts,harbor.x/bnk/charts" {
+		t.Errorf("got %v", got)
+	}
+}
+
+// install pins the Git source by its position among the Application's sources,
+// wherever the render puts it.
+func TestGitSourcePosition(t *testing.T) {
+	src := func(chart bool) any {
+		if chart {
+			return map[string]any{"repoURL": "r", "chart": "c"}
+		}
+		return map[string]any{"repoURL": "g", "path": "p"}
+	}
+	app := func(ss ...any) render.Object { return render.Object{"spec": map[string]any{"sources": ss}} }
+	if p, err := gitSourcePosition(app(src(true), src(true), src(false))); p != 3 || err != nil {
+		t.Errorf("last: %d %v", p, err)
+	}
+	if p, err := gitSourcePosition(app(src(false), src(true))); p != 1 || err != nil {
+		t.Errorf("first: %d %v", p, err)
+	}
+	if _, err := gitSourcePosition(app(src(true))); err == nil {
+		t.Error("no Git source accepted")
+	}
+	if _, err := gitSourcePosition(app(src(false), src(false))); err == nil {
+		t.Error("two Git sources accepted")
+	}
+}
+
+type fakeChartRepoAPI struct {
+	repos   []argocd.Repo
+	certs   []string
+	deleted []string
+	delErr  map[string]error
+}
+
+func (f *fakeChartRepoAPI) UpsertRepository(_ context.Context, r argocd.Repo) (*argocd.RepoInfo, error) {
+	f.repos = append(f.repos, r)
+	return &argocd.RepoInfo{}, nil
+}
+func (f *fakeChartRepoAPI) UpsertTLSCert(_ context.Context, host, pem string) error {
+	f.certs = append(f.certs, host+"="+pem)
+	return nil
+}
+func (f *fakeChartRepoAPI) DeleteRepository(_ context.Context, u string) error {
+	f.deleted = append(f.deleted, u)
+	return f.delErr[u]
+}
+
+// install registers every chart registry, and a private mirror's CA for the
+// mirror's host (port stripped) before them; no CA, no certificate; a CA with
+// FAR as the source is not the charts' registry and is not added.
+func TestRegisterChartSources(t *testing.T) {
+	c := &config.Config{Registry: config.Registry{Source: config.SourceMirror, Mirror: config.Mirror{Host: "harbor.x:8443/bnk"}}}
+	charts := []render.Chart{{RepoURL: "harbor.x:8443/bnk/jetstack/charts", Chart: "cert-manager"}, {RepoURL: "harbor.x:8443/bnk/charts", Chart: "f5-lifecycle-operator"}}
+	s, out := initSession(c)
+	f := &fakeChartRepoAPI{}
+	if err := registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"harbor.x:8443", "robot", "pw", "PEM"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.repos) != 2 || f.repos[0].Username != "robot" || f.repos[1].Password != "pw" {
+		t.Errorf("repos %+v", f.repos)
+	}
+	if strings.Join(f.certs, ",") != "harbor.x=PEM" || !strings.Contains(out.String(), "trusts the mirror's CA for harbor.x") {
+		t.Errorf("certs %v output %q", f.certs, out.String())
+	}
+	f = &fakeChartRepoAPI{}
+	_ = registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"harbor.x:8443", "robot", "pw", ""})
+	if len(f.certs) != 0 || len(f.repos) != 2 {
+		t.Errorf("no CA: certs %v repos %d", f.certs, len(f.repos))
+	}
+	c.Registry.Source = config.SourceFAR
+	f = &fakeChartRepoAPI{}
+	_ = registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"repo.f5.com", "_json_key_base64", "k", "PEM"})
+	if len(f.certs) != 0 {
+		t.Errorf("FAR source added the mirror CA: %v", f.certs)
+	}
+}
+
+// --remove-repo deletes each chart registry; one already gone is fine, any
+// other failure is reported.
+func TestRemoveChartRepos(t *testing.T) {
+	f := &fakeChartRepoAPI{delErr: map[string]error{
+		"gone":   &argocd.APIError{Op: "delete", StatusCode: 404},
+		"broken": errors.New("boom"),
+	}}
+	errs := removeChartRepos(context.Background(), f, []string{"a", "gone", "broken"})
+	if strings.Join(f.deleted, ",") != "a,gone,broken" || len(errs) != 1 || !strings.Contains(errs[0].Error(), "boom") {
+		t.Errorf("deleted %v errs %v", f.deleted, errs)
+	}
 }

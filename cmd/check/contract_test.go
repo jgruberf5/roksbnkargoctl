@@ -47,7 +47,7 @@ func TestRenderedArgsParse(t *testing.T) {
 				Manifest: &far.Manifest{Version: config.BNKVersion,
 					Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
 					Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
-				FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"),
+				FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"), FLOChartRef: "r/charts/f5-lifecycle-operator:1", CertManagerChartRef: "q/charts/cert-manager:1",
 				Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}}
 			shape(c, &in)
 			c.Defaults("ws")
@@ -107,7 +107,7 @@ func tinyChart(t *testing.T, name string) []byte {
 	t.Helper()
 	files := map[string]string{
 		name + "/Chart.yaml":        "apiVersion: v2\nname: " + name + "\nversion: 0.1.0\n",
-		name + "/templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "\ndata: {}\n",
+		name + "/templates/cm.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "\n  namespace: {{ .Release.Namespace }}\ndata: {}\n",
 		name + "/values.yaml":       "{}\n",
 	}
 	var buf bytes.Buffer
@@ -136,7 +136,7 @@ func TestChecksLookUpTheRenderedCNEInstance(t *testing.T) {
 		Manifest: &far.Manifest{Version: config.BNKVersion,
 			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
 			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
-		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"),
+		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"), FLOChartRef: "r/charts/f5-lifecycle-operator:1", CertManagerChartRef: "q/charts/cert-manager:1",
 		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}}
 	out, err := render.Render(in)
 	if err != nil {
@@ -189,7 +189,7 @@ func TestLicenseDeadlineCoversItsWaits(t *testing.T) {
 		Manifest: &far.Manifest{Version: config.BNKVersion,
 			Charts: []far.Artifact{{Name: "charts/f5-lifecycle-operator", Version: "1"}},
 			Images: []far.Artifact{{Name: "images/f5-lifecycle-operator", Version: "1"}}},
-		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"),
+		FLOChart: tinyChart(t, "flo"), CertManagerChart: tinyChart(t, "cm"), FLOChartRef: "r/charts/f5-lifecycle-operator:1", CertManagerChartRef: "q/charts/cert-manager:1",
 		Secrets: render.Secrets{PullHost: "h", PullUsername: "u", PullPassword: "pppppppp", JWT: "a.b.c"}}
 	out, err := render.Render(in)
 	if err != nil {

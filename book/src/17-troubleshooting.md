@@ -44,13 +44,12 @@ The waves at a glance (details in [How an install flows](./02-how-an-install-flo
 | −20 | namespaces | Argo CD cannot reach the ROKS API |
 | −19 | `registry-ca-trust` (private-CA mirror only) | node image, SCC |
 | −18 | `check-node-probe` + `check-pre-install` | a prerequisite or node reachability |
-| −12 | cert-manager | image pulls |
-| −11 | `check-cert-manager-ready` | cert-manager webhook never admits |
-| −10…−8 | issuer chain | webhook |
 | −6 | NAD, FLO SCC binding, `check-gateway-api-sweep` | sweep not running |
-| −5 | FLO | image pull, pull secret |
-| −4 / −2 | CNEManifest, CNEInstance | FLO not running, CRDs missing |
-| 0 | `check-license` | License not Active, CNEInstance not Available |
+| 0 | the cert-manager and FLO charts | Argo CD cannot pull a chart; image pulls, pull secret |
+| 1 | `check-cert-manager-ready` | cert-manager webhook never admits |
+| 2…4 | issuer chain | webhook |
+| 6 / 8 | CNEManifest, CNEInstance | FLO not running, CRDs missing |
+| 10 | `check-license` | License not Active, CNEInstance not Available |
 | PostSync | `check-post-install` | TMM, image pulls, deploymentSize |
 | PreDelete / PostDelete | `check-pre-uninstall` / `check-post-uninstall` | drains, finalizers |
 
@@ -121,12 +120,14 @@ Each listed line says `missing in Git`, `different in Git` or `in Git but not in
 render`. Run `roksbnkargoctl export`, replace `git.path` in the repository with its
 contents, push, and run `install --no-publish` again. Nothing was synced.
 
-**`the Application was created but not synced: Argo CD could not read <url>
-<branch>:<path>: … (was the export pushed there?)`** (`install --no-publish`). Argo CD
-itself cannot produce manifests from that location: the path does not exist on the
-branch, or Argo CD has no access to the repository. With no Git credential set, `install`
+**`the Application was created but not synced: Argo CD could not render it from <url>
+<branch>:<path> and its chart registries: … (was the export pushed there? can Argo CD pull
+the charts?)`** (`install --no-publish`). Argo CD itself cannot produce the manifests:
+the path does not exist on the branch, Argo CD has no access to the repository, or it
+cannot pull a chart (read the quoted cause: a registry error names the chart registry;
+check its entry under Settings → Repositories). With no Git credential set, `install`
 leaves Argo CD's repository registration as it is and checks at step 1 that Argo CD can
-read the branch, so this usually means the path is wrong.
+read the branch, so a Git cause usually means the path is wrong.
 
 **`refusing to attach: the cluster VPC overlaps VPCs already on <gateway>`.** A
 transit gateway silently blackholes one of two overlapping VPCs, so `install`
@@ -250,7 +251,19 @@ cannot reach the API server to patch its own annotation. Look at the named pods 
 needs `ghcr.io` from every node; mirror mode needs the check image in the mirror
 (`registry verify`) and the `mirror-secret` in `roksbnkargoctl-check`.
 
-### Waves −12 to −8: cert-manager
+### Wave 0: Argo CD cannot pull a chart
+
+**The Application shows a comparison error on a Helm source, and nothing syncs.** Argo CD
+pulls the cert-manager and FLO charts itself, from the registry entries `install`
+registered. **Causes:** the hub has no route to the registry (FAR and `quay.io`, or the
+mirror); the login stored for the registry is wrong or expired (the FAR key, or the mirror
+password); a private-CA mirror whose CA Argo CD does not have; or `argocd.project` does
+not allow the registry as a source repository. **Fix:** check Settings → Repositories on
+the hub for the registry's connection status, fix the cause and re-run `install`, which
+registers the registries and the CA again. See
+[the chart registries in Argo CD](./07-the-application.md#the-chart-registries-in-argo-cd).
+
+### Waves 0 to 4: cert-manager
 
 **`check-cert-manager-ready` fails: `the cert-manager webhook did not admit a
 ClusterIssuer within 10m0s; last error: … x509 …`.** **Background:** Argo CD
@@ -267,7 +280,7 @@ are the usual cause), then re-sync.
 example a 403 because the check ClusterRole was altered. Re-run `install` to
 re-apply the RBAC.
 
-### Wave −6 / −5: Gateway API CRDs and FLO
+### Waves −6 and 0: Gateway API CRDs and FLO
 
 **FLO's crd-installer fails; Gateway API CRDs are rejected by admission.** **Cause:**
 OpenShift's ValidatingAdmissionPolicy
@@ -284,7 +297,7 @@ and in mirror mode run `registry verify`.
 **Argo CD: `the server could not find the requested resource` on the
 CNEInstance.** FLO's CRDs did not install, because FLO's wave failed first. Fix FLO.
 
-### Wave 0: `check-license`
+### Wave 10: `check-license`
 
 **`license-crd: CRD licenses.k8s.f5net.com did not appear within 10m0s`.** FLO's
 crd-installer has not run. Check the FLO pods and the CNEInstance.

@@ -1,7 +1,10 @@
 // Package render turns a workspace config into every Kubernetes object the BNK
 // install consists of, split three ways:
 //
-//   - Git: what Argo CD syncs. No secret values, ever.
+//   - Git: what Argo CD syncs from Git: our own objects, and the values file of
+//     each Helm chart. No secret values, ever. The charts themselves
+//     (cert-manager, FLO) are not expanded into Git: the Application installs
+//     them as Helm sources, as `helm install` would in F5's manual procedure.
 //   - Direct: what `install` writes straight into ROKS — Secrets (including any
 //     a chart renders), and the check namespace, ServiceAccount and RBAC, which
 //     must outlive the Application for the PostDelete check to run.
@@ -17,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -24,22 +28,24 @@ import (
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
+	"sigs.k8s.io/yaml"
 )
 
-// Waves (DESIGN.md "Sync order").
+// Waves (DESIGN.md "Sync order"). The cert-manager and FLO charts are Helm
+// sources of the Application, so their objects carry no wave and sync in
+// wave 0: what must come before them is negative, what needs them positive.
 const (
 	WaveNamespaces   = -20
 	WaveCATrust      = -19
 	WavePreInstall   = -18
-	WaveCertManager  = -12
-	WaveCMReady      = -11
-	WaveIssuers      = -10 // -10 self-signed, -9 ext-ca, -8 sample-issuer
 	WaveNetwork      = -6
 	WaveSweep        = -6
-	WaveFLO          = -5
-	WaveCNEManifest  = -4
-	WaveCNEInstance  = -2
-	WaveLicenseCheck = 0
+	WaveCharts       = 0 // cert-manager and FLO, from their Helm sources
+	WaveCMReady      = 1
+	WaveIssuers      = 2 // 2 self-signed, 3 ext-ca, 4 sample-issuer
+	WaveCNEManifest  = 6
+	WaveCNEInstance  = 8
+	WaveLicenseCheck = 10
 )
 
 // Secrets carries the values that go into Direct Secrets. Empty fields produce
@@ -54,18 +60,22 @@ type Secrets struct {
 
 // Inputs is everything a render needs. The caller does the network I/O.
 type Inputs struct {
-	Config            *config.Config
-	Workspace         string
-	Manifest          *far.Manifest
-	CertManagerChart  []byte // nil when cert-manager is not installed by us
-	FLOChart          []byte
-	KubeVersion       string
-	CheckImage        string
-	NodeResolverImage string // required when a mirror CA is set
-	MirrorCAPEM       string
-	FLPURL            string // https://<ip>:8443 in disconnected mode
-	RunID             string
-	Secrets           Secrets
+	Config           *config.Config
+	Workspace        string
+	Manifest         *far.Manifest
+	CertManagerChart []byte // nil when cert-manager is not installed by us
+	FLOChart         []byte
+	// The charts' OCI references, <registry>/<path>/<chart>:<version>: the
+	// Application pulls them from there.
+	CertManagerChartRef string
+	FLOChartRef         string
+	KubeVersion         string
+	CheckImage          string
+	NodeResolverImage   string // required when a mirror CA is set
+	MirrorCAPEM         string
+	FLPURL              string // https://<ip>:8443 in disconnected mode
+	RunID               string
+	Secrets             Secrets
 }
 
 // Output is the three-way split.
@@ -73,6 +83,40 @@ type Output struct {
 	Git         []Object
 	Direct      []Object
 	Application Object
+	// Charts are the Application's Helm sources. Git holds each one's values
+	// file (ValuesFiles); the chart itself comes from the registry.
+	Charts []Chart
+}
+
+// Chart is a Helm chart the Application installs as a source of its own.
+type Chart struct {
+	Name      string // values/<Name>.yaml under git.path
+	RepoURL   string // the OCI registry path, no scheme: Argo CD's Helm OCI form
+	Chart     string
+	Version   string
+	Release   string
+	Namespace string
+	Values    map[string]any
+	// Objects is the chart rendered here the way Argo CD renders it (same
+	// release, namespace, values and API versions). It is never published:
+	// install --no-publish compares it with what Argo CD reads back.
+	Objects []Object
+}
+
+// ValuesPath is the chart's values file, relative to git.path.
+func (ch Chart) ValuesPath() string { return "values/" + ch.Name + ".yaml" }
+
+// ValuesFiles are the charts' values files, by path relative to git.path.
+func (o *Output) ValuesFiles() (map[string][]byte, error) {
+	files := map[string][]byte{}
+	for _, ch := range o.Charts {
+		b, err := yaml.Marshal(ch.Values)
+		if err != nil {
+			return nil, err
+		}
+		files[ch.ValuesPath()] = append([]byte("# Helm values for "+ch.Chart+" "+ch.Version+", installed by the Application as release "+ch.Release+" in "+ch.Namespace+".\n"), b...)
+	}
+	return files, nil
 }
 
 // Render builds every object.
@@ -143,20 +187,17 @@ func Render(in Inputs) (*Output, error) {
 	add(cp.nodeProbe(WavePreInstall))
 	add(cp.hookJob("pre-install", "Sync", WavePreInstall, cp.preInstallArgs(), 20*60))
 
-	// cert-manager.
+	// cert-manager, as a Helm source.
 	if c.CertManagerInstall() {
 		if len(in.CertManagerChart) == 0 {
 			return nil, errors.New("render: cert-manager chart missing")
 		}
-		objs, err := RenderChart(ChartRender{Chart: in.CertManagerChart, Release: "cert-manager", Namespace: "cert-manager",
-			Values: certManagerValues(c, pullSecret), KubeVersion: in.KubeVersion, APIVersions: OpenShiftAPIVersions})
+		ch, err := chartSource("cert-manager", in.CertManagerChartRef, in.CertManagerChart, "cert-manager", "cert-manager", bnkNS,
+			certManagerValues(c, pullSecret), in.KubeVersion)
 		if err != nil {
 			return nil, err
 		}
-		for _, o := range objs {
-			o.SetWave(WaveCertManager)
-		}
-		add(objs...)
+		out.Charts = append(out.Charts, ch)
 	}
 	// Deployment health is not webhook readiness: gate the issuers on the
 	// webhook actually admitting one (a reinstall raced it live).
@@ -167,15 +208,11 @@ func Render(in Inputs) (*Output, error) {
 	add(nad(bnkNS, c.BNK.NADAddress, WaveNetwork))
 	add(sccBinding(bnkNS, "flo-f5-lifecycle-operator", WaveNetwork))
 	add(cp.sweep(WaveSweep))
-	floObjs, err := RenderChart(ChartRender{Chart: in.FLOChart, Release: "flo", Namespace: bnkNS,
-		Values: floValues(c, pullSecret), KubeVersion: in.KubeVersion, APIVersions: OpenShiftAPIVersions})
+	flo, err := chartSource("flo", in.FLOChartRef, in.FLOChart, "flo", bnkNS, bnkNS, floValues(c, pullSecret), in.KubeVersion)
 	if err != nil {
 		return nil, err
 	}
-	for _, o := range floObjs {
-		o.SetWave(WaveFLO)
-	}
-	add(floObjs...)
+	out.Charts = append(out.Charts, flo)
 	add(cneManifest(in.Manifest, WaveCNEManifest))
 	add(cneInstance(CNEInstanceParams{
 		Namespace: bnkNS, ImageHost: c.ImageHost(), PullSecret: pullSecret,
@@ -196,7 +233,9 @@ func Render(in Inputs) (*Output, error) {
 	}
 	add(cp.hookJob("post-uninstall", "PostDelete", 0, postArgs, 20*60))
 
-	// Split: every Secret goes Direct, whatever rendered it.
+	// Split: every Secret of ours goes Direct. (A Secret a chart ships, like
+	// FLO's external-otelsvr-secret, is chart content: Argo CD renders it from
+	// the chart, and it is never in Git.)
 	var git []Object
 	for _, o := range out.Git {
 		if o.Kind() == "Secret" {
@@ -221,17 +260,26 @@ func Render(in Inputs) (*Output, error) {
 	for _, o := range out.Git {
 		o.PruneEmptyMeta()
 	}
+	files, err := out.ValuesFiles()
+	if err != nil {
+		return nil, err
+	}
+	if err := checkNoSecretsInFiles(files, in.Secrets); err != nil {
+		return nil, err
+	}
 	if err := checkNoSecretsInGit(out.Git, in.Secrets); err != nil {
 		return nil, err
 	}
 	Sort(out.Git)
-	out.Application = application(c, in.Workspace)
+	out.Application = application(c, in.Workspace, out.Charts, in.KubeVersion)
 	return out, nil
 }
 
-// stamp marks every Git object as ours and keeps CRDs across uninstall: deleting
-// a CRD deletes every CR with it, and F5 CRs whose finalizer's controller is gone
-// hang their namespace (roksbnkctl keeps F5 CRDs for the same reason).
+// stamp keeps a CRD in Git across uninstall: deleting a CRD deletes every CR
+// with it, and F5 CRs whose finalizer's controller is gone hang their namespace
+// (roksbnkctl keeps F5 CRDs for the same reason). The charts' CRDs are not in
+// Git: both charts annotate them helm.sh/resource-policy: keep, which Argo CD
+// honours on delete (verified on 3.5.1).
 func stamp(o Object) {
 	if o.Kind() == "CustomResourceDefinition" {
 		addSyncOption(o, "Delete=false")
@@ -299,6 +347,19 @@ func secrets(c *config.Config, s Secrets, pullSecret string) []Object {
 	return out
 }
 
+// checkNoSecretsInFiles is checkNoSecretsInGit for the charts' values files.
+func checkNoSecretsInFiles(files map[string][]byte, s Secrets) error {
+	vals := map[string]string{"registry password": s.PullPassword, "subscription JWT": s.JWT}
+	for name, b := range files {
+		for what, v := range vals {
+			if len(v) >= 8 && strings.Contains(string(b), v) {
+				return fmt.Errorf("render: refusing to publish: the %s appears in %s", what, name)
+			}
+		}
+	}
+	return nil
+}
+
 // checkNoSecretsInGit is the last line of defence for DESIGN.md's "no secret
 // values in Git": it fails the render if any secret value appears anywhere in a
 // Git object.
@@ -357,7 +418,28 @@ func splitHostPort(s string, def int) (string, int) {
 }
 
 // application is the Argo CD Application, created through the API by `install`.
-func application(c *config.Config, workspace string) Object {
+func application(c *config.Config, workspace string, charts []Chart, kubeVersion string) Object {
+	gitPath := strings.Trim(path.Clean("/"+c.Git.Path), "/")
+	var sources []any
+	for _, ch := range charts {
+		helm := map[string]any{
+			"releaseName": ch.Release, "namespace": ch.Namespace,
+			"valueFiles": []any{"$values/" + path.Join(gitPath, ch.ValuesPath())},
+			// Render as here: the same API versions (and kube version), so what
+			// Argo CD applies is what install --no-publish compares.
+			"apiVersions": toAnySlice(OpenShiftAPIVersions),
+		}
+		if kubeVersion != "" {
+			helm["kubeVersion"] = kubeVersion
+		}
+		sources = append(sources, map[string]any{"repoURL": ch.RepoURL, "chart": ch.Chart, "targetRevision": ch.Version, "helm": helm})
+	}
+	// The Git source is both the objects at git.path and, as $values, the
+	// charts' values files under git.path/values (not applied: no recursion).
+	sources = append(sources, map[string]any{
+		"repoURL": c.Git.URL, "targetRevision": c.Git.Branch, "path": c.Git.Path, "ref": "values",
+		"directory": map[string]any{"recurse": false},
+	})
 	app := Object{"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{
 			"name": c.ArgoCD.Application, "namespace": "argocd",
@@ -367,11 +449,8 @@ func application(c *config.Config, workspace string) Object {
 			"labels":     map[string]any{LabelManagedBy: ManagedByValue, "roksbnkargoctl.io/workspace": workspace},
 		},
 		"spec": map[string]any{
-			"project": c.ArgoCD.Project,
-			"source": map[string]any{
-				"repoURL": c.Git.URL, "targetRevision": c.Git.Branch, "path": c.Git.Path,
-				"directory": map[string]any{"recurse": true},
-			},
+			"project":     c.ArgoCD.Project,
+			"sources":     sources,
 			"destination": map[string]any{"server": c.Resolved.ArgoCDClusterServer, "namespace": c.BNK.Namespace},
 			"syncPolicy": map[string]any{
 				// Manual sync: the sync is the operator's approval. Server-side
@@ -391,6 +470,50 @@ func application(c *config.Config, workspace string) Object {
 	return app
 }
 
+// chartSource renders a chart the way Argo CD will render it as a Helm source
+// and describes that source. ref is <registry>/<path>/<chart>:<version>.
+// destNS is the Application's destination namespace: Argo CD puts a namespaced
+// object that names none there, whatever the release namespace, so a chart
+// released elsewhere must name its namespace on every object.
+func chartSource(name, ref string, chart []byte, release, namespace, destNS string, values map[string]any, kubeVersion string) (Chart, error) {
+	repo, chartName, version, err := splitChartRef(ref)
+	if err != nil {
+		return Chart{}, fmt.Errorf("render: %s chart: %w", name, err)
+	}
+	objs, err := RenderChart(ChartRender{Chart: chart, Release: release, Namespace: destNS,
+		Values: values, KubeVersion: kubeVersion, APIVersions: OpenShiftAPIVersions, ReleaseNamespace: namespace})
+	if err != nil {
+		return Chart{}, err
+	}
+	if namespace != destNS {
+		for _, o := range objs {
+			if !IsClusterScoped(o.Kind()) && o.Namespace() == destNS {
+				return Chart{}, fmt.Errorf("render: the %s chart renders %s %s without a namespace; Argo CD would put it in %s, not %s", name, o.Kind(), o.Name(), destNS, namespace)
+			}
+		}
+	}
+	return Chart{Name: name, RepoURL: repo, Chart: chartName, Version: version, Release: release, Namespace: namespace,
+		Values: values, Objects: objs}, nil
+}
+
+// splitChartRef splits <registry>/<path>/<chart>:<version>.
+func splitChartRef(ref string) (repo, chart, version string, err error) {
+	i := strings.LastIndex(ref, "/")
+	j := strings.LastIndex(ref, ":")
+	if i <= 0 || j <= i+1 || j == len(ref)-1 {
+		return "", "", "", fmt.Errorf("%q is not <registry>/<path>/<chart>:<version>", ref)
+	}
+	return ref[:i], ref[i+1 : j], ref[j+1:], nil
+}
+
+func toAnySlice(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
+}
+
 // RunID derives a stable id from the render inputs, so an unchanged config
 // re-renders byte-identically (and commits nothing), while any change re-rolls
 // the node probes.
@@ -405,8 +528,10 @@ func RunID(parts ...string) string {
 
 // Write lays the output out in the workspace:
 //
-//	<dir>/git/NNN-<kind>-<ns>-<name>.yaml   exactly what is published to Git
+//	<dir>/git/NNN-<kind>-<ns>-<name>.yaml   exactly what is published to Git,
+//	<dir>/git/values/<chart>.yaml           with the charts' values files
 //	<dir>/direct/NNN-<kind>-<ns>-<name>.yaml  applied by install; Secrets redacted
+//	<dir>/charts/<chart>/NNN-….yaml         each chart as Argo CD renders it (not published)
 //	<dir>/application.yaml
 //
 // The directory is replaced wholesale so a removed object does not linger.
@@ -414,14 +539,14 @@ func Write(out *Output, dir string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	write := func(sub string, objs []Object, redact bool) error {
+	write := func(sub string, objs []Object, mask func(Object) Object) error {
 		d := filepath.Join(dir, sub)
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
 		for i, o := range objs {
-			if redact && o.Kind() == "Secret" {
-				o = Redact(o)
+			if mask != nil && o.Kind() == "Secret" {
+				o = mask(o)
 			}
 			b, err := o.YAML()
 			if err != nil {
@@ -433,10 +558,30 @@ func Write(out *Output, dir string) error {
 		}
 		return nil
 	}
-	if err := write("git", out.Git, false); err != nil {
+	if err := write("git", out.Git, nil); err != nil {
 		return err
 	}
-	if err := write("direct", out.Direct, true); err != nil {
+	files, err := out.ValuesFiles()
+	if err != nil {
+		return err
+	}
+	for name, b := range files {
+		fp := filepath.Join(dir, "git", filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(fp), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(fp, b, 0o600); err != nil {
+			return err
+		}
+	}
+	// Each chart as Argo CD will render it, for review and for the
+	// --no-publish comparison. Not published.
+	for _, ch := range out.Charts {
+		if err := write(filepath.Join("charts", ch.Name), ch.Objects, MaskLikeArgoCD); err != nil {
+			return err
+		}
+	}
+	if err := write("direct", out.Direct, Redact); err != nil {
 		return err
 	}
 	b, err := out.Application.YAML()

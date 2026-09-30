@@ -70,14 +70,13 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −20 | Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (`Delete=false`: `check post-uninstall` deletes them) |
 | −19 | ConfigMap `registry-ca` + DaemonSet `registry-ca-trust` (private-CA mirror only) |
 | −18 | DaemonSet `check-node-probe` (`check node-probe` on every node, host network); hook `check pre-install` (Sync) |
-| −12 | cert-manager chart (CRDs `Delete=false`; `startupapicheck` disabled) |
-| −11 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it — Deployment health is not webhook readiness (a reinstall raced the cainjector live) |
-| −10 / −9 / −8 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer` |
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
-| −5 | FLO chart (its 26 `k8s.f5.com` CRDs, `Delete=false`) |
-| −4 | `CNEManifest bnk-2.4.0` |
-| −2 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
-| 0 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
+| 0 | The cert-manager chart (`startupapicheck` disabled) and the FLO chart (its 26 `k8s.f5.com` CRDs), as the Application's Helm sources: no wave annotation. Both set `crds.keep`, so their CRDs carry `helm.sh/resource-policy: keep`, which Argo CD honours on delete (verified on 3.5.1) |
+| 1 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it — Deployment health is not webhook readiness (a reinstall raced the cainjector live) |
+| 2 / 3 / 4 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer` |
+| 6 | `CNEManifest bnk-2.4.0` |
+| 8 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
+| 10 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
 | PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3); `uninstall` also runs it as a Job first (see Uninstall order) |
 | PostDelete | Hook `check post-uninstall`; `uninstall` also runs it as a Job after the delete |
@@ -86,9 +85,10 @@ The sweep is a **Deployment**, not a hook: the CRDs it waits for are installed b
 *next* wave, and Argo CD will not start a wave until the previous wave's hooks finish. A
 blocking hook would deadlock; a Deployment is healthy as soon as it runs.
 
-Every rendered `kind: Secret` — ours or a chart's (FLO renders `external-otelsvr-secret`) — is
-moved to the out-of-band set, and the render refuses to publish if any secret value appears in
-a Git object.
+Every `kind: Secret` of ours is in the out-of-band set, and the render refuses to publish if
+any secret value appears in a Git object or a chart's values file. A Secret a chart ships (FLO's
+`external-otelsvr-secret`, a constant in the chart) is chart content: Argo CD renders it from the
+chart; it is never in Git.
 
 `registry-ca-trust` must run before any pod pulls from a private-CA mirror, including the
 `check` image itself, so it uses an image already cached on every node: the

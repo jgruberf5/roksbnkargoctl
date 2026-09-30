@@ -46,7 +46,7 @@ The network follows the same pattern as the [FLP](./12-flp.md), under the base n
 |---|---|---|
 | VPC | `<name>-vpc` | Manual address prefixes; `test_hub.cidr` checked for overlap against the transit gateway before creation (when attaching) |
 | Address prefix | `<name>-prefix` | `test_hub.cidr` |
-| Public gateway | `<name>-pgw` | Egress for k3s, Argo CD manifests and images |
+| Public gateway | `<name>-pgw` | Egress for k3s, Argo CD manifests and images, and for Argo CD to pull the BNK charts from FAR and `quay.io` |
 | Subnet | `<name>-subnet` | `test_hub.cidr` |
 | Security group | `<name>-sg` | Outbound: all. Inbound TCP `node_port` from `allowed_cidr`; TCP `22` from `allowed_cidr` when `ssh_key` is set |
 | Floating IP | `<name>-fip` | Always; the hub's URL is `https://<floating-ip>:<node_port>` |

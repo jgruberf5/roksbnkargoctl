@@ -26,11 +26,17 @@ func newRenderCmd() *cobra.Command {
 		Use:   "render",
 		Short: "Write every manifest the install consists of into the workspace",
 		Long: `render pulls the BNK 2.4 GA manifest, the FLO chart and the cert-manager chart
-(from FAR or the mirror), templates them in-process, and writes:
+(from FAR or the mirror) and writes:
 
-  manifests/git/            exactly what is published to Git and synced by Argo CD
+  manifests/git/            exactly what is published to Git: our manifests, and
+    values/<chart>.yaml     the Helm values of cert-manager and FLO
   manifests/direct/         what install writes straight into ROKS (Secrets REDACTED)
+  manifests/charts/<chart>/ each chart as Argo CD will render it (not published)
   manifests/application.yaml
+
+The charts are not expanded into Git: the Application installs them as Helm
+sources from the registry, with the values files in Git, as ` + "`helm install`" + `
+would in F5's manual procedure.
 
 Nothing in the cluster, Argo CD or Git changes. Review manifests/git/ before
 install: it is the whole of what the customer's repo will contain.`,
@@ -49,7 +55,10 @@ install: it is the whole of what the customer's repo will contain.`,
 			if err := render.Write(o, s.ws.ManifestsDir()); err != nil {
 				return err
 			}
-			s.p.ok("rendered %d Git objects and %d direct objects into %s", len(o.Git), len(o.Direct), s.ws.ManifestsDir())
+			s.p.ok("rendered %d Git objects, %d chart values files and %d direct objects into %s", len(o.Git), len(o.Charts), len(o.Direct), s.ws.ManifestsDir())
+			for _, ch := range o.Charts {
+				s.p.info("Helm source: %s %s from %s, release %s in %s (%d objects), values in %s", ch.Chart, ch.Version, ch.RepoURL, ch.Release, ch.Namespace, len(ch.Objects), ch.ValuesPath())
+			}
 			for _, l := range render.Summary(o.Git) {
 				s.p.info("%s", l)
 			}
@@ -183,6 +192,28 @@ func readFLP(s *session) (url, caPEM string, err error) {
 	return o.URL, o.RootCAPEM, nil
 }
 
+// registryLogin is the login for the image and chart registry: FAR's service
+// account, or the mirror's user and password (none for an anonymous mirror).
+// Workloads pull with it, and Argo CD pulls the charts with it.
+func registryLogin(ctx context.Context, s *session) (host, user, pass string, err error) {
+	c := s.cfg
+	if c.Registry.Source == config.SourceFAR {
+		sa, err := s.FARServiceAccount(ctx)
+		if err != nil {
+			return "", "", "", err
+		}
+		return c.Registry.FARHost, far.FARUsername, sa, nil
+	}
+	if c.Registry.Mirror.Username == "" {
+		return "", "", "", nil
+	}
+	pw := s.MirrorPassword()
+	if pw == "" {
+		return "", "", "", fmt.Errorf("the mirror password: set %s", c.Registry.Mirror.PasswordEnv)
+	}
+	return mirrorRegistryHost(c), c.Registry.Mirror.Username, pw, nil
+}
+
 // renderAll does the network I/O a render needs and calls the pure renderer.
 func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output, error) {
 	c := s.cfg
@@ -203,11 +234,13 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 	if !ok {
 		return nil, errors.New("the BNK manifest lists no f5-lifecycle-operator chart")
 	}
-	flo, err := pl.PullChart(ctx, c.ChartHost()+"/charts/f5-lifecycle-operator:"+floVer)
+	floRef := c.ChartHost() + "/charts/f5-lifecycle-operator:" + floVer
+	flo, err := pl.PullChart(ctx, floRef)
 	if err != nil {
 		return nil, err
 	}
 	var cm []byte
+	var cmRef string
 	if c.CertManagerInstall() {
 		ref := "quay.io/jetstack/charts/cert-manager:" + c.BNK.CertManager.Version
 		if c.Registry.Source == config.SourceMirror {
@@ -216,6 +249,7 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 		if cm, err = pl.PullChart(ctx, ref); err != nil {
 			return nil, err
 		}
+		cmRef = ref
 	}
 	mirrorCA, err := s.MirrorCA()
 	if err != nil {
@@ -246,18 +280,8 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 		return nil, err
 	}
 	sec := render.Secrets{FLPCAPEM: flpCA}
-	if needFAR {
-		sa, err := s.FARServiceAccount(ctx)
-		if err != nil {
-			return nil, err
-		}
-		sec.PullHost, sec.PullUsername, sec.PullPassword = c.Registry.FARHost, far.FARUsername, sa
-	} else if c.Registry.Mirror.Username != "" {
-		pw := s.MirrorPassword()
-		if pw == "" {
-			return nil, fmt.Errorf("the mirror password: set %s", c.Registry.Mirror.PasswordEnv)
-		}
-		sec.PullHost, sec.PullUsername, sec.PullPassword = mirrorRegistryHost(c), c.Registry.Mirror.Username, pw
+	if sec.PullHost, sec.PullUsername, sec.PullPassword, err = registryLogin(ctx, s); err != nil {
+		return nil, err
 	}
 	if sec.JWT, err = s.JWT(ctx); err != nil {
 		return nil, err
@@ -274,6 +298,7 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 	runID := render.RunID(string(cfgYAML), m.Version, img, flpURL, mirrorCA, nodeImage)
 	return render.Render(render.Inputs{
 		Config: c, Workspace: s.ws.Name, Manifest: m, CertManagerChart: cm, FLOChart: flo,
+		CertManagerChartRef: cmRef, FLOChartRef: floRef,
 		KubeVersion: kubeVersion, CheckImage: img, NodeResolverImage: nodeImage, MirrorCAPEM: mirrorCA,
 		FLPURL: flpURL, RunID: runID, Secrets: sec,
 	})

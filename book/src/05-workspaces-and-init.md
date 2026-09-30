@@ -18,8 +18,10 @@ somewhere else.
   <workspace>/
     config.yaml                    the contract: your settings + the resolved: section
     manifests/
-      git/NNN-<kind>-<ns>-<name>.yaml     exactly what is published to Git
+      git/NNN-<kind>-<ns>-<name>.yaml     exactly what is published to Git,
+      git/values/<chart>.yaml             with the Helm values of cert-manager and FLO
       direct/NNN-<kind>-<ns>-<name>.yaml  what install writes into ROKS (Secrets REDACTED)
+      charts/<chart>/NNN-….yaml           each chart as Argo CD renders it (not published)
       application.yaml                    the Argo CD Application
     diagnostics/
       <time>/                      bundles written by `diagnose` (start with summary.md)

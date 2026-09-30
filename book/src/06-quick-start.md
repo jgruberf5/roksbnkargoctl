@@ -121,30 +121,32 @@ roksbnkargoctl render
 
 `render` pulls the BNK manifest and charts from FAR, reads the cluster's Kubernetes
 version, resolves the check image, and writes every manifest. It changes nothing in the
-cluster, Argo CD or Git. It ends with a summary of the Git objects by sync wave
-(abbreviated here):
+cluster, Argo CD or Git. It names the two charts the Application will install from the
+registry, then summarises the Git objects by sync wave (abbreviated here):
 
 ```text
-✓ rendered … Git objects and … direct objects into /home/you/.roksbnkargoctl/demo/manifests
+✓ rendered 18 Git objects, 2 chart values files and … direct objects into /home/you/.roksbnkargoctl/demo/manifests
+  Helm source: cert-manager v1.17.3 from quay.io/jetstack/charts, release cert-manager in cert-manager (… objects), values in values/cert-manager.yaml
+  Helm source: f5-lifecycle-operator … from repo.f5.com/charts, release flo in f5-bnk (… objects), values in values/flo.yaml
      -20  Namespace×3
      -18  DaemonSet, hook:check-pre-install
-     -12  …                                   (the cert-manager chart)
-     -11  hook:check-cert-manager-ready
-     -10  ClusterIssuer
-      -9  Certificate
-      -8  ClusterIssuer
       -6  ClusterRoleBinding, Deployment, NetworkAttachmentDefinition
-      -5  CustomResourceDefinition×…, …       (the FLO chart)
-      -4  CNEManifest
-      -2  CNEInstance
-       0  hook:check-license
+       1  hook:check-cert-manager-ready
+       2  ClusterIssuer
+       3  Certificate
+       4  ClusterIssuer
+       6  CNEManifest
+       8  CNEInstance
+      10  hook:check-license
    hooks  PostSync:check-post-install, PreDelete:check-pre-uninstall, PostDelete:check-post-uninstall
 ```
+
+The two charts sync in wave 0, between the negative and the positive waves.
 
 Now review what will be published:
 
 ```sh
-ls ~/.roksbnkargoctl/demo/manifests/git/
+ls ~/.roksbnkargoctl/demo/manifests/git/ ~/.roksbnkargoctl/demo/manifests/git/values/
 ls ~/.roksbnkargoctl/demo/manifests/direct/
 cat ~/.roksbnkargoctl/demo/manifests/application.yaml
 ```
@@ -152,7 +154,11 @@ cat ~/.roksbnkargoctl/demo/manifests/application.yaml
 What to look for:
 
 - **`manifests/git/` is the whole of what your repository will contain** under
-  `bnk/demo`. There is no `Secret` in it, and no value from your FAR key or JWT.
+  `bnk/demo`: the manifests, and `values/cert-manager.yaml` and `values/flo.yaml`, the
+  Helm values the charts are installed with. There is no `Secret` in it, and no value
+  from your FAR key or JWT.
+- **`manifests/charts/`** shows each chart as Argo CD will render it. It is not published:
+  Argo CD pulls the charts from the registry.
 - **`manifests/direct/`** is what `install` will write straight into ROKS: the
   `roksbnkargoctl-check` namespace and RBAC, the BNK namespaces, `far-secret` in
   `f5-bnk` and `f5-utils`, and `bnk-license-jwt` in `roksbnkargoctl-check`. Secret values
@@ -160,8 +166,8 @@ What to look for:
 - The `CNEInstance` file shows `deploymentSize: Tiny` and your TMM replica count.
 - The check Jobs and DaemonSet reference the check image **by digest**
   (`ghcr.io/jgruberf5/roksbnkargoctl-check@sha256:…`).
-- `application.yaml` points at your repo, branch and path, and at the cluster's private
-  endpoint.
+- `application.yaml` lists three sources (the two charts and your repo, branch and path)
+  and points at the cluster's private endpoint.
 
 ## 5. install
 
@@ -178,13 +184,15 @@ sync to finish. On a first install the output has this shape (abbreviated):
 → creating IAM trusted profile my-roks-f5-cne-controller-f5-bnk
 ✓ trusted profile my-roks-f5-cne-controller-f5-bnk (Profile-…)
 → fetching the BNK 2.4.0 manifest from repo.f5.com
-✓ rendered … Git objects, … direct objects
+✓ rendered … Git objects, 2 Helm charts, … direct objects
 → writing … out-of-band objects into ROKS (Secrets, check namespace + RBAC)
 ✓ out-of-band objects applied
 → registering my-roks with Argo CD (private endpoint https://c…private.us-south.containers.cloud.ibm.com:…)
 ✓ cluster registered
 → publishing manifests/git to https://github.com/example-org/platform-gitops.git (main:bnk/demo)
 ✓ published commit 1a2b3c4d5e
+✓ Argo CD pulls the cert-manager chart from quay.io/jetstack/charts
+✓ Argo CD pulls the f5-lifecycle-operator chart from repo.f5.com/charts
 ✓ Application bnk-demo created in project default
 → syncing bnk-demo (pre-install check → cert-manager → FLO → CNEInstance → license)
   [14:02:11] sync=OutOfSync health=Missing  Running …
@@ -259,7 +267,7 @@ What stays, by design:
 |---|---|
 | F5 CRDs in the cluster | Not removed: deleting a CRD deletes every CR and can hang namespaces |
 | The manifests in your Git history | `--purge-git` removes the path in a new commit (history remains) |
-| The repository entry in Argo CD | `--remove-repo` (other Applications may use it) |
+| The repository entries in Argo CD (Git and the chart registries, with their credentials) | `--remove-repo` (other Applications may use them) |
 | The transit gateway connection | `--detach-tgw`, and only if `install` created it |
 | The trusted profile | It is removed unless you pass `--keep-trusted-profile` |
 

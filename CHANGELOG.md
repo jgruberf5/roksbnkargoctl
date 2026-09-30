@@ -7,8 +7,35 @@ prints both.
 ## [0.6.0] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**. This release makes the tool
-usable without a workspace, adds overrides for every setting, and checks Argo CD and Git
-before anything is changed.
+usable without a workspace, adds overrides for every setting, checks Argo CD and Git
+before anything is changed, and reduces the Git content to what F5's manual install
+writes.
+
+### Git holds what the manual install writes
+- `render` no longer expands the cert-manager and FLO charts into Git. That was 96 objects
+  for one install, 32 of them CRDs. `git.path` now holds about 18 manifests (namespaces,
+  the checks, the SCC binding, the NAD, the issuers, `CNEManifest`, `CNEInstance`) and
+  `values/cert-manager.yaml` and `values/flo.yaml`.
+- The Application has three sources (two without cert-manager): each chart as an OCI Helm
+  source from FAR or the mirror (`quay.io` for cert-manager with FAR), reading its values
+  file from Git, and the Git path itself, not recursed. Argo CD's resource tree still
+  lists every object of both charts, as for any Helm source.
+- The charts sync in wave 0. The waves before them are unchanged (−20 to −6); the ones
+  after move to 1 (`cert-manager-ready`), 2–4 (issuers), 6 (`CNEManifest`),
+  8 (`CNEInstance`) and 10 (`check license`).
+- `manifests/charts/<chart>/` shows each chart as Argo CD renders it. It is not published.
+- The charts' CRDs keep `helm.sh/resource-policy: keep` (`crds.keep: true`), which Argo CD
+  3.5.1 honours on delete, so uninstall still leaves them. FLO's `external-otelsvr-secret`
+  now comes from the chart instead of being written by `install`.
+- `install` registers each chart registry in Argo CD as an OCI Helm repository, and a
+  private-CA mirror's CA as a TLS certificate. **The registry login (the FAR service-account
+  key, or the mirror user and password) is now stored in Argo CD on the hub**, on the
+  registry it belongs to only; `quay.io` is anonymous. The hub must reach FAR and `quay.io`,
+  or the mirror. `uninstall --remove-repo` removes the chart registries too.
+- Not verified live: a full sync and uninstall on ROKS with the new waves, FAR as a Helm OCI
+  source, and a private-CA mirror's CA in Argo CD. Verified on Argo CD 3.5.1: the FLO chart
+  pulled from an Artifactory mirror, a render compared with Argo CD's with 0 differences,
+  and all 26 FLO chart CRDs kept after a cascading delete.
 
 ### Without a workspace
 - `cos instances`, `cos buckets --instance`, `cos list --instance --bucket`,
@@ -29,10 +56,11 @@ before anything is changed.
   with overrides and defaults applied, and lists the overrides on stderr.
 
 ### Bring your own Git
-- `export` zips the rendered manifests, laid out for your repository, with instructions.
-  It refuses to include a Secret.
-- `install --no-publish` installs from what you committed. It first checks that Argo CD
-  renders exactly the manifests in `manifests/git`, then syncs that same revision.
+- `export` zips the rendered manifests and the charts' values files, laid out for your
+  repository, with instructions. It refuses to include a Secret.
+- `install --no-publish` installs from what you committed. It reads the commit the Git
+  source resolves to, checks that Argo CD renders exactly `manifests/git` and
+  `manifests/charts` at that commit, then syncs that same commit.
 
 ### Checked before anything changes
 - `init` asks whether you use an existing Argo CD (3.3 or later). If you do, it needs
