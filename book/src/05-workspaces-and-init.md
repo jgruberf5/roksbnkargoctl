@@ -75,6 +75,30 @@ roksbnkargoctl workspaces use demo
 `ws` is an alias for `workspaces`. `workspaces list` shows every directory under the home
 that contains a `config.yaml`.
 
+### Deleting a workspace
+
+```sh
+roksbnkargoctl workspaces delete demo      # alias: ws rm demo
+```
+
+`delete` removes the workspace's directory (`config.yaml`, rendered manifests, diagnostics)
+after asking for confirmation (`--yes` skips it). It changes nothing in IBM Cloud, the
+cluster, Argo CD or Git.
+
+A workspace is the only local record of some cloud resources, so `delete` refuses while it
+records any of them, and names the command that removes each:
+
+| Recorded | Remove it with |
+|---|---|
+| an install: `resolved.trusted_profile_id` (set by `install`, cleared by `uninstall` unless `--keep-trusted-profile`) | `roksbnkargoctl uninstall -w <name>` |
+| an F5 License Proxy: `flp-outputs.json`, with the CA key BNK trusts | `roksbnkargoctl flp down -w <name>` |
+| a test Argo CD hub: `argocd-hub.json` | `roksbnkargoctl argocd down -w <name>` |
+
+A transit gateway connection `install` created (`resolved.tgw_connection_created_id`) is
+reported but does not block: `uninstall` leaves it attached unless `--detach-tgw`.
+`--force` deletes anyway and lists what is left without a local record. Deleting the
+current workspace unsets it; select another with `workspaces use`.
+
 ## Overriding a setting for one run
 
 `config.yaml` is where settings are kept, but it is not the only place they come from.

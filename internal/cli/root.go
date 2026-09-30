@@ -208,7 +208,7 @@ func openWorkspace() (*config.Workspace, *config.Config, error) {
 }
 
 func newWorkspacesCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "workspaces", Aliases: []string{"ws"}, Short: "List and select workspaces"}
+	cmd := &cobra.Command{Use: "workspaces", Aliases: []string{"ws"}, Short: "List, select and delete workspaces"}
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List workspaces",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -238,7 +238,7 @@ func newWorkspacesCmd() *cobra.Command {
 			}
 			return setCurrent(args[0])
 		},
-	})
+	}, newWorkspacesDeleteCmd())
 	return cmd
 }
 

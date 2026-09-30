@@ -4,6 +4,18 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.6.2] - 2026-09-30
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Added
+- `workspaces delete <name>` (alias `ws delete`, `ws rm`) removes a workspace's directory.
+  It refuses while the workspace records an install (its trusted profile), an F5 License
+  Proxy or a test Argo CD hub, and names the command that removes each; a transit gateway
+  connection `install` created is reported but does not block. `--force` deletes anyway
+  and lists what is left without a local record. Deleting the current workspace unsets
+  it (#26).
+
 ## [0.6.1] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
