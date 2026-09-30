@@ -2,8 +2,9 @@
 
 A workspace is one install: one cluster, one Application, one directory. This chapter
 shows you where workspaces live, what is in one, how the tool decides which workspace a
-command acts on, and how `init` creates and refreshes a workspace, by interview or from a
-`config.yaml`.
+command acts on, how `init` creates and refreshes a workspace, by interview or from a
+`config.yaml`, how to override a setting for one run, and which commands run without a
+workspace at all.
 
 ## Where workspaces live
 
@@ -72,6 +73,83 @@ roksbnkargoctl workspaces use demo
 `ws` is an alias for `workspaces`. `workspaces list` shows every directory under the home
 that contains a `config.yaml`.
 
+## Overriding a setting for one run
+
+`config.yaml` is where settings are kept, but it is not the only place they come from.
+Every key except `bnk.version` can be overridden for one command run by an environment
+variable named after it, and many commands also bind flags to the keys they use:
+
+```text
+flag  >  ROKSBNKARGOCTL_* variable  >  config.yaml  >  default
+```
+
+```sh
+# this run only: install from the mirror, whatever config.yaml says
+ROKSBNKARGOCTL_REGISTRY_SOURCE=mirror roksbnkargoctl render
+```
+
+The variable is `ROKSBNKARGOCTL_` followed by the key path upper-cased, with `.` as `_`:
+`registry.mirror.host` is `ROKSBNKARGOCTL_REGISTRY_MIRROR_HOST`. An override is never
+written into `config.yaml`. [Appendix A](./appendix-a-config.md#overrides-flags-and-environment-variables)
+lists the variable for every key and the rules (empty means unset, how lists and
+booleans are written, and why `bnk.version` has none).
+
+Because `init` records the `resolved:` facts for the settings in force when it ran, an
+override of `cluster`, `transit_gateway` or `argocd.cluster_endpoint` that does not match
+the recorded cluster, gateway or endpoint is refused by the commands that use them:
+
+```text
+roksbnkargoctl: ROKSBNKARGOCTL_CLUSTER overrides cluster to "other-roks", but workspace "demo" was resolved for my-roks; unset it, or run `roksbnkargoctl init -w demo --refresh` with it set
+```
+
+## Running without a workspace
+
+Some commands do not need a workspace: they take every setting they read as a flag or a
+`ROKSBNKARGOCTL_*` variable. The global `--no-workspace` flag makes that explicit: the
+command ignores `ROKSBNKARGOCTL_WORKSPACE` and the current workspace, and its settings
+come from flags, variables and defaults only.
+
+| Command | Without a workspace |
+|---|---|
+| `cos instances`, `cos buckets`, `cos list`, `cos publish`, `cos delete`, `cos verify` | Yes ([chapter 14](./14-cos.md)) |
+| `flp up`, `flp status`, `flp down` | Yes, with `--name` ([chapter 12](./12-flp.md#without-a-workspace)) |
+| `registry bom`, `registry replicate`, `registry verify` | Yes ([chapter 13](./13-registry.md#without-a-workspace)) |
+| `forge register`, `forge unregister` | Yes, with `--cluster` and `--region` ([BNK Forge](./15a-forge.md)) |
+| `init`, `render`, `install`, `status`, `diagnose`, `uninstall`, `export`, `show`, `argocd *`, `agent *` | No |
+| `version`, `self *`, `workspaces *` | Not applicable: they read no workspace settings |
+
+These commands still use a workspace when one is selected (`-w`,
+`ROKSBNKARGOCTL_WORKSPACE`, or the current workspace): its settings are the defaults, and
+flags and variables override them. Without `--no-workspace`, and with no workspace
+selected, they run without one. `--no-workspace` and `-w` together are an error.
+
+A command that needs a workspace refuses `--no-workspace`:
+
+```text
+roksbnkargoctl: this command needs a workspace: drop --no-workspace and pass -w <name>
+```
+
+and `init` says `init creates a workspace: drop --no-workspace`.
+
+## show
+
+```sh
+roksbnkargoctl show                 # config.yaml, verbatim
+roksbnkargoctl show > config.yaml   # stdout is the file alone
+roksbnkargoctl show --effective     # the settings in force after overrides
+```
+
+`show` prints the workspace's `config.yaml` exactly as it is on disk, on standard output:
+the settings you gave `init` and the `resolved:` section `init` and `install` filled in.
+The workspace and the file's path go to standard error, as
+`# workspace <name>: <path>`, so redirecting standard output gives you the file alone,
+ready for `init --config-file` on another host. It holds no secret values, only the names
+of the environment variables that carry them.
+
+`show --effective` prints instead the settings a command would use now: `config.yaml`
+with the `ROKSBNKARGOCTL_*` variables and the defaults applied. Use it to see what an
+override changes before you run the command it is meant for.
+
 ## init
 
 ```sh
@@ -102,19 +180,33 @@ transit gateways. Press Enter to accept the value in brackets. In order:
    username and CA file;
 5. TMM replicas and the StorageClass;
 6. the COS instance, bucket, bucket region and the two object names;
-7. the Argo CD server, whether to skip TLS verification, the project, and which cluster
-   endpoint Argo CD uses (`private` or `public`);
+7. Argo CD, starting with `Use an existing Argo CD? [Y/n]` (below);
 8. the Git repository, branch and path; then a username for an `https://` URL, or an SSH
    key file and optional known_hosts file otherwise.
 
 If the API key is not set, the interview continues without account lookups and asks for
-names instead. Running `init` again on an existing workspace resumes the interview with
+names instead.
+
+#### Use an existing Argo CD?
+
+The Argo CD questions start with `Use an existing Argo CD? [Y/n]`.
+
+- **Yes** (the default): `init` asks for the Argo CD server URL, then whether to skip TLS
+  verification, the project, and which cluster endpoint Argo CD uses (`private` or
+  `public`). It then requires the API token in `ARGOCD_AUTH_TOKEN` (or the variable
+  `argocd.token_env` names) and checks it against the server during `init`, as `install`
+  does: the server must be 3.3 or later, and `GET /api/v1/session/userinfo` must report
+  `loggedIn`. A wrong URL or token fails now rather than at `install`.
+- **No**: you want a test hub built for you. `init` asks for `test_hub.cidr` (a /24 to
+  /28 not used by any VPC on the transit gateway) and `test_hub.allowed_cidr` (the source
+  allowed to reach the hub), and points you at `roksbnkargoctl argocd up`, which builds
+  the hub and sets `argocd.server` ([chapter 15](./15-test-hub.md)). Running `init` again on an existing workspace resumes the interview with
 the saved answers as the defaults.
 
 The interview covers the common settings. Some keys, such as `cos.local_far_auth_file`,
 `cos.local_jwt_file`, `argocd.ca_file`, `argocd.application`, `bnk.cert_manager` or
-`check.image`, are only set through a config file; [Appendix A](./appendix-a-config.md)
-lists every key.
+`check.image`, are only set through a config file (or overridden for a run, below);
+[Appendix A](./appendix-a-config.md) lists every key.
 
 ### From a config file
 
@@ -142,6 +234,10 @@ roksbnkargoctl: invalid config:
   - argocd.server (https URL of the existing Argo CD) is required
   - git.url (the repo Argo CD syncs from) is required
 ```
+
+When `argocd.server` in the file names an Argo CD, `init --config-file` checks the token
+against it the same way the interview does (version 3.3 or later, `loggedIn`), so set
+`ARGOCD_AUTH_TOKEN` before you run it.
 
 Validation also rejects a `bnk.version` other than `2.4.0`, `bnk.tmm_replicas` below 1,
 a `registry.source` other than `far` or `mirror`, `registry.source: mirror` without
@@ -186,7 +282,7 @@ secrets it needs from environment variables, whose names you can change in the c
 | Secret | Default variable | Config key that renames it | Needed by |
 |---|---|---|---|
 | IBM Cloud API key | `IBMCLOUD_API_KEY` (then `IC_API_KEY`) | `ibmcloud.api_key_env` | every command that calls IBM Cloud |
-| Argo CD API token | `ARGOCD_AUTH_TOKEN` | `argocd.token_env` | `install`, `uninstall`, `status`, `diagnose` |
+| Argo CD API token | `ARGOCD_AUTH_TOKEN` | `argocd.token_env` | `init` (existing Argo CD), `install`, `uninstall`, `status`, `diagnose` |
 | Git token (HTTPS) | `ROKSBNKARGOCTL_GIT_TOKEN` | `git.token_env` | `install`, `uninstall --purge-git` |
 | Mirror password | `ROKSBNKARGOCTL_MIRROR_PASSWORD` | `registry.mirror.password_env` | `render`, `install`, `registry` with a mirror username |
 
@@ -199,7 +295,8 @@ Other environment variables:
 | Variable | Effect |
 |---|---|
 | `ROKSBNKARGOCTL_HOME` | The home directory for all workspaces |
-| `ROKSBNKARGOCTL_WORKSPACE` | The workspace to use when `-w` is not given |
+| `ROKSBNKARGOCTL_WORKSPACE` | The workspace to use when `-w` is not given (ignored with `--no-workspace`) |
+| `ROKSBNKARGOCTL_<KEY>` | Overrides one `config.yaml` key for the run ([Appendix A](./appendix-a-config.md#overrides-flags-and-environment-variables)) |
 | `ROKSBNKARGOCTL_PRIVATE_ENDPOINT=1` | Reach ROKS from the operator host through its private endpoint |
 | `ROKSBNKARGOCTL_GIT_INSECURE_HOSTKEY=1` | Do not verify the Git server's SSH host key (warned; prefer `git.known_hosts_file`) |
 

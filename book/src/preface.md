@@ -29,7 +29,7 @@ existing ROKS cluster **as one Argo CD Application in your existing, external Ar
 - **No Terraform, and no other binaries.** IBM Cloud, Kubernetes, Git and Argo CD are
   driven through their APIs from inside the one process. There is no `terraform`, `helm`,
   `kubectl`, `ibmcloud` or `git` to install, and the tool builds and runs natively on
-  Linux, macOS and Windows.
+  Linux, macOS and Windows, or from its container image with only Docker.
 - **Everything runs in ROKS.** The prerequisite and lifecycle checks are a small
   container, `check`, that runs inside the cluster: as Argo CD hooks during install, and
   as Jobs that `uninstall` runs around the delete. Nothing runs on the Argo CD hub.
@@ -48,7 +48,7 @@ Terraform in the install path.
 | I. Concepts | [What it does](./01-what-it-does.md), [How an install flows](./02-how-an-install-flows.md), [Prerequisites](./03-prerequisites.md) | Before you start: scope, architecture, what you must have in place |
 | II. Getting Started | [Installing roksbnkargoctl](./04-installation.md), [Workspaces and init](./05-workspaces-and-init.md), [Quick start](./06-quick-start.md) | Your first install, end to end, in connected mode |
 | III. The Install Lifecycle | [The Application](./07-the-application.md), [install](./08-install.md), [status and diagnose](./09-status-and-diagnose.md), [uninstall](./10-uninstall.md) | You want the detail behind each command |
-| IV. Modes and Components | [Modes](./11-modes.md), [flp](./12-flp.md), [registry](./13-registry.md), [cos](./14-cos.md), [Test hub](./15-test-hub.md) | Disconnected installs, private registries, the supply chain, a test Argo CD |
+| IV. Modes and Components | [Modes](./11-modes.md), [flp](./12-flp.md), [registry](./13-registry.md), [cos](./14-cos.md), [Test hub](./15-test-hub.md), [forge](./15a-forge.md) | Disconnected installs, private registries, the supply chain, a test Argo CD, BNK Forge registration |
 | V. The check Container | [Checks reference](./16-checks.md) | A check failed and you want to know what it tested |
 | VI. Troubleshooting | [Troubleshooting guide](./17-troubleshooting.md), [agent](./18-agent.md) | Something is stuck |
 | Appendices | [config.yaml](./appendix-a-config.md), [commands](./appendix-b-commands.md), [sizing](./appendix-c-sizing.md), [security](./appendix-d-security.md), [design](./appendix-e-design.md) | Reference |
@@ -68,6 +68,8 @@ If you only read three chapters, read [How an install flows](./02-how-an-install
 - `<workspace>` stands for your workspace name, and `<cluster>` for your ROKS cluster's
   name. Example names such as `demo`, `bnk-demo` and `my-roks` are illustrations only.
 - Configuration keys are written as YAML paths: `bnk.mode` means the `mode` key under
-  `bnk:` in `config.yaml`. [Appendix A](./appendix-a-config.md) lists every key.
+  `bnk:` in `config.yaml`. Each key can also be overridden for one run by an environment
+  variable, `ROKSBNKARGOCTL_BNK_MODE` for this one. [Appendix A](./appendix-a-config.md)
+  lists every key and its variable.
 - "The hub" means the Argo CD instance you install into; "ROKS" or "the cluster" means
   the OpenShift cluster BNK is installed on. They are always different clusters.

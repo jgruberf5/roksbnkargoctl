@@ -28,6 +28,7 @@
 - [Mirroring into a private registry (registry)](./13-registry.md)
 - [The COS supply chain (cos)](./14-cos.md)
 - [A test Argo CD hub (argocd)](./15-test-hub.md)
+- [Registering with BNK Forge (forge)](./15a-forge.md)
 
 # Part V — The check Container
 

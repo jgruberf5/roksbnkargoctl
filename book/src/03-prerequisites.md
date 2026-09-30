@@ -12,7 +12,7 @@ checklist; most failed installs trace back to one line of it.
 | A ROKS cluster: OpenShift 4.16 or later, schedulable workers in 3 zones, at least 3 of them | `init` (OpenShift, one VPC, zones warning), `check pre-install` (version, zones, workers) |
 | A transit gateway | `init` (resolves it), `install` (attaches the cluster VPC if needed) |
 | Argo CD 3.3 or later, outside the cluster, reachable over the transit gateway to the ROKS private endpoint | `install` (version), the first sync wave (reachability) |
-| An Argo CD API token | `install` |
+| An Argo CD API token | `init` (when you use an existing Argo CD), `install` |
 | A Git repository, and a token or SSH key that can push to it | `install` (publish), Argo CD (clone) |
 | The FAR auth tarball and the subscription JWT from MyF5, in COS or as local files | `init` (objects exist), `render` / `install` (read them) |
 | `IBMCLOUD_API_KEY` in the environment, with the IAM access below | every command that calls IBM Cloud |
@@ -56,7 +56,7 @@ VSI) reaches the cluster privately. It must already exist; you give its name or 
 
 ### The Argo CD API token
 
-`install` reads the token from `ARGOCD_AUTH_TOKEN` (or the variable named by
+`init` (for an existing Argo CD) and `install` read the token from `ARGOCD_AUTH_TOKEN` (or the variable named by
 `argocd.token_env`). The account behind it must be allowed to:
 
 - read the server version;
@@ -122,8 +122,8 @@ These are the IBM Cloud services the tool calls, and the access each call implie
 | Transit Gateway | List gateways and connections; create a VPC connection (only when the cluster VPC is not attached); delete it on `uninstall --detach-tgw` | Viewer, plus Editor to attach or detach |
 | IAM Identity Service | Read the key's own details (account ID); create, find, link and delete the trusted profile | A role that can create and delete trusted profiles (Administrator does) |
 | IAM Access Management | Create and list access policies for the trusted profile | Administrator on the resources being granted: VPC Infrastructure Services for the cluster's VPC, and Kubernetes Service for the cluster |
-| Resource Controller | Find the COS instance by name | Viewer on its resource group |
-| Cloud Object Storage | List the bucket; read the FAR tarball and JWT | Reader (or Content Reader) on the bucket |
+| Resource Controller | List the account's COS instances, to find one by name, GUID or CRN | Viewer on its resource group |
+| Cloud Object Storage | List the instance's buckets (to find the bucket's region); list the bucket; read the FAR tarball and JWT | Reader (or Content Reader) on the bucket. Without the right to list the instance's buckets, reads fall back to `cos.region` ([chapter 14](./14-cos.md#finding-the-buckets-region)) |
 
 `flp up` and `argocd up` create VPC resources (VSI, subnet, security group, floating IP,
 public gateway, SSH key) and need Editor on VPC Infrastructure Services in addition; see
@@ -151,7 +151,7 @@ from a mirror needs none to the internet, only the mirror and the license proxy.
 | Destination | Used by |
 |---|---|
 | `iam.cloud.ibm.com`, `containers.cloud.ibm.com`, `transit.cloud.ibm.com`, `resource-controller.cloud.ibm.com`, `<region>.iaas.cloud.ibm.com` | `init`, `install`, `uninstall`, `status` |
-| `s3.<cos.region>.cloud-object-storage.appdomain.cloud` | reading the FAR tarball and JWT from COS |
+| `s3.<region>.cloud-object-storage.appdomain.cloud`, for the bucket's region (and `cos.region`) | reading the FAR tarball and JWT from COS |
 | The ROKS default (normally public) service endpoint (or private, with `ROKSBNKARGOCTL_PRIVATE_ENDPOINT=1`) | `render`, `install`, `uninstall`, `status`, `diagnose` |
 | FAR (`repo.f5.com`) or the mirror; `quay.io` for the cert-manager chart when pulling from FAR | `render` (manifest and charts) |
 | `ghcr.io` | `render` resolves the check image's digest (in mirror mode it falls back to the mirror's copy, with a warning, if `ghcr.io` is unreachable) |

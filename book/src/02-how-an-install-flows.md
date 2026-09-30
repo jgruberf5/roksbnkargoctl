@@ -118,6 +118,10 @@ byte for byte, and re-publishing it commits nothing.
 | 7. Publish | Git | Commits `manifests/git/` to `git.path` on `git.branch` |
 | 8. Application | Argo CD | Adds SSH known hosts if configured, adds the repository, creates or updates the Application, then syncs it and waits (`--timeout`, default 75 minutes); `--no-sync` stops before the sync |
 
+With `install --no-publish`, step 7 is skipped: you push the Git content yourself (for
+example the zip `export` writes) and the Application syncs what is there. See
+[Without letting roksbnkargoctl push to Git](./07-the-application.md#without-letting-roksbnkargoctl-push-to-git).
+
 ### Out-of-band objects
 
 These cannot live in Git, so `install` writes them directly into ROKS.

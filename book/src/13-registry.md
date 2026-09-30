@@ -4,20 +4,21 @@ A cluster without internet egress cannot pull from the F5 Artifact Registry (FAR
 `quay.io` or `ghcr.io`. This chapter describes `roksbnkargoctl registry`, which copies every
 artifact an install pulls into a registry you control (Harbor, Artifactory, a plain
 `registry:2`, IBM Container Registry), and how to switch an install to it. After reading it
-you will be able to fill and verify a mirror, trust a mirror with a private CA, and keep the
-mirror current when you upgrade roksbnkargoctl.
+you will be able to fill and verify a mirror, with or without a workspace, trust a mirror
+with a private CA, and keep the mirror current when you upgrade roksbnkargoctl.
 
 ## Commands
 
 | Command | Does |
 |---|---|
 | `roksbnkargoctl registry bom` | Lists every artifact (kind and source reference) on stdout, and the count on stderr |
-| `roksbnkargoctl registry replicate [--concurrency 2]` | Copies the list into the mirror, skipping what is already there |
+| `roksbnkargoctl registry replicate [--concurrency 2] [--state FILE]` | Copies the list into the mirror, skipping what is already there |
 | `roksbnkargoctl registry verify` | Reports every artifact missing from the mirror; exits non-zero if any is |
 
 All three read the BNK manifest from **FAR**, so they need the FAR auth key (from COS or
 `cos.local_far_auth_file`) whatever `registry.source` says. `replicate` and `verify` need
-`registry.mirror.host`.
+`registry.mirror.host`. None of them needs a workspace
+([below](#without-a-workspace)).
 
 ## Configuration
 
@@ -72,7 +73,7 @@ image  ghcr.io/jgruberf5/roksbnkargoctl-check:vX.Y.Z
 | Skip | If the mirror already has the artifact with the source's digest it is reported `present` and not copied again, so re-running is cheap |
 | Retries | Connection resets, timeouts, `EOF`, 502/503/504 and `TOOMANYREQUESTS` are retried, up to 4 attempts |
 | Concurrency | `--concurrency` parallel copies, default 2 |
-| Record | `<workspace>/registry-mirror.json`: mirror base, BNK version, counts of copied, skipped and failed artifacts, timestamp |
+| Record | `<workspace>/registry-mirror.json`, or the file `--state` names: mirror base, BNK version, counts of copied and skipped artifacts, the failed ones, timestamp. Without a workspace none is written unless `--state` is given. It is a report; nothing reads it back |
 
 Progress is printed per artifact as `[n/93] copied …`, `[n/93] present …`, or a warning with
 the error. `replicate` exits non-zero if any artifact failed; run it again to retry just
@@ -98,6 +99,63 @@ The account needs push rights for `replicate` and pull rights for the cluster. I
 mode `install` writes the same login into Secret `mirror-secret` in `f5-bnk`, `f5-utils`,
 `cert-manager` (when roksbnkargoctl installs it) and `roksbnkargoctl-check`, keyed by the mirror host (kubelet matches pull
 secrets by host, not by path).
+
+## Without a workspace
+
+Every setting the three commands read is also a flag, bound to its `config.yaml` key, so
+they run with `--no-workspace` (or with no workspace selected) from flags and
+`ROKSBNKARGOCTL_*` variables alone. With a workspace, a flag wins over `config.yaml` for
+that run and is not saved.
+
+| Flag | Key it overrides | `bom` | `replicate`, `verify` |
+|---|---|---|---|
+| `--far-host` | `registry.far_host` | yes | yes |
+| `--far-auth-file` | `cos.local_far_auth_file` | yes | yes |
+| `--cos-instance`, `--cos-bucket`, `--cos-region` | `cos.instance`, `cos.bucket`, `cos.region` | yes | yes |
+| `--far-auth-object` | `cos.far_auth_object` | yes | yes |
+| `--api-key-env` | `ibmcloud.api_key_env` (for reading the FAR key from COS) | yes | yes |
+| `--cert-manager-install` | `bnk.cert_manager.install` (`--cert-manager-install=false` leaves the five cert-manager artifacts out) | yes | yes |
+| `--cert-manager-version` | `bnk.cert_manager.version` | yes | yes |
+| `--check-image` | `check.image` (default: this build's check image) | yes | yes |
+| `--mirror-host` | `registry.mirror.host` | | yes |
+| `--mirror-prefix` | `registry.mirror.prefix` | | yes |
+| `--mirror-username` | `registry.mirror.username` | | yes |
+| `--mirror-password-env` | `registry.mirror.password_env`: the **name** of the variable holding the password | | yes |
+| `--mirror-ca-file` | `registry.mirror.ca_file` | | yes |
+
+`replicate` also takes `--concurrency` and `--state`. **The mirror password is never a
+flag.** It is read from the environment variable `--mirror-password-env` names (default
+`ROKSBNKARGOCTL_MIRROR_PASSWORD`), so it never appears in a command line or a shell history.
+
+```sh
+export ROKSBNKARGOCTL_MIRROR_PASSWORD='…'
+roksbnkargoctl registry replicate --no-workspace \
+  --far-auth-file f5-far-auth-key.tgz \
+  --mirror-host registry.example.com --mirror-prefix bnk --mirror-username robot \
+  --state ./registry-mirror.json
+roksbnkargoctl registry verify --no-workspace --far-auth-file f5-far-auth-key.tgz \
+  --mirror-host registry.example.com --mirror-prefix bnk --mirror-username robot
+```
+
+Instead of `--far-auth-file`, `--cos-bucket` (with `--cos-instance`, unless it is the
+default `bnk-supply-chain`) reads the FAR key from COS, finding the bucket's region as
+[chapter 14](./14-cos.md#finding-the-buckets-region) describes. With neither, the commands
+stop before contacting anything:
+
+```text
+no FAR key: pass --far-auth-file <f5-far-auth-key.tgz>, or --cos-bucket (with --cos-instance) to read it from COS
+```
+
+and `replicate` or `verify` without a mirror host:
+
+```text
+registry.mirror.host is not set: pass --mirror-host (or set ROKSBNKARGOCTL_REGISTRY_MIRROR_HOST, or registry.mirror.host in config.yaml)
+```
+
+The mirror you fill this way must be the one the install later names in
+`registry.mirror.*`, with the same `--check-image` (or `check.image`): the install pins the
+check image by digest and requires that digest in the mirror
+([below](#keeping-the-check-image-current)).
 
 ## A mirror with a private CA
 
