@@ -208,20 +208,12 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	if err != nil {
 		return err
 	}
-	if ca, err := s.MirrorCA(); err != nil {
+	mirrorCA, err := s.MirrorCA()
+	if err != nil {
 		return err
-	} else if ca != "" && c.Registry.Source == config.SourceMirror {
-		h := strings.SplitN(mirrorRegistryHost(c), ":", 2)[0]
-		if err := ac.UpsertTLSCert(ctx, h, ca); err != nil {
-			return fmt.Errorf("adding the mirror's CA (registry.mirror.ca_file) to Argo CD: %w", err)
-		}
-		p.ok("Argo CD trusts the mirror's CA for %s", h)
 	}
-	for _, r := range chartRepos(c, o.Charts, host, user, pass) {
-		if _, err := ac.UpsertRepository(ctx, r); err != nil {
-			return fmt.Errorf("adding the chart registry %s to Argo CD: %w", r.URL, err)
-		}
-		p.ok("Argo CD pulls the %s chart from %s", r.Name, r.URL)
+	if err := registerChartSources(ctx, p, c, ac, o.Charts, registryAccess{host, user, pass, mirrorCA}); err != nil {
+		return err
 	}
 	app, err := toArgoApp(o.Application)
 	if err != nil {
@@ -252,6 +244,51 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return nil
 	}
 	return syncAndWait(ctx, s, ac, sha, gitPos, timeout)
+}
+
+// chartRepoAPI is the part of the Argo CD client the chart registration uses.
+type chartRepoAPI interface {
+	UpsertRepository(ctx context.Context, r argocd.Repo) (*argocd.RepoInfo, error)
+	UpsertTLSCert(ctx context.Context, serverName, pemData string) error
+	DeleteRepository(ctx context.Context, repoURL string) error
+}
+
+// registryAccess is how the chart registries are reached: the login (host,
+// user, password) and a private mirror's CA.
+type registryAccess struct {
+	host, user, pass, mirrorCA string
+}
+
+// registerChartSources makes the charts' registries pullable by Argo CD: a
+// private mirror's CA as a TLS certificate for its host, and each registry as
+// an OCI Helm repository.
+func registerChartSources(ctx context.Context, p printer, c *config.Config, ac chartRepoAPI, charts []render.Chart, ra registryAccess) error {
+	if ra.mirrorCA != "" && c.Registry.Source == config.SourceMirror {
+		h := strings.SplitN(mirrorRegistryHost(c), ":", 2)[0]
+		if err := ac.UpsertTLSCert(ctx, h, ra.mirrorCA); err != nil {
+			return fmt.Errorf("adding the mirror's CA (registry.mirror.ca_file) to Argo CD: %w", err)
+		}
+		p.ok("Argo CD trusts the mirror's CA for %s", h)
+	}
+	for _, r := range chartRepos(c, charts, ra.host, ra.user, ra.pass) {
+		if _, err := ac.UpsertRepository(ctx, r); err != nil {
+			return fmt.Errorf("adding the chart registry %s to Argo CD: %w", r.URL, err)
+		}
+		p.ok("Argo CD pulls the %s chart from %s", r.Name, r.URL)
+	}
+	return nil
+}
+
+// removeChartRepos deletes the chart registries' entries (uninstall
+// --remove-repo); one already gone is not an error.
+func removeChartRepos(ctx context.Context, ac chartRepoAPI, urls []string) []error {
+	var errs []error
+	for _, u := range urls {
+		if err := ac.DeleteRepository(ctx, u); err != nil && !argocd.IsNotFound(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errs
 }
 
 // chartRepos are the Argo CD repository entries the charts' Helm sources pull
@@ -751,11 +788,7 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		if err := ac.DeleteRepository(ctx, c.Git.URL); err != nil && !argocd.IsNotFound(err) {
 			errs = append(errs, err)
 		}
-		for _, u := range chartRepoURLs(s) {
-			if err := ac.DeleteRepository(ctx, u); err != nil && !argocd.IsNotFound(err) {
-				errs = append(errs, err)
-			}
-		}
+		errs = append(errs, removeChartRepos(ctx, ac, chartRepoURLs(s))...)
 	}
 	ibmc, err := s.IBM()
 	if err != nil {

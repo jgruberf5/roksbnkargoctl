@@ -143,7 +143,7 @@ func checkGitMatchesRender(ctx context.Context, s *session, ac *argocd.Client, g
 		rev, manifests, err = ac.ManifestsAt(ctx, c.ArgoCD.Application, "", gitPos, revs[gitPos-1])
 	}
 	if err != nil {
-		return "", fmt.Errorf("the Application was created but not synced: Argo CD could not read %s %s:%s: %w (was the export pushed there?)", c.Git.URL, c.Git.Branch, c.Git.Path, err)
+		return "", fmt.Errorf("the Application was created but not synced: Argo CD could not render it from %s %s:%s and its chart registries: %w (was the export pushed there? can Argo CD pull the charts?)", c.Git.URL, c.Git.Branch, c.Git.Path, err)
 	}
 	diffs, err := gitMatchesRender(manifests, rendered)
 	if err != nil {

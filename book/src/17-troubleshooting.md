@@ -120,12 +120,14 @@ Each listed line says `missing in Git`, `different in Git` or `in Git but not in
 render`. Run `roksbnkargoctl export`, replace `git.path` in the repository with its
 contents, push, and run `install --no-publish` again. Nothing was synced.
 
-**`the Application was created but not synced: Argo CD could not read <url>
-<branch>:<path>: … (was the export pushed there?)`** (`install --no-publish`). Argo CD
-itself cannot produce manifests from that location: the path does not exist on the
-branch, or Argo CD has no access to the repository. With no Git credential set, `install`
+**`the Application was created but not synced: Argo CD could not render it from <url>
+<branch>:<path> and its chart registries: … (was the export pushed there? can Argo CD pull
+the charts?)`** (`install --no-publish`). Argo CD itself cannot produce the manifests:
+the path does not exist on the branch, Argo CD has no access to the repository, or it
+cannot pull a chart (read the quoted cause: a registry error names the chart registry;
+check its entry under Settings → Repositories). With no Git credential set, `install`
 leaves Argo CD's repository registration as it is and checks at step 1 that Argo CD can
-read the branch, so this usually means the path is wrong.
+read the branch, so a Git cause usually means the path is wrong.
 
 **`refusing to attach: the cluster VPC overlaps VPCs already on <gateway>`.** A
 transit gateway silently blackholes one of two overlapping VPCs, so `install`

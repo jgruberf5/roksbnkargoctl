@@ -205,6 +205,15 @@ func TestCheckGitMatchesRenderPinsTheGitSource(t *testing.T) {
 	if !strings.Contains(manifestsQuery, "sourcePositions=3") || !strings.Contains(manifestsQuery, "revisions=c0ffee1234") {
 		t.Errorf("manifests were not pinned to the Git source's commit: %q", manifestsQuery)
 	}
+	// No source revisions yet (not compared): an error, not a panic.
+	empty := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"name": "bnk-demo"}, "status": map[string]any{"sync": map[string]any{}}})
+	}))
+	defer empty.Close()
+	if _, err := checkGitMatchesRender(context.Background(), s, argocd.New(empty.URL, "t", true, nil), 3); err == nil || !strings.Contains(err.Error(), "reports 0 source revisions") {
+		t.Errorf("no revisions: %v", err)
+	}
 	// One object changed in what Argo CD renders: refused.
 	argo[0] = strings.Replace(argo[0], `"kind":`, `"x":1,"kind":`, 1)
 	if _, err := checkGitMatchesRender(context.Background(), s, argocd.New(srv.URL, "t", true, nil), 3); err == nil || !strings.Contains(err.Error(), "NOT synced") {

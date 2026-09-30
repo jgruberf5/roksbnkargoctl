@@ -674,6 +674,15 @@ func TestSyncPinsOneSource(t *testing.T) {
 	if single["revision"] != "abc" || single["revisions"] != nil {
 		t.Errorf("single-source body %v", single)
 	}
+	// A position without a revision pins nothing (no revisions: [""]).
+	if _, err := c.Sync(ctx, "a", SyncOptions{SourcePosition: 3}); err != nil {
+		t.Fatal(err)
+	}
+	var none map[string]any
+	_ = json.Unmarshal(rc.reqs[2].Body, &none)
+	if none["revisions"] != nil || none["sourcePositions"] != nil {
+		t.Errorf("no revision: body %v", none)
+	}
 }
 
 // ManifestsAt pins one source's revision; SourceRevisions refreshes and reads

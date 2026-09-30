@@ -344,3 +344,66 @@ func TestGitSourcePosition(t *testing.T) {
 		t.Error("two Git sources accepted")
 	}
 }
+
+type fakeChartRepoAPI struct {
+	repos   []argocd.Repo
+	certs   []string
+	deleted []string
+	delErr  map[string]error
+}
+
+func (f *fakeChartRepoAPI) UpsertRepository(_ context.Context, r argocd.Repo) (*argocd.RepoInfo, error) {
+	f.repos = append(f.repos, r)
+	return &argocd.RepoInfo{}, nil
+}
+func (f *fakeChartRepoAPI) UpsertTLSCert(_ context.Context, host, pem string) error {
+	f.certs = append(f.certs, host+"="+pem)
+	return nil
+}
+func (f *fakeChartRepoAPI) DeleteRepository(_ context.Context, u string) error {
+	f.deleted = append(f.deleted, u)
+	return f.delErr[u]
+}
+
+// install registers every chart registry, and a private mirror's CA for the
+// mirror's host (port stripped) before them; no CA, no certificate; a CA with
+// FAR as the source is not the charts' registry and is not added.
+func TestRegisterChartSources(t *testing.T) {
+	c := &config.Config{Registry: config.Registry{Source: config.SourceMirror, Mirror: config.Mirror{Host: "harbor.x:8443/bnk"}}}
+	charts := []render.Chart{{RepoURL: "harbor.x:8443/bnk/jetstack/charts", Chart: "cert-manager"}, {RepoURL: "harbor.x:8443/bnk/charts", Chart: "f5-lifecycle-operator"}}
+	s, out := initSession(c)
+	f := &fakeChartRepoAPI{}
+	if err := registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"harbor.x:8443", "robot", "pw", "PEM"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.repos) != 2 || f.repos[0].Username != "robot" || f.repos[1].Password != "pw" {
+		t.Errorf("repos %+v", f.repos)
+	}
+	if strings.Join(f.certs, ",") != "harbor.x=PEM" || !strings.Contains(out.String(), "trusts the mirror's CA for harbor.x") {
+		t.Errorf("certs %v output %q", f.certs, out.String())
+	}
+	f = &fakeChartRepoAPI{}
+	_ = registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"harbor.x:8443", "robot", "pw", ""})
+	if len(f.certs) != 0 || len(f.repos) != 2 {
+		t.Errorf("no CA: certs %v repos %d", f.certs, len(f.repos))
+	}
+	c.Registry.Source = config.SourceFAR
+	f = &fakeChartRepoAPI{}
+	_ = registerChartSources(context.Background(), s.p, c, f, charts, registryAccess{"repo.f5.com", "_json_key_base64", "k", "PEM"})
+	if len(f.certs) != 0 {
+		t.Errorf("FAR source added the mirror CA: %v", f.certs)
+	}
+}
+
+// --remove-repo deletes each chart registry; one already gone is fine, any
+// other failure is reported.
+func TestRemoveChartRepos(t *testing.T) {
+	f := &fakeChartRepoAPI{delErr: map[string]error{
+		"gone":   &argocd.APIError{Op: "delete", StatusCode: 404},
+		"broken": errors.New("boom"),
+	}}
+	errs := removeChartRepos(context.Background(), f, []string{"a", "gone", "broken"})
+	if strings.Join(f.deleted, ",") != "a,gone,broken" || len(errs) != 1 || !strings.Contains(errs[0].Error(), "boom") {
+		t.Errorf("deleted %v errs %v", f.deleted, errs)
+	}
+}
