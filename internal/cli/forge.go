@@ -263,7 +263,7 @@ func forgePassword(w io.Writer) (string, error) {
 		return "", fmt.Errorf("no BNK Forge password: set %s (there is no terminal to prompt on)", envForgePassword)
 	}
 	fmt.Fprint(w, "BNK Forge password: ")
-	b, err := forgeReadPassword()
+	b, err := readSecret(forgeReadPassword)
 	fmt.Fprintln(w)
 	if err != nil {
 		return "", fmt.Errorf("reading the BNK Forge password: %w", err)
