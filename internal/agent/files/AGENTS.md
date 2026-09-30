@@ -22,7 +22,9 @@ journal/                    append-only notes, one file per significant action
 
 ## How the install runs (read this before diagnosing anything)
 
-`install` does the IBM and out-of-band work, then Argo CD syncs Git in waves.
+`install` does the IBM and out-of-band work, then Argo CD syncs the Application in
+waves. It has three sources: the cert-manager and FLO Helm charts (pulled from the
+registry, values in Git under `values/`) and the Git path with the objects below.
 **Every container runs in ROKS; nothing runs on the Argo CD hub.**
 
 | Wave | What | If it stalls here |
@@ -31,12 +33,12 @@ journal/                    append-only notes, one file per significant action
 | −20 | namespaces | Argo CD cannot reach the ROKS API: the cluster registration (private endpoint over the transit gateway) |
 | −19 | `registry-ca-trust` DaemonSet (private mirror CA only) | node-resolver image, SCC binding |
 | −18 | `check-node-probe` DaemonSet + `check pre-install` hook | **the pre-install check failed**: read its log (`diagnose`); it names the node, target and reason |
-| −12 | cert-manager | image pulls (quay.io or mirror), webhook not Ready |
-| −10…−8 | issuer chain `selfsigned-cluster-issuer` → `ext-ca` → `sample-issuer` | cert-manager webhook |
 | −6 | NAD, FLO SCC binding, `check-gateway-api-sweep` Deployment | sweep pod not running → Gateway API CRDs later blocked |
-| −5 | FLO (f5-lifecycle-operator) | image pull from FAR/mirror, pull secret |
-| −4 / −2 | `CNEManifest`, `CNEInstance` | FLO not running; CRDs missing |
-| 0 | `check license` hook: builds `License` from the JWT Secret, waits Active, then CNEInstance Available | see "License" below |
+| 0 | the cert-manager and FLO Helm charts (CRDs, RBAC, Deployments) | Argo CD cannot pull a chart (its registry entry, `Settings → Repositories`); image pulls (quay.io or mirror), pull secret |
+| 1 | `check cert-manager-ready` hook | cert-manager webhook not admitting |
+| 2…4 | issuer chain `selfsigned-cluster-issuer` → `ext-ca` → `sample-issuer` | cert-manager webhook |
+| 6 / 8 | `CNEManifest`, `CNEInstance` | FLO not running; CRDs missing |
+| 10 | `check license` hook: builds `License` from the JWT Secret, waits Active, then CNEInstance Available | see "License" below |
 | PostSync | `check post-install` | TMM not Ready / not spread, image pull errors |
 | PreDelete / PostDelete | `check pre-uninstall` / `check post-uninstall` | stuck finalizers — see "Uninstall" |
 
@@ -77,7 +79,7 @@ diagnosis, not a symptom.
 - **Gateway API CRDs rejected by admission** — the `check-gateway-api-sweep`
   Deployment was not running when FLO's crd-installer ran. Check its log.
 - **Argo CD: `the server could not find the requested resource` on CNEInstance** —
-  FLO's CRDs did not install; FLO's wave failed first.
+  FLO's CRDs did not install; the FLO chart (wave 0) failed first.
 
 ## Uninstall
 

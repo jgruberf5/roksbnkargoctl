@@ -21,7 +21,7 @@ repository holds the same things:
 The charts themselves are not copied into Git. The Application installs each one as a Helm
 source, pulled from FAR or your mirror as `helm install` would pull it, with the values
 file from your repository. So a reviewer sees two values files and the handful of custom
-resources, not the roughly 80 objects the two charts expand to.
+resources, not the 79 objects the two charts expand to (48 for cert-manager, 31 for FLO, measured on the prod render).
 
 Argo CD's resource tree still lists every object of both charts, including their CRDs,
 as it does for any Application with a Helm source. That is where the chart's objects are

@@ -647,7 +647,7 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 	cmd.Flags().BoolVar(&purgeGit, "purge-git", false, "also remove the manifests from the Git repo")
 	cmd.Flags().BoolVar(&keepProfile, "keep-trusted-profile", false, "keep the IAM trusted profile")
 	cmd.Flags().BoolVar(&detachTGW, "detach-tgw", false, "detach the cluster VPC from the transit gateway if install attached it")
-	cmd.Flags().BoolVar(&removeRepo, "remove-repo", false, "remove the Git repo credential from Argo CD (other Applications may use it)")
+	cmd.Flags().BoolVar(&removeRepo, "remove-repo", false, "remove the Git repo credential and the chart registries' entries from Argo CD (other Applications may use them)")
 	cmd.Flags().BoolVar(&force, "force", false, "delete the Application even when the pre-uninstall check fails or cannot run")
 	return cmd
 }
