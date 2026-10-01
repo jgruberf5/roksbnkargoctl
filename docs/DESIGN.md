@@ -45,6 +45,7 @@ The workspace is `~/.roksbnkargoctl/<name>/` (override: `ROKSBNKARGOCTL_HOME`).
 | FAR pull secret (`far-secret` or `mirror-secret`) in `f5-bnk`, `f5-utils`, `cert-manager` | Credential; never in Git | `install`, directly into ROKS |
 | Subscription JWT (Secret `bnk-license-jwt`) | `License.spec.jwt` is **required and inline** (no Secret ref in the 2.4 CRD), so a License in Git would leak the JWT | `install` writes the Secret; the `check license` hook builds the License from it |
 | FLP root CA (Secret `licenseserver-rootca`) | Produced by `flp up` | `install` |
+| Single-certificate source (Secret `roksbnkargoctl-check/bnk-single-cert-source`: your CA, or your `tls.crt`/`tls.key`/`ca.crt`) | Holds a private key | `install`, from the files `bnk.certificates.*` names; the `check cert` hook reads it |
 | ROKS registration in Argo CD (ServiceAccount + token on ROKS, cluster Secret on the hub) | Cross-cluster | `install` via the ROKS API and the Argo CD API |
 | Git repo contents | Argo CD's only source | `install` via go-git |
 
@@ -70,16 +71,21 @@ FAR, a Helm repo, or plugins. So `render` does all templating on the operator ho
 | −20 | Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (`Delete=false`: `check post-uninstall` deletes them) |
 | −19 | ConfigMap `registry-ca` + DaemonSet `registry-ca-trust` (private-CA mirror only) |
 | −18 | DaemonSet `check-node-probe` (`check node-probe` on every node, host network); hook `check pre-install` (Sync) |
+| −10 | Hook `check cert` (Sync), `bnk.certificates.mode: single` only: the one TLS Secret FLO mounts, written into every BNK namespace before FLO |
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
 | 0 | The cert-manager chart (`startupapicheck` disabled) and the FLO chart (its 26 `k8s.f5.com` CRDs), as the Application's Helm sources: no wave annotation. Both set `crds.keep`, so their CRDs carry `helm.sh/resource-policy: keep`, which Argo CD honours on delete (verified on 3.5.1) |
-| 1 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it — Deployment health is not webhook readiness (a reinstall raced the cainjector live) |
-| 2 / 3 / 4 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer` |
+| 1 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it — Deployment health is not webhook readiness (a reinstall raced the cainjector live). Not in single-certificate mode |
+| 2 / 3 / 4 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer`. Not in single-certificate mode |
 | 6 | `CNEManifest bnk-2.4.0` |
 | 8 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
 | 10 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits `status.state=Active`, then `CNEInstance Available=True` |
 | PostSync | Hook `check post-install` |
 | PreDelete | Hook `check pre-uninstall` (Argo CD ≥ 3.3); `uninstall` also runs it as a Job first (see Uninstall order) |
 | PostDelete | Hook `check post-uninstall`; `uninstall` also runs it as a Job after the delete |
+
+In single-certificate mode the `cert-manager` namespace, the cert-manager chart (wave 0) and
+waves 1 to 4 are not rendered; with `bnk.utils_namespace` equal to `bnk.namespace` wave −20
+has one BNK namespace. See *Single certificate and one namespace* below.
 
 The sweep is a **Deployment**, not a hook: the CRDs it waits for are installed by FLO in the
 *next* wave, and Argo CD will not start a wave until the previous wave's hooks finish. A
@@ -110,11 +116,36 @@ It only ever runs in ROKS.
 | `pre-install` | Sync −18 | OpenShift ≥ 4.16; 3 zones; ≥ 3 schedulable workers; no pre-existing BNK not owned by this Application (`--argocd-app`, so re-syncs pass); required Secrets present; a default StorageClass (any class serves any TMM replica count: at Tiny TMM mounts no PVC — roksbnkctl#197); then deletes every `check-node-probe` pod and waits for fresh verdicts from all nodes (a re-sync never reads a stale one — roksbnkctl #57), failing on any unreachable target |
 | `node-probe` | DaemonSet | From each node: DNS + TCP (+TLS handshake) to FAR or the mirror (`:443`), FLP (`:8443`) in disconnected mode, F5 licensing endpoints in connected mode; writes the result to its pod annotation; sleeps |
 | `gateway-api-sweep` | Sync −6 | Deletes OpenShift's `openshift-ingress-operator-gatewayapi-crd-admission` VAP + binding every 5 s until `gateways.gateway.networking.k8s.io` and `gatewaysettings.gateway.k8s.f5.com` exist (timeout 20 min) |
-| `cert-manager-ready` | Sync −11 | Server-side dry-run `ClusterIssuer` create, retried on webhook/x509/5xx/404 until admitted (10 min); fails fast on anything else (e.g. RBAC) |
-| `license` | Sync 0 | Builds `License` from Secret `bnk-license-jwt` (+ FLP URLs/CA path in disconnected mode); waits `Active` (15 min) then `CNEInstance Available` (15 min) |
+| `cert` | Sync −10 | Single-certificate mode only. Issuer `self-signed`: CA kept in `roksbnkargoctl-check/<secret>-ca` (generated, or replaced near expiry); `ca`: CA from the source Secret; `provided`: the source Secret's certificate, verified (key match, chain to `ca.crt`, valid now, every BNK DNS name). Keeps the Secret when every namespace holds the same one, its `roksbnkargoctl.io/single-cert-spec` digest matches the settings, it is not within `--renew-before` of expiry and it is signed by the current CA; otherwise issues (or copies) and writes it to every `--namespace` |
+| `cert-manager-ready` | Sync 1 | Server-side dry-run `ClusterIssuer` create, retried on webhook/x509/5xx/404 until admitted (10 min); fails fast on anything else (e.g. RBAC) |
+| `license` | Sync 10 | Builds `License` from Secret `bnk-license-jwt` (+ FLP URLs/CA path in disconnected mode); waits `Active` (15 min) then `CNEInstance Available` (15 min) |
 | `post-install` | PostSync | `CNEInstance.spec.deploymentSize` is `Tiny` (catches a hand edit in Git); FLO Ready; `CNEInstance` Available; `License` Active; TMM replicas Ready and spread across zones; no `ImagePullBackOff`; reports |
 | `pre-uninstall` | PreDelete | Sweeps `f5validate-*` webhooks; drains `gateway.k8s.f5.com` and `fic.f5.com` (not FLO-managed `k8s.f5.com` components, which FLO re-creates while the CNEInstance lives, nor `k8s.f5net.com` product defaults the webhook refuses — roksbnkctl #266); waits for IPAM to be gone; deletes `License`, then `CNEInstance`, **while FLO still runs** (roksbnkctl #217). A failed drain leaves the CNEInstance and fails the hook |
 | `post-uninstall` | PostDelete | Deletes the 34 CWC license secrets; strips `f5.com`/`f5net.com` finalizers from anything stuck in a Terminating namespace; reports leftover F5 CRDs and cluster objects (CRDs are kept by design) |
+
+## Single certificate and one namespace
+
+**Single certificate** (`bnk.certificates.mode: single`, #30) is F5's "Single Certificate for
+BNK": no cert-manager (no chart, namespace, issuers or readiness gate; the registry BOM drops
+cert-manager's chart and 4 images). FLO runs with `global.certmgr.enabled: false` and
+`global.certmgr.secretName: <bnk.certificates.secret_name>` and mounts that one
+`kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) in place of every cert-manager
+Secret; the CNEInstance has no `spec.certificate`. The `check cert` hook (wave −10) writes the
+Secret into every BNK namespace. Defaults follow F5's procedure: CN `f5net` (a generated CA
+`f5net-ca`), O `F5 Networks`, OU `PD`, C `US`, ST `Washington`, L `Seattle`, RSA 4096 written
+PKCS#1, 3650 days, reissued 30 days before expiry; SANs are F5's name list for every BNK
+namespace plus `extra_dns_names` and `ip_addresses`. The check ClusterRole gains `create` on
+Secrets in this mode only. F5 notes components may restart when their mounted certificate
+changes, so a reissue can restart them.
+
+**One namespace** (#31): `bnk.utils_namespace` equal to `bnk.namespace` puts every BNK
+component in one namespace; every per-namespace object is rendered once.
+
+Neither may change under a running install. `install` records
+`resolved.installed_layout` (`namespaces=<ns>[,<utils>] certificates=<mode>`) and refuses a
+different one until `uninstall` clears it; `init --refresh` and the interview keep it.
+Switching in place destroyed the utilities namespace (CWC, RabbitMQ, License) on roksbnkctl
+with BNK 2.3.
 
 ## Modes
 

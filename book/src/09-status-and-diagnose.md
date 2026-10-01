@@ -83,7 +83,8 @@ All files are mode 0600.
 | `license.yaml` | The `License`, JWT redacted, if it exists |
 
 The namespaces collected are `roksbnkargoctl-check`, `bnk.namespace`,
-`bnk.utils_namespace` and `cert-manager`.
+`bnk.utils_namespace` (when it differs from `bnk.namespace`) and `cert-manager` (when
+roksbnkargoctl installs cert-manager; never in single-certificate mode).
 
 ### `summary.md` sections
 
@@ -135,7 +136,7 @@ The verdict line (reformatted here for reading):
 
 | Field | Meaning |
 |---|---|
-| `mode` | Which check: `pre-install`, `node-probe`, `gateway-api-sweep`, `cert-manager-ready`, `license`, `post-install`, `pre-uninstall`, `post-uninstall` |
+| `mode` | Which check: `pre-install`, `node-probe`, `gateway-api-sweep`, `cert-manager-ready`, `cert`, `license`, `post-install`, `pre-uninstall`, `post-uninstall` |
 | `version` | The check binary's version; confirms which build the cluster ran |
 | `ok` | `true` only if no finding has severity `fail` and there is no `error` |
 | `started`, `durationSeconds` | When it began (UTC) and how long it ran |

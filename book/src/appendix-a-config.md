@@ -88,7 +88,7 @@ only. See [Workspaces and init](./05-workspaces-and-init.md#running-without-a-wo
 | `mode` | string | `connected` | `ROKSBNKARGOCTL_BNK_MODE` | `connected` (BNK licenses directly with F5) or `disconnected` (through an F5 License Proxy) |
 | `tmm_replicas` | int | `3` | `ROKSBNKARGOCTL_BNK_TMM_REPLICAS` | TMM replicas; must be ≥ 1. One per node, spread across zones |
 | `namespace` | string | `f5-bnk` | `ROKSBNKARGOCTL_BNK_NAMESPACE` | namespace of FLO and the CNEInstance |
-| `utils_namespace` | string | `f5-utils` | `ROKSBNKARGOCTL_BNK_UTILS_NAMESPACE` | namespace of BNK's shared components (CWC, License) |
+| `utils_namespace` | string | `f5-utils` | `ROKSBNKARGOCTL_BNK_UTILS_NAMESPACE` | namespace of BNK's shared components (CWC, License); set it to `namespace` to put every BNK component in one namespace ([One namespace](./07-the-application.md#one-namespace)). Fixed while BNK is installed |
 | `cert_manager.install` | bool | `true` | `ROKSBNKARGOCTL_BNK_CERT_MANAGER_INSTALL` | install the pinned cert-manager; `false` uses one already on the cluster |
 | `cert_manager.version` | string | `v1.17.3` | `ROKSBNKARGOCTL_BNK_CERT_MANAGER_VERSION` | cert-manager chart version |
 | `certificates.mode` | string | `cert-manager` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_MODE` | cert-manager installs and issues BNK's certificates; `single`: no cert-manager, one TLS Secret for every BNK component ([Single certificate](./07-the-application.md#single-certificate)) |

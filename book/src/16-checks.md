@@ -57,6 +57,7 @@ after Argo CD has deleted everything it owns):
 | ClusterRole + ClusterRoleBinding | `roksbnkargoctl-check` (rules in [Appendix D](./appendix-d-security.md)) |
 | SCC binding | `system:openshift:scc:privileged:roksbnkargoctl-check:check` (host network for the node probe, host path for the mirror CA installer) |
 | Subscription JWT Secret | `bnk-license-jwt` (key `jwt`) |
+| Single-certificate source Secret | `bnk-single-cert-source` (single-certificate mode, issuer `ca` or `provided` only) |
 
 Every check pod has the same hardened container spec: `runAsNonRoot`,
 `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`,
@@ -70,7 +71,8 @@ The workloads Argo CD syncs from Git:
 |---|---|---|---|
 | `node-probe` | DaemonSet | `check-node-probe` | Sync wave −18 |
 | `pre-install` | Job (Sync hook) | `check-pre-install` | Sync wave −18 |
-| `cert-manager-ready` | Job (Sync hook) | `check-cert-manager-ready` | Sync wave 1 |
+| `cert` | Job (Sync hook) | `check-cert` | Sync wave −10, single-certificate mode only |
+| `cert-manager-ready` | Job (Sync hook) | `check-cert-manager-ready` | Sync wave 1, cert-manager mode only |
 | `gateway-api-sweep` | Deployment | `check-gateway-api-sweep` | Sync wave −6 |
 | `license` | Job (Sync hook) | `check-license` | Sync wave 10 |
 | `post-install` | Job (PostSync hook) | `check-post-install` | after the sync |
@@ -84,7 +86,7 @@ when you need to read it.
 
 ## The output contract
 
-Every mode reports the same way, so one reading habit covers all eight.
+Every mode reports the same way, so one reading habit covers all nine.
 
 - **stderr** carries human-readable progress, one finding per line, marked by
   severity:
@@ -125,7 +127,7 @@ Every flag of every mode can also be set from an environment variable named
 `CHECK_<FLAG>` — upper case, dashes as underscores. `--bnk-namespace` is
 `CHECK_BNK_NAMESPACE`, `--min-zones` is `CHECK_MIN_ZONES`. A command-line value
 overrides the environment. For repeatable flags (`--require-secret`, `--target`,
-`--drain-group`, `--delete-namespace`) the first command-line value replaces the
+`--drain-group`, `--delete-namespace`, and `cert`'s `--namespace`, `--dns` and `--ip`) the first command-line value replaces the
 environment's list rather than appending to it.
 
 Two modes also read downward-API variables directly: `RUN_ID`, `NODE_NAME`,
@@ -223,8 +225,10 @@ summary.
 The rendered `--require-secret` list is: the pull secret (`far-secret`, or
 `mirror-secret` with a mirror that needs credentials) in `f5-bnk` and `f5-utils` —
 plus, in mirror mode, in `roksbnkargoctl-check` and (when cert-manager is
-installed) `cert-manager`; `roksbnkargoctl-check/bnk-license-jwt`; and in
-disconnected mode `f5-utils/licenseserver-rootca`.
+installed) `cert-manager`; `roksbnkargoctl-check/bnk-license-jwt`; in
+disconnected mode `f5-utils/licenseserver-rootca`; and in single-certificate mode with
+issuer `ca` or `provided`, `roksbnkargoctl-check/bnk-single-cert-source`. With one
+namespace, `f5-utils` here reads `bnk.namespace`, and each Secret is listed once.
 
 ## node-probe
 
@@ -295,6 +299,7 @@ at once.
 
 **When:** Sync hook `check-cert-manager-ready`, wave 1 — after the cert-manager
 chart (wave 0) and before the issuer chain (2 to 4). `activeDeadlineSeconds` 720.
+Not rendered in single-certificate mode, which has no cert-manager ([cert](#cert)).
 
 Argo CD moves to the next wave once cert-manager's Deployments are healthy, but
 Deployment health is not webhook readiness: the cainjector may not yet have written
@@ -317,6 +322,71 @@ nothing, but it passes through the admission webhook.
 |---|---|---|---|
 | `--timeout` | `10m` | `10m` | how long to wait for the webhook |
 | `--interval` | `5s` | — | between dry-run attempts |
+
+## cert
+
+**When:** Sync hook `check-cert`, wave −10, `activeDeadlineSeconds` 600; only when
+`bnk.certificates.mode: single`
+([Single certificate](./07-the-application.md#single-certificate)). It runs after the
+pre-install check (−18) and before the FLO chart (0), so the Secret FLO mounts exists in
+every BNK namespace before any component starts.
+
+It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) named
+`--secret-name` is current in every `--namespace`:
+
+1. **Gets the signer.** `self-signed`: reads the CA kept in
+   `<--state-namespace>/<--secret-name>-ca`, or generates one (subject from the flags, CN
+   `--ca-common-name`) when it is missing, unreadable, not a CA, or within
+   `--renew-before` of expiry. `ca`: reads `tls.crt` and `tls.key` from `--source-secret`
+   and requires a CA certificate whose key matches. `provided`: reads `tls.crt`, `tls.key`
+   and `ca.crt` from `--source-secret` and verifies them (below).
+2. **Decides whether to keep the current Secret.** It keeps it when every namespace holds
+   the same certificate, its annotation `roksbnkargoctl.io/single-cert-spec` matches the
+   digest of the current settings, it is not within `--renew-before` of expiry, and it is
+   signed by the current CA. Otherwise it records why.
+3. **Issues or copies.** A new certificate gets a fresh key, the subject from the flags with
+   CN `--common-name`, F5's DNS names for every namespace plus `--dns`, the `--ip`
+   addresses, server and client auth, and a lifetime of `--validity` capped at the CA's
+   expiry. `provided` copies your certificate unchanged.
+4. **Writes** the Secret into each namespace by server-side apply, with the digest
+   annotation.
+
+The `provided` verification fails the check (`[FAIL] provided`) when the key does not
+match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time, or it does
+not cover every DNS name BNK uses; the message lists up to eight missing names and how many
+more.
+
+| Finding | Meaning |
+|---|---|
+| `[PASS] ca` | `self-signed CA <CN> kept (…)` or `generated (…)`, with its expiry |
+| `[PASS] certificate` | `kept: valid until <date>, issued for these settings`; `issued <CN>, valid until <date>, <n> DNS names (<why>)`; or `copying the provided certificate (<why>)` |
+| `[PASS] secret` | `<ns>/<name> is current`, one per namespace |
+| `[FAIL] secret` | the Secret could not be written into that namespace |
+| `[FAIL] provided` | the provided certificate failed verification |
+
+`<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `the namespaces hold
+different certificates`, `it expires <date>, within the renewal window`, `it is not signed
+by the current CA`.
+
+It needs `create` on Secrets, which the check ClusterRole carries only in this mode.
+
+| Flag | Default | Rendered | Meaning |
+|---|---|---|---|
+| `--issuer` | `self-signed` | `bnk.certificates.issuer` | `self-signed`, `ca` or `provided` |
+| `--secret-name` | `bnk-single-cert` | `bnk.certificates.secret_name` | the Secret FLO mounts (`global.certmgr.secretName`) |
+| `--namespace` | none (required) | `bnk.namespace`, plus `bnk.utils_namespace` when it differs | a BNK namespace to write the Secret into; repeatable or comma-separated |
+| `--source-secret` | none | `roksbnkargoctl-check/bnk-single-cert-source` for `ca` and `provided` | `namespace/name` of your CA or certificate |
+| `--state-namespace` | `$POD_NAMESPACE` (`roksbnkargoctl-check`) | — | where a self-signed CA is kept |
+| `--common-name` | `f5net` | `bnk.certificates.common_name` | the certificate's CN |
+| `--ca-common-name` | `f5net-ca` | `bnk.certificates.ca_common_name` | a generated CA's CN |
+| `--organization`, `--organizational-unit` | `F5 Networks`, `PD` | `bnk.certificates.organization`, `.organizational_unit` | subject O, OU |
+| `--country`, `--state`, `--locality` | `US`, `Washington`, `Seattle` | `bnk.certificates.country`, `.state`, `.locality` | subject C, ST, L |
+| `--dns` | none | each of `bnk.certificates.extra_dns_names` | an extra DNS name; repeatable or comma-separated |
+| `--ip` | none | each of `bnk.certificates.ip_addresses` | an IP address SAN; repeatable or comma-separated |
+| `--key-type` | `rsa` | `bnk.certificates.key_type` | `rsa` or `ecdsa` (P-256) |
+| `--key-bits` | `4096` | `bnk.certificates.key_bits` | RSA key size; at least 2048 |
+| `--validity` | `87600h` (3650 days) | `bnk.certificates.validity_days` × 24h | lifetime of an issued certificate and of a generated CA |
+| `--renew-before` | `720h` (30 days) | `bnk.certificates.renew_before_days` × 24h | reissue when this close to expiry |
 
 ## gateway-api-sweep
 

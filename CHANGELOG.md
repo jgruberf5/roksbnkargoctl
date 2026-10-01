@@ -4,6 +4,29 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.7.0] - 2026-10-01
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Added
+- Single-certificate mode, F5's "Single Certificate for BNK" (`bnk.certificates.mode:
+  single`, #30). No cert-manager: no chart, namespace, issuers or readiness gate, and the
+  registry BOM drops cert-manager's 5 artifacts. FLO mounts one `kubernetes.io/tls` Secret
+  (`global.certmgr.enabled: false`, `secretName`), which a new `check cert` Sync hook (wave
+  −10) writes into every BNK namespace. Issuer `self-signed` (a CA generated and kept in the
+  cluster), `ca` (your CA signs it) or `provided` (your certificate, checked for key match,
+  chain, validity and every BNK name); your key goes into the cluster, never to Git.
+  Defaults are F5's procedure (CN `f5net`, RSA 4096, 3650 days). A sync keeps the Secret
+  while it is current and reissues it when it is missing, the settings change, or it is
+  within 30 days of expiry. The check gets `create` on Secrets in this mode only.
+- One namespace for every BNK component: set `bnk.utils_namespace` to `bnk.namespace`
+  (#31). The `init` interview asks for it and for the certificate mode.
+- `install` records the namespaces and certificate mode it installed
+  (`resolved.installed_layout`) and refuses a different layout until `uninstall`:
+  switching in place deleted the utilities namespace, with CWC, RabbitMQ and the License,
+  under roksbnkctl on BNK 2.3. `init --refresh` keeps the record.
+- Verified live: TODO
+
 ## [0.6.3] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.

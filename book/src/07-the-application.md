@@ -41,7 +41,11 @@ install consists of into the workspace:
 | The Application | `manifests/application.yaml` | `install`, through the Argo CD API |
 
 With the defaults the Git objects number 18 (20 with a private-CA mirror, 17 when
-`bnk.cert_manager.install` is false, which also drops `values/cert-manager.yaml`). Each
+`bnk.cert_manager.install` is false, which also drops `values/cert-manager.yaml`). With
+[one namespace](#one-namespace) there is one Namespace fewer (17). In
+[single-certificate mode](#single-certificate) cert-manager's namespace, readiness gate and
+three issuer objects are replaced by one `check cert` hook, and `values/cert-manager.yaml`
+is not written: 14 Git objects, or 13 with one namespace as well. Each
 values file starts with a comment naming the chart, its version, the release and the
 namespace. `manifests/charts/` holds each chart templated the way Argo CD templates it
 (the same release, namespace, values, Kubernetes version and API versions); its Secrets
@@ -206,26 +210,28 @@ Every Git object carries `argocd.argoproj.io/sync-wave`. The charts' objects car
 so they sync in wave 0: what must come before them has a negative wave, what needs them a
 positive one. Argo CD applies waves in ascending order and does not start a wave until the
 previous one is healthy and its hooks have finished. Names below use the default
-namespaces (`bnk.namespace: f5-bnk`, `bnk.utils_namespace: f5-utils`).
+namespaces (`bnk.namespace: f5-bnk`, `bnk.utils_namespace: f5-utils`) and the default
+certificate mode (`bnk.certificates.mode: cert-manager`).
 
 | Wave | Kind | Name | Notes |
 |---|---|---|---|
-| −20 | Namespace | `f5-bnk`, `f5-utils`, `cert-manager` | `cert-manager` only when `bnk.cert_manager.install` is true (the default). All carry `Delete=false` |
+| −20 | Namespace | `f5-bnk`, `f5-utils`, `cert-manager` | `f5-utils` only when it differs from `bnk.namespace` ([one namespace](#one-namespace)). `cert-manager` only when `bnk.cert_manager.install` is true (the default) and the mode is `cert-manager`. All carry `Delete=false` |
 | −19 | ConfigMap | `roksbnkargoctl-check/registry-ca` | Only when `registry.mirror.host` and `registry.mirror.ca_file` are set |
 | −19 | DaemonSet | `roksbnkargoctl-check/registry-ca-trust` | Same condition. Installs the mirror CA on every node; see [registry](./13-registry.md) |
 | −18 | DaemonSet | `roksbnkargoctl-check/check-node-probe` | `check node-probe` on every node, host network |
 | −18 | Job (Sync hook) | `roksbnkargoctl-check/check-pre-install` | Cluster prerequisites and the node-probe verdicts |
+| −10 | Job (Sync hook) | `roksbnkargoctl-check/check-cert` | [Single-certificate mode](#single-certificate) only: writes the one TLS Secret into every BNK namespace, before FLO |
 | −6 | NetworkAttachmentDefinition | `f5-bnk/ens3-ipvlan-l2` | ipvlan L2 on `ens3`, static address `bnk.nad_address` (default `10.10.1.1/24`) |
 | −6 | ClusterRoleBinding | `system:openshift:scc:privileged:f5-bnk:flo-f5-lifecycle-operator` | Grants FLO's ServiceAccount the `privileged` SCC |
 | −6 | Deployment | `roksbnkargoctl-check/check-gateway-api-sweep` | Removes OpenShift's Gateway API CRD admission policy until the F5 Gateway API CRDs exist |
-| 0 | cert-manager chart (Helm source) | every object of the Jetstack chart `v1.17.3`, including its CRDs | Only when cert-manager is installed by roksbnkargoctl. `startupapicheck` is disabled |
+| 0 | cert-manager chart (Helm source) | every object of the Jetstack chart `v1.17.3`, including its CRDs | Only when cert-manager is installed by roksbnkargoctl, and never in single-certificate mode. `startupapicheck` is disabled |
 | 0 | FLO chart (Helm source) | every object of `f5-lifecycle-operator` (release `flo`, namespace `f5-bnk`), including its `k8s.f5.com` CRDs | The chart version is the one the BNK 2.4.0 manifest lists (`v2.30.0-0.5.2`) |
-| 1 | Job (Sync hook) | `roksbnkargoctl-check/check-cert-manager-ready` | Waits until cert-manager's webhook admits a dry-run `ClusterIssuer` |
-| 2 | ClusterIssuer | `selfsigned-cluster-issuer` | |
-| 3 | Certificate | `cert-manager/ext-ca` | Self-signed CA, ECDSA P-256 |
-| 4 | ClusterIssuer | `sample-issuer` | CA issuer backed by `ext-ca`; the issuer FLO and the CNEInstance use |
+| 1 | Job (Sync hook) | `roksbnkargoctl-check/check-cert-manager-ready` | Waits until cert-manager's webhook admits a dry-run `ClusterIssuer`. Not in single-certificate mode |
+| 2 | ClusterIssuer | `selfsigned-cluster-issuer` | Not in single-certificate mode |
+| 3 | Certificate | `cert-manager/ext-ca` | Self-signed CA, ECDSA P-256. Not in single-certificate mode |
+| 4 | ClusterIssuer | `sample-issuer` | CA issuer backed by `ext-ca`; the issuer FLO and the CNEInstance use. Not in single-certificate mode |
 | 6 | CNEManifest | `bnk-2.4.0` | Cluster-scoped. `SkipDryRunOnMissingResource=true` (its CRD arrives with the FLO chart in wave 0 of the same sync) |
-| 8 | CNEInstance | `<bnk.namespace>/<bnk.namespace>-f5-cne-controller` (`f5-bnk/f5-bnk-f5-cne-controller` by default) | `deploymentSize: Tiny`, `tmmReplicas` from `bnk.tmm_replicas`. `SkipDryRunOnMissingResource=true` |
+| 8 | CNEInstance | `<bnk.namespace>/<bnk.namespace>-f5-cne-controller` (`f5-bnk/f5-bnk-f5-cne-controller` by default) | `deploymentSize: Tiny`, `tmmReplicas` from `bnk.tmm_replicas`. `spec.certificate` names `sample-issuer`, and is left out in single-certificate mode. `SkipDryRunOnMissingResource=true` |
 | 10 | Job (Sync hook) | `roksbnkargoctl-check/check-license` | Builds the `License`, waits for `Active`, then for `CNEInstance` `Available` |
 | PostSync | Job (hook) | `roksbnkargoctl-check/check-post-install` | Verifies the finished install |
 | PreDelete | Job (hook) | `roksbnkargoctl-check/check-pre-uninstall` | Drains F5 resources while FLO still runs; CNEInstance last |
@@ -267,7 +273,8 @@ until the next sync creates the hook again, which is when you need them.
 | Job | Argo CD hook | Wave | `--timeout` | Job deadline |
 |---|---|---|---|---|
 | `check-pre-install` | Sync | −18 | 15m | 20m |
-| `check-cert-manager-ready` | Sync | 1 | 10m | 12m |
+| `check-cert` (single-certificate mode only) | Sync | −10 | — (it waits for nothing) | 10m |
+| `check-cert-manager-ready` (cert-manager mode only) | Sync | 1 | 10m | 12m |
 | `check-license` | Sync | 10 | 10m License CRD, 5m apply retry, 35m License `Active`, 15m `CNEInstance` `Available` (all rendered) | 70m (the waits plus 5m) |
 | `check-post-install` | PostSync | — | 10m | 15m |
 | `check-pre-uninstall` | PreDelete | — | 15m | 20m |
@@ -298,19 +305,22 @@ repository.
 | Pull secret `far-secret` (FAR) or `mirror-secret` (mirror), type `kubernetes.io/dockerconfigjson` | `f5-bnk`, `f5-utils`; in mirror mode also `roksbnkargoctl-check` and (when installed by roksbnkargoctl) `cert-manager` | A registry credential. Not created in mirror mode when `registry.mirror.username` is empty |
 | Secret `bnk-license-jwt` (key `jwt`) | `roksbnkargoctl-check` | The subscription JWT |
 | Secret `licenseserver-rootca` (key `licenseserver-rootca.txt`) | `f5-utils` | The FLP root CA; disconnected mode only |
+| Secret `bnk-single-cert-source` (keys `tls.crt`, `tls.key`, and `ca.crt` for `provided`) | `roksbnkargoctl-check` | [Single-certificate mode](#single-certificate) with issuer `ca` or `provided` only: your CA's or your certificate's private key |
 | Namespace `roksbnkargoctl-check`, ServiceAccount `check`, ClusterRole and ClusterRoleBinding `roksbnkargoctl-check`, ClusterRoleBinding `system:openshift:scc:privileged:roksbnkargoctl-check:check` | cluster / `roksbnkargoctl-check` | Must outlive the Application: the PostDelete hook runs after Argo CD has deleted everything it owns |
-| Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (again) | cluster | Created before the Secrets that live in them. Argo CD adopts them when it syncs wave −20 |
+| Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (again, as rendered: no `f5-utils` with one namespace, no `cert-manager` in single-certificate mode) | cluster | Created before the Secrets that live in them. Argo CD adopts them when it syncs wave −20 |
 
 A Secret that a chart ships, such as FLO's `external-otelsvr-secret`, is chart content:
 Argo CD applies it from the chart like the chart's other objects. It is neither in Git nor
 written by `install`, and it carries no value of yours.
 
-Before publishing, the renderer scans every Git object and both values files for the
-registry password and the subscription JWT and refuses to publish if either appears:
+Before publishing, the renderer scans every Git object and the values files for the
+registry password, the subscription JWT and, in single-certificate mode, the private key
+you supply, and refuses to publish if any appears:
 
 ```text
 render: refusing to publish: the subscription JWT appears in <Kind> <ns>/<name>
 render: refusing to publish: the registry password appears in values/<chart>.yaml
+render: refusing to publish: the single-certificate private key appears in <Kind> <ns>/<name>
 ```
 
 ![CNEInstance summary panel in Argo CD](images/argocd/cneinstance-summary.png)
@@ -342,7 +352,9 @@ are created by `install` and removed by `uninstall` only after the Application h
 deleted. The `check` ClusterRole reads core, apps, batch and storage resources, can patch
 Deployments, DaemonSets and StatefulSets (to roll CWC), can patch and delete pods, Secrets,
 namespaces and a few other core resources, can delete
-validating admission policies and webhooks, can create (dry-run) ClusterIssuers, and has
+validating admission policies and webhooks, can create (dry-run) ClusterIssuers, in
+single-certificate mode only can create Secrets (`check cert` writes the certificate
+Secret into each BNK namespace; patch alone cannot create one), and has
 full access to the F5 API groups (`k8s.f5.com`, `k8s.f5net.com`, `gateway.k8s.f5.com`,
 `fic.f5.com`, `metrics.f5.com`) because the uninstall checks delete whatever F5 resources
 exist. The privileged SCC binding is for the node probe's host network and the CA
@@ -355,7 +367,7 @@ them in place when the Application is deleted. The charts' CRDs are kept another
 
 | Objects | How they are kept | Why |
 |---|---|---|
-| Namespaces `f5-bnk`, `f5-utils`, `cert-manager` | `Delete=false` on the Namespace in Git | A namespace stuck on an F5 finalizer would hang the Application's deletion before the PostDelete check ever ran. `check post-uninstall` deletes them itself and strips F5 finalizers if they stick |
+| Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (those rendered) | `Delete=false` on the Namespace in Git | A namespace stuck on an F5 finalizer would hang the Application's deletion before the PostDelete check ever ran. `check post-uninstall` deletes them itself and strips F5 finalizers if they stick |
 | The CRDs of both charts (FLO's `k8s.f5.com` CRDs, and cert-manager's) | Both charts are rendered with `crds.keep: true`, which annotates their CRDs `helm.sh/resource-policy: keep`. Argo CD honours that annotation when it deletes the Application | Deleting a CRD deletes every CR of that kind; F5 CRs whose controller is already gone hang their namespace |
 
 The CRDs are not in Git, so there is nothing to mark `Delete=false` on them. On Argo CD
@@ -363,6 +375,142 @@ The CRDs are not in Git, so there is nothing to mark `Delete=false` on them. On 
 26 of the chart's CRDs remained while the chart's ClusterRole was removed. CRDs FLO's
 crd-installer creates at runtime (the `License` CRD and the Gateway API CRDs) were never
 Argo CD's to delete.
+
+## Single certificate
+
+By default BNK's components get their mTLS certificates from cert-manager: roksbnkargoctl
+installs the cert-manager chart, creates a CA issuer chain, and FLO requests a cert-manager
+`Certificate` for each component. F5 also documents a second way, *Single Certificate for
+BNK*: no cert-manager at all, and every component mounts one `kubernetes.io/tls` Secret
+(`tls.crt`, `tls.key`, `ca.crt`). Choose it with:
+
+```yaml
+bnk:
+  certificates:
+    mode: single              # default: cert-manager
+    issuer: self-signed       # or ca, or provided
+```
+
+The `init` interview asks for the mode ([the interview](./05-workspaces-and-init.md#the-interview));
+every key is in [Appendix A](./appendix-a-config.md#bnk).
+
+### What changes in the render
+
+| | `cert-manager` (default) | `single` |
+|---|---|---|
+| cert-manager chart, `values/cert-manager.yaml`, namespace `cert-manager` | rendered (unless `bnk.cert_manager.install: false`) | not rendered; `bnk.cert_manager.*` is ignored |
+| Hook `check cert-manager-ready` (wave 1), ClusterIssuers and Certificate `ext-ca` (waves 2 to 4) | rendered | not rendered |
+| Hook `check cert` (wave −10) | — | rendered: writes the Secret into every BNK namespace before FLO starts in wave 0 |
+| FLO values `global.certmgr` | `clusterIssuer: sample-issuer` | `enabled: false`, `secretName: <bnk.certificates.secret_name>` |
+| `CNEInstance.spec.certificate` | `clusterIssuer: sample-issuer` | left out (FLO ignores it in this mode) |
+| The check's ClusterRole | no `create` on Secrets | adds `create` on Secrets |
+| `registry bom` and `replicate` | include cert-manager's chart and 4 images | leave those 5 artifacts out ([registry](./13-registry.md#the-bill-of-materials)) |
+| `check post-uninstall` | deletes `cert-manager` when the tool installed it | no `cert-manager` namespace to delete |
+
+`skipCertMgr: true` stays set in both modes: it only skips the FLO chart's lookup of
+cert-manager's CRDs.
+
+### Who issues the certificate
+
+| `bnk.certificates.issuer` | You supply | What `check cert` does |
+|---|---|---|
+| `self-signed` (default) | nothing | Generates a CA (CN `ca_common_name`, default `f5net-ca`) and keeps it in Secret `roksbnkargoctl-check/<secret_name>-ca`, so later syncs reuse it; replaces it when it is within `renew_before_days` of expiry. Issues the certificate from it |
+| `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`) or a key that does not match it. Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
+| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now, and that it covers every DNS name BNK uses (below); fails the hook, naming up to eight missing names, if not. Then copies it |
+
+For `ca` and `provided`, `render` and `install` read the files on your host, and `install` writes them into Secret
+`roksbnkargoctl-check/bnk-single-cert-source`, out of band like the other Secrets. The
+private key never goes to Git: the render refuses to publish if it appears in any Git object
+or values file, and `manifests/direct/` holds the Secret redacted. The `check pre-install`
+hook requires that Secret, so a missing one stops the sync at wave −18.
+
+### What the certificate contains
+
+The defaults are F5's procedure:
+
+| Field | Default | Key |
+|---|---|---|
+| Subject CN | `f5net` | `common_name` |
+| Subject O, OU, C, ST, L | `F5 Networks`, `PD`, `US`, `Washington`, `Seattle` | `organization`, `organizational_unit`, `country`, `state`, `locality` |
+| Key | RSA 4096, written PKCS#1 (`RSA PRIVATE KEY`, as cert-manager writes it); `ecdsa` is P-256, written SEC 1 | `key_type`, `key_bits` (at least 2048) |
+| Lifetime | 3650 days, for the certificate and a generated CA | `validity_days` |
+| Renewal | reissued on a sync within 30 days of expiry | `renew_before_days` (less than `validity_days`) |
+| Key usage | digital signature, key encipherment; extended key usage server and client auth (one certificate serves both ends of every mTLS connection) | — |
+| DNS names | F5's list of BNK service names (72 entries, such as `f5-tmm`, `otel-collector-svc.<ns>`, `rabbitmq-server.<ns>`, `f5-spk-cwc.<ns>.svc`), each `<ns>` form expanded for every BNK namespace, duplicates removed; then `extra_dns_names` | `extra_dns_names` |
+| IP addresses | none | `ip_addresses` |
+
+### Where it is written, and when it changes
+
+The Secret, named `bnk.certificates.secret_name` (default `bnk-single-cert`), is written
+into `bnk.namespace` and, when it differs, `bnk.utils_namespace`: every namespace a BNK
+component runs in. FLO mounts it in place of the cert-manager Secrets.
+
+`check cert` runs on every sync and is idempotent. Each Secret carries the annotation
+`roksbnkargoctl.io/single-cert-spec`, a digest of the settings it was issued for (issuer,
+subject, DNS names, IP addresses, key type and size, lifetime, and the CA or the provided
+certificate). A sync keeps the Secret when every namespace holds the same certificate, the
+digest matches, it is not within `renew_before_days` of expiry, and it is signed by the
+current CA. Otherwise it issues a new one (or copies the provided one) and writes it
+everywhere:
+
+| Reissued when | Example |
+|---|---|
+| a namespace lacks the Secret | first install, or someone deleted it |
+| the settings changed | a new `extra_dns_names` entry, a new CA file, a new provided certificate |
+| the namespaces disagree | one Secret edited by hand |
+| it is close to expiry | within `renew_before_days` |
+| the CA changed | the self-signed CA was replaced near its own expiry |
+
+With `provided`, renewal is yours: put the new files in place and run `install` again. A
+provided certificate that has expired fails the hook.
+
+F5 notes that BNK's components may restart when the certificate they mount changes, so
+expect a reissue to restart them.
+
+### Changing modes
+
+The certificate mode cannot be changed under a running install: `install` refuses (see
+[one namespace](#one-namespace) for the record it keeps). Run `uninstall`, then `install`
+with the new mode.
+
+## One namespace
+
+By default BNK uses two namespaces: `bnk.namespace` (`f5-bnk`: FLO, the CNEInstance, TMM)
+and `bnk.utils_namespace` (`f5-utils`: shared components such as CWC, RabbitMQ and the
+`License`). Set `bnk.utils_namespace` to the same value as `bnk.namespace` and every BNK
+component goes into that one namespace:
+
+```yaml
+bnk:
+  namespace: f5-bnk
+  utils_namespace: f5-bnk
+```
+
+The `init` interview asks the same question. The render then creates one BNK namespace,
+writes the pull secret, the FLP root CA (disconnected) and the single certificate (in
+single-certificate mode) into it once, and passes the same namespace to the checks and to
+FLO (`namespace` and `sharedComponentNamespace`); `diagnose` collects it once.
+
+### The layout is fixed while BNK is installed
+
+`install` records the layout it installed, the namespaces and the certificate mode, as
+`resolved.installed_layout` in `config.yaml`, for example
+`namespaces=f5-bnk,f5-utils certificates=cert-manager`. While that is set, an `install`
+with a different layout stops before it changes anything:
+
+```text
+roksbnkargoctl: BNK is installed with namespaces=f5-bnk,f5-utils certificates=cert-manager, and config.yaml now asks for namespaces=f5-bnk certificates=cert-manager: changing either under a running install is not supported. Run `roksbnkargoctl uninstall`, then install again
+```
+
+Switching in place is destructive: BNK's shared components (CWC, RabbitMQ, the `License`)
+run in the utilities namespace, and moving them under a running install is not something
+FLO does. With roksbnkctl on BNK 2.3, switching to one namespace deleted the utilities
+namespace with those components in it. Switching the certificate mode would swap every
+component's certificates under it.
+`uninstall` clears the record, so the next `install` may choose either layout. `init
+--refresh` and a re-run of the interview keep it; `init --config-file` starts `resolved:`
+afresh and so forgets it. A workspace installed by a release before 0.7.0 has no record
+until its next `install`.
 
 ## How the Helm charts are installed
 
@@ -373,7 +521,7 @@ templating on your host, only to show you the result (`manifests/charts/`) and t
 
 | Chart | Pulled from | Release / namespace |
 |---|---|---|
-| cert-manager `v1.17.3` (`bnk.cert_manager.version`) | `oci://quay.io/jetstack/charts/cert-manager`, or the mirror's copy | `cert-manager` / `cert-manager` |
+| cert-manager `v1.17.3` (`bnk.cert_manager.version`); not in single-certificate mode | `oci://quay.io/jetstack/charts/cert-manager`, or the mirror's copy | `cert-manager` / `cert-manager` |
 | `f5-lifecycle-operator` (the version the BNK manifest lists) | `oci://<FAR or mirror>/charts/f5-lifecycle-operator` | `flo` / `bnk.namespace` |
 
 `render` pulls the chart archives over OCI in-process and templates them with the Helm Go
@@ -387,14 +535,15 @@ Kubernetes version and API versions, so both template the same objects.
 Helm's `lookup` returns nothing when templating without a cluster, on your host and in
 Argo CD alike. FLO's chart looks up cert-manager's CRDs and fails when it cannot see them,
 so its values set `skipCertMgr: true`. That skips only the chart's pre-check;
-cert-manager is still installed, and the issuers wait for `check cert-manager-ready`.
+cert-manager is still installed, and the issuers wait for `check cert-manager-ready`
+(in [single-certificate mode](#single-certificate) there is no cert-manager at all).
 
 Values that matter:
 
 | Chart | Values set (in `values/<chart>.yaml`) |
 |---|---|
 | cert-manager | `crds.enabled: true`, `crds.keep: true`, `startupapicheck.enabled: false`; in mirror mode every component image (`controller`, `webhook`, `cainjector`, `acmesolver`) is redirected to `<mirror>/jetstack/cert-manager-<component>` and the pull secret is added |
-| FLO | `skipCertMgr: true`, `crds.enabled: true`, `crds.keep: true`, `containerPlatform: IBM`, `namespace` and `sharedComponentNamespace` from the BNK namespaces, `global.certmgr.clusterIssuer: sample-issuer`, image repository `<FAR or mirror>/images` with `pullPolicy: Always`, the pull secret when there is one |
+| FLO | `skipCertMgr: true`, `crds.enabled: true`, `crds.keep: true`, `containerPlatform: IBM`, `namespace` and `sharedComponentNamespace` from the BNK namespaces, `global.certmgr.clusterIssuer: sample-issuer` (single-certificate mode: `global.certmgr.enabled: false` and `global.certmgr.secretName`), image repository `<FAR or mirror>/images` with `pullPolicy: Always`, the pull secret when there is one |
 
 The values files name the pull secret, never its contents.
 

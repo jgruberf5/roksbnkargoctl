@@ -113,7 +113,7 @@ While any BNK namespace remains, `uninstall` runs the post-uninstall check and w
 | Step | What happens |
 |---|---|
 | License secrets | Deletes the 34 CWC license secrets in `f5-utils` by exact name (`activationcontext`, `cwcstate`, `licensekey`, `telemetryreport`, …). Leftovers make the next install find a previous activation and not re-activate. Never a prefix sweep: the namespace may hold unrelated secrets |
-| Namespaces | Deletes `f5-bnk`, `f5-utils`, and `cert-manager` if roksbnkargoctl installed cert-manager |
+| Namespaces | Deletes `f5-bnk`, `f5-utils` (one namespace when they are the same), and `cert-manager` if roksbnkargoctl installed cert-manager (never in single-certificate mode). The single-certificate Secrets go with the BNK namespaces |
 | Finalizers | Waits up to 15 minutes (as rendered) for the namespaces to go. After 30 seconds, for `f5-bnk` and `f5-utils` only, removes F5 finalizers (`f5.com` / `f5net.com`) from objects still in the namespace, keeping every other finalizer. `cert-manager` is waited for but never stripped |
 | Report | Lists F5 CRDs (kept by design) and any cluster-scoped F5 objects or the ClusterIssuers `sample-issuer` / `selfsigned-cluster-issuer` that remain, as information |
 

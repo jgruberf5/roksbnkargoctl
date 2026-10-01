@@ -50,7 +50,7 @@ roksbnkargoctl uninstall   # delete the Application; uninstall checks run in ROK
    +-----------------------------------------------------------------------------+
    | ROKS cluster (OpenShift, 3 zones)                                           |
    |  roksbnkargoctl-check : check hooks, check-node-probe DaemonSet, sweep      |
-   |  cert-manager         : cert-manager                                        |
+   |  cert-manager         : cert-manager (not in single-certificate mode)       |
    |  f5-bnk / f5-utils    : FLO, CNEManifest, CNEInstance, License, TMM, ...    |
    |      nodes pull from FAR or the mirror; license with F5 or through the FLP  |
    +-----------------------------------------------------------------------------+
@@ -93,7 +93,8 @@ It then makes the workspace current. Details: [Workspaces and init](./05-workspa
 
 1. pulls the BNK `2.4.0` manifest from FAR or the mirror;
 2. pulls the f5-lifecycle-operator (FLO) chart the manifest names, and the cert-manager
-   chart (`v1.17.3` by default);
+   chart (`v1.17.3` by default) unless cert-manager is not installed
+   (`bnk.cert_manager.install: false`, or `bnk.certificates.mode: single`);
 3. reads the cluster's Kubernetes version (and, with a private-CA mirror, the
    `openshift-dns/node-resolver` image); `--no-cluster` skips this and uses defaults;
 4. resolves the `check` image to a digest;
@@ -149,6 +150,7 @@ These cannot live in Git, so `install` writes them directly into ROKS.
 | `far-secret` or `mirror-secret` (pull secret) | BNK and utils namespaces; with `mirror`, also `cert-manager` (if installed) and `roksbnkargoctl-check` | Credential |
 | `bnk-license-jwt` | `roksbnkargoctl-check` | `License.spec.jwt` is required and inline in the 2.4 CRD; a `License` in Git would leak the JWT. The `check license` hook builds the `License` from this Secret. |
 | `licenseserver-rootca` (disconnected only) | utils namespace | Produced by `flp up`, or read from `flp.external.root_ca_file` |
+| `bnk-single-cert-source` (single-certificate mode, issuer `ca` or `provided` only) | `roksbnkargoctl-check` | Your CA's or your certificate's private key, read from the files `bnk.certificates.*` names |
 | Namespace `roksbnkargoctl-check`, SA `check`, its ClusterRole and bindings | cluster | Must outlive the Application, so the PostDelete check can still run after Argo CD has deleted everything it owns |
 
 ### Cluster registration
@@ -190,10 +192,11 @@ positive.
 | −20 | Namespaces `f5-bnk`, `f5-utils`, `cert-manager` (`Delete=false`: `check post-uninstall` deletes them) |
 | −19 | ConfigMap `registry-ca` + DaemonSet `registry-ca-trust` (private-CA mirror only) |
 | −18 | DaemonSet `check-node-probe` (`check node-probe` on every node, host network); hook `check pre-install` (Sync) |
+| −10 | Hook `check cert` (Sync), single-certificate mode only: writes the one TLS Secret FLO mounts into every BNK namespace |
 | −6 | NetworkAttachmentDefinition `ens3-ipvlan-l2`; SCC binding for `flo-f5-lifecycle-operator`; Deployment `check-gateway-api-sweep` |
-| 0 | The cert-manager chart (`startupapicheck` disabled) and the FLO chart, from their Helm sources; both keep their CRDs on delete (`crds.keep`) |
-| 1 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it |
-| 2 / 3 / 4 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer` |
+| 0 | The cert-manager chart (`startupapicheck` disabled; not in single-certificate mode) and the FLO chart, from their Helm sources; both keep their CRDs on delete (`crds.keep`) |
+| 1 | Hook `check cert-manager-ready` (Sync): dry-run creates a ClusterIssuer until cert-manager's webhook admits it. Not in single-certificate mode |
+| 2 / 3 / 4 | ClusterIssuer `selfsigned-cluster-issuer` / Certificate `ext-ca` / ClusterIssuer `sample-issuer`. Not in single-certificate mode |
 | 6 | `CNEManifest bnk-2.4.0` |
 | 8 | `CNEInstance <bnk.namespace>-f5-cne-controller` (`f5-bnk-f5-cne-controller` by default) |
 | 10 | Hook `check license` (Sync): builds `License` from the JWT Secret, waits for `status.state=Active`, then for `CNEInstance Available=True` |
@@ -201,15 +204,21 @@ positive.
 | PreDelete | Hook `check pre-uninstall` (Argo CD 3.3 or later); `uninstall` also runs it itself, first |
 | PostDelete | Hook `check post-uninstall`; `uninstall` also runs it itself, after the delete |
 
-The namespace names shown are the defaults (`bnk.namespace`, `bnk.utils_namespace`). The
-`cert-manager` namespace and chart are absent when `bnk.cert_manager.install: false`.
+The namespace names shown are the defaults (`bnk.namespace`, `bnk.utils_namespace`). With
+`bnk.utils_namespace` equal to `bnk.namespace` there is only one BNK namespace
+([one namespace](./07-the-application.md#one-namespace)). The `cert-manager` namespace and
+chart are absent when `bnk.cert_manager.install: false`, and so are the readiness hook and
+the issuers in waves 1 to 4 when `bnk.certificates.mode: single`
+([single certificate](./07-the-application.md#single-certificate)), which runs `check cert` in
+wave −10 instead.
 
 Why the order is what it is:
 
 - **Nothing of BNK is applied if the cluster is not ready.** Wave −18 runs the node probe
   on every node and the pre-install check, which waits for fresh verdicts from all nodes.
   If any node cannot reach FAR or the mirror, F5 licensing or the license proxy, or the
-  cluster is too small, the sync stops before cert-manager.
+  cluster is too small, the sync stops before cert-manager (or, in single-certificate
+  mode, before the certificate is written).
 - **Deployment health is not webhook readiness.** cert-manager's webhook can lag its
   Deployment, so the issuers wait for `check cert-manager-ready` rather than for the
   chart to report healthy.
