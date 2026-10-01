@@ -93,6 +93,10 @@ type Output struct {
 	// Charts are the Application's Helm sources. Git holds each one's values
 	// file (ValuesFiles); the chart itself comes from the registry.
 	Charts []Chart
+	// Stale are out-of-band objects an earlier install may have written that
+	// these settings no longer use (identity only): install deletes them, so
+	// switching away from issuer ca does not leave the CA's key in ROKS.
+	Stale []Object
 }
 
 // Chart is a Helm chart the Application installs as a source of its own.
@@ -154,6 +158,10 @@ func Render(in Inputs) (*Output, error) {
 	bnkNS, utilsNS := c.BNK.Namespace, c.BNK.UtilsNamespace
 
 	out := &Output{}
+	if !singleCertSource(c) {
+		out.Stale = append(out.Stale, Object{"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]any{"name": SingleCertSourceSecret, "namespace": CheckNamespace}})
+	}
 	add := func(objs ...Object) { out.Git = append(out.Git, objs...) }
 
 	// Namespaces.

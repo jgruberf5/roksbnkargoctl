@@ -122,7 +122,11 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 	if err := initRemoteChecks(ctx, s); err != nil {
 		return err
 	}
+	old := s.cfg.Resolved
 	if err := resolveWorkspace(ctx, s); err != nil {
+		return err
+	}
+	if err := sameCluster(old, s.cfg.Resolved, name); err != nil {
 		return err
 	}
 	if err := s.save(); err != nil {
@@ -458,6 +462,24 @@ func checkGitAtInit(ctx context.Context, s *session) error {
 // created, which init cannot look up again. The transit gateway connection
 // install made was dropped before, so after `init --refresh` neither
 // `uninstall --detach-tgw` nor `workspaces delete` knew about it.
+// sameCluster keeps what install created on the cluster it was created
+// for. When the config now names another cluster, a record of an install
+// refuses the re-resolve (the layout guard would refuse a cluster with nothing
+// installed, and uninstall --detach-tgw or workspaces delete would remove the
+// old cluster's TGW connection); otherwise the carried fields are dropped.
+func sameCluster(old, r *config.Resolved, ws string) error {
+	if old == nil || old.ClusterID == "" || old.ClusterID == r.ClusterID {
+		return nil
+	}
+	if old.TrustedProfileID != "" || old.TGWConnectionCreatedID != "" || (old.InstalledLayout != "" && old.InstalledLayout != layoutNone) {
+		return fmt.Errorf("workspace %s records an install on cluster %s (%s), and the config now names cluster %s: "+
+			"uninstall it first, with the old config, or use another workspace for %s",
+			ws, old.ClusterName, old.ClusterID, r.ClusterName, r.ClusterName)
+	}
+	r.ArgoCDClusterServer, r.LastPublishedCommitSHA = "", ""
+	return nil
+}
+
 func carriedOver(old *config.Resolved) *config.Resolved {
 	r := &config.Resolved{}
 	if old != nil {

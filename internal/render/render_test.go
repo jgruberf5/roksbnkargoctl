@@ -684,3 +684,49 @@ func secretCreateGranted(direct []Object) bool {
 	}
 	return false
 }
+
+// Switching away from a source Secret (issuer ca or provided) has install
+// delete it, so the operator's CA key does not stay in ROKS; while an issuer
+// uses it, it is not marked stale.
+func TestSingleCertificateSourceIsPrunedWhenUnused(t *testing.T) {
+	stale := func(issuer string) bool {
+		c := baseConfig(config.ModeConnected, config.SourceFAR)
+		c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: issuer}
+		c.Defaults("ws")
+		for _, obj := range doRender(t, c, nil).Stale {
+			if obj.Kind() == "Secret" && obj.Name() == SingleCertSourceSecret && obj.Namespace() == CheckNamespace {
+				return true
+			}
+		}
+		return false
+	}
+	if !stale("self-signed") {
+		t.Error("self-signed: the source Secret is not deleted")
+	}
+	if stale("ca") || stale("provided") {
+		t.Error("the source Secret is deleted while the issuer uses it")
+	}
+}
+
+// The check-cert Job carries every setting, in the units the check reads
+// (hours), and the provided source Secret carries ca.crt.
+func TestSingleCertificateJobArgs(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: "provided",
+		ExtraDNSNames: []string{"bnk.example.com"}, IPAddresses: []string{"10.0.0.7"}, ValidityDays: 365, RenewBeforeDays: 30}
+	c.Defaults("ws")
+	out := doRender(t, c, func(in *Inputs) {
+		in.Secrets.SingleCertPEM, in.Secrets.SingleCertKey, in.Secrets.SingleCertCAPEM = "C", "K", "CA-PEM"
+	})
+	args := jobArgs(find(out.Git, "Job", "check-cert"))
+	for _, want := range []string{"--issuer=provided", "--dns=bnk.example.com", "--ip=10.0.0.7", "--validity=8760h",
+		"--renew-before=720h", "--namespace=" + c.BNK.Namespace + "," + c.BNK.UtilsNamespace, "--key-type=rsa", "--key-bits=4096"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("no %s in %v", want, args)
+		}
+	}
+	src := find(out.Direct, "Secret", SingleCertSourceSecret)
+	if d, _ := src["stringData"].(map[string]any); d["ca.crt"] != "CA-PEM" || d["tls.crt"] != "C" || d["tls.key"] != "K" {
+		t.Errorf("source Secret data %v", d)
+	}
+}

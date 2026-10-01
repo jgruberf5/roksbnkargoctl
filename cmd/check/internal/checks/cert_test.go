@@ -18,6 +18,7 @@ import (
 
 	"github.com/jgruberf5/roksbnkargoctl/cmd/check/internal/kube"
 	"github.com/jgruberf5/roksbnkargoctl/cmd/check/internal/kube/kubefake"
+	"github.com/jgruberf5/roksbnkargoctl/internal/singlecert"
 )
 
 var certNow = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -42,7 +43,7 @@ func secretTLS(t *testing.T, s *kubefake.Server, ns, name string) (*x509.Certifi
 	if err != nil {
 		t.Fatalf("%s/%s: %v", ns, name, err)
 	}
-	leaf, _, err := parsePair(m.cert, m.key)
+	leaf, _, _, err := singlecert.Pair(m.cert, m.key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,9 +189,9 @@ func TestSingleCertSignedByTheOperatorsCA(t *testing.T) {
 	// A certificate that is not a CA is refused.
 	notCA, notCAKey := operatorCA(t, false)
 	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "bnk-single-cert-source", map[string][]byte{"tls.crt": notCA, "tls.key": notCAKey}))
-	err := SingleCert(context.Background(), env, cfg, NewResult("cert", &tlog{t: t}))
-	if err == nil || !strings.Contains(err.Error(), "is not a CA") {
-		t.Errorf("non-CA source: %v", err)
+	res := runCert(t, s, env, cfg)
+	if !res.Failed() || !strings.Contains(strings.Join(res.Failures(), " "), "is not a CA") {
+		t.Errorf("non-CA source: %v", res.Failures())
 	}
 }
 
@@ -368,5 +369,186 @@ func TestSingleCertEqualisesTheNamespaces(t *testing.T) {
 	_, b, _ := secretTLS(t, s, "f5-utils", "bnk-single-cert")
 	if string(a.cert) != string(b.cert) || string(a.key) != string(b.key) {
 		t.Fatal("the namespaces were left holding different certificates")
+	}
+}
+
+// A Secret edited in place (kubectl edit keeps the annotation) holding another
+// CA's certificate is not kept and copied: it is reissued, and every namespace
+// ends with a certificate that verifies against its own ca.crt.
+func TestSingleCertReplacesAnEditedSecret(t *testing.T) {
+	s, env, _ := newFake(t)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk", "f5-utils")
+	runCert(t, s, env, cfg)
+	edited := s.Get("", "v1", "secrets", "f5-bnk", "bnk-single-cert")
+	ca, caKey := testCAKey(t)
+	m := issueFor(t, ca, caKey, SingleCertSANs(cfg.Namespaces, nil))
+	edited["data"].(map[string]any)["tls.crt"] = base64.StdEncoding.EncodeToString(m.cert)
+	edited["data"].(map[string]any)["tls.key"] = base64.StdEncoding.EncodeToString(m.key)
+	s.Put("", "v1", "secrets", edited)
+	res := runCert(t, s, env, cfg)
+	if !strings.Contains(strings.Join(passes(res), "\n"), "not signed by the current CA") {
+		t.Fatalf("an edited Secret was kept: %v", passes(res))
+	}
+	for _, ns := range cfg.Namespaces {
+		leaf, got, _ := secretTLS(t, s, ns, "bnk-single-cert")
+		if string(got.cert) == string(m.cert) {
+			t.Errorf("%s holds the edited certificate", ns)
+		}
+		if err := leaf.CheckSignatureFrom(mustCert(t, got.ca)); err != nil {
+			t.Errorf("%s: tls.crt does not verify against its ca.crt: %v", ns, err)
+		}
+	}
+}
+
+// issuer ca: a CA that has expired, or expires within the renewal window, is
+// refused with a failure and nothing is written: it would issue a certificate
+// already (or soon) invalid, and reissue it on every sync.
+func TestSingleCertRefusesAnExpiringCA(t *testing.T) {
+	for name, notAfter := range map[string]time.Time{"expired": certNow.Add(-24 * time.Hour), "within the window": certNow.Add(20 * 24 * time.Hour)} {
+		s, env, _ := newFake(t)
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "old-ca"},
+			NotBefore: certNow.Add(-365 * 24 * time.Hour), NotAfter: notAfter, IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": pemCert(der), "tls.key": pemKey(k)}))
+		cfg := certCfg(IssuerCA, "f5-bnk")
+		cfg.SourceSecret = "roksbnkargoctl-check/src"
+		res := runCert(t, s, env, cfg)
+		if !res.Failed() || !strings.Contains(strings.Join(res.Failures(), " "), "renewal window") {
+			t.Errorf("%s: %v", name, res.Failures())
+		}
+		if s.Get("", "v1", "secrets", "f5-bnk", "bnk-single-cert") != nil {
+			t.Errorf("%s: a certificate was written from a CA that cannot sign", name)
+		}
+	}
+}
+
+// self-signed: the kept CA is renewed within its renewal window, and the
+// certificate is reissued by the new CA.
+func TestSingleCertRenewsTheSelfSignedCA(t *testing.T) {
+	s, env, _ := newFake(t)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk")
+	cfg.Validity = 40 * 24 * time.Hour
+	runCert(t, s, env, cfg)
+	_, first, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+	later := certNow.Add(15 * 24 * time.Hour)
+	cfg.Now = func() time.Time { return later }
+	runCert(t, s, env, cfg)
+	leaf, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+	if string(m.ca) == string(first.ca) {
+		t.Fatal("the CA was not renewed within its window")
+	}
+	if err := leaf.CheckSignatureFrom(mustCert(t, m.ca)); err != nil {
+		t.Errorf("not issued by the renewed CA: %v", err)
+	}
+	kept := s.Get("", "v1", "secrets", "roksbnkargoctl-check", "bnk-single-cert-ca")
+	ks, _ := tlsFromSecret(kept, false)
+	if string(ks.cert) != string(m.ca) {
+		t.Error("the renewed CA is not the one kept for the next run")
+	}
+}
+
+// issuer ca: replacing the CA (a renewed or another one) reissues the
+// certificate, signed by the new CA.
+func TestSingleCertFollowsANewCA(t *testing.T) {
+	s, env, _ := newFake(t)
+	put := func() []byte {
+		c, k := operatorCA(t, true)
+		s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": c, "tls.key": k}))
+		return c
+	}
+	put()
+	cfg := certCfg(IssuerCA, "f5-bnk")
+	cfg.SourceSecret = "roksbnkargoctl-check/src"
+	runCert(t, s, env, cfg)
+	newCA := put()
+	runCert(t, s, env, cfg)
+	leaf, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+	if string(m.ca) != string(newCA) || leaf.CheckSignatureFrom(mustCert(t, newCA)) != nil {
+		t.Error("the certificate was not reissued by the new CA")
+	}
+}
+
+// A certificate never outlives its CA; a bad --ip is an error, not dropped.
+func TestSingleCertLimits(t *testing.T) {
+	s, env, _ := newFake(t)
+	caPEM, keyPEM := operatorCA(t, true) // five years
+	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": caPEM, "tls.key": keyPEM}))
+	cfg := certCfg(IssuerCA, "f5-bnk") // ten years asked
+	cfg.SourceSecret = "roksbnkargoctl-check/src"
+	runCert(t, s, env, cfg)
+	leaf, _, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+	if !leaf.NotAfter.Equal(mustCert(t, caPEM).NotAfter) {
+		t.Errorf("certificate valid until %s, CA until %s", leaf.NotAfter, mustCert(t, caPEM).NotAfter)
+	}
+	if k, ok := leaf.PublicKey.(*ecdsa.PublicKey); !ok || leaf.KeyUsage&x509.KeyUsageKeyEncipherment != 0 {
+		t.Errorf("ECDSA certificate with key usage %v (%T)", leaf.KeyUsage, k)
+	}
+	cfg.IPs = []string{"10.0.0.300"}
+	if err := SingleCert(context.Background(), env, cfg, NewResult("cert", &tlog{t: t})); err == nil || !strings.Contains(err.Error(), "not an IP address") {
+		t.Errorf("bad --ip: %v", err)
+	}
+}
+
+// A namespace the Secret cannot be written to fails the check: it is not
+// reported current.
+func TestSingleCertFailsWhenAWriteFails(t *testing.T) {
+	s, env, _ := newFake(t)
+	s.Hook = func(_ *kubefake.Server, r kubefake.Request) *kubefake.Reply {
+		if r.Method == "PATCH" && strings.Contains(r.Path, "/namespaces/f5-utils/secrets/") {
+			rep := kubefake.Status(403, "Forbidden", "no")
+			return &rep
+		}
+		return nil
+	}
+	res := runCert(t, s, env, certCfg(IssuerSelfSigned, "f5-bnk", "f5-utils"))
+	if !res.Failed() || !strings.Contains(strings.Join(res.Failures(), " "), "f5-utils/bnk-single-cert") {
+		t.Errorf("a failed write passed: %v", res.Failures())
+	}
+}
+
+// provided: a copy edited in place (annotation kept) is replaced by the
+// operator's certificate again.
+func TestSingleCertRestoresAnEditedProvidedCopy(t *testing.T) {
+	s, env, _ := newFake(t)
+	ca, caKey := testCAKey(t)
+	good := issueFor(t, ca, caKey, SingleCertSANs([]string{"f5-bnk"}, nil))
+	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "mine", map[string][]byte{"tls.crt": good.cert, "tls.key": good.key, "ca.crt": good.ca}))
+	cfg := certCfg(IssuerProvided, "f5-bnk")
+	cfg.SourceSecret = "roksbnkargoctl-check/mine"
+	runCert(t, s, env, cfg)
+	other := issueFor(t, ca, caKey, SingleCertSANs([]string{"f5-bnk"}, nil))
+	edited := s.Get("", "v1", "secrets", "f5-bnk", "bnk-single-cert")
+	edited["data"].(map[string]any)["tls.crt"] = base64.StdEncoding.EncodeToString(other.cert)
+	edited["data"].(map[string]any)["tls.key"] = base64.StdEncoding.EncodeToString(other.key)
+	s.Put("", "v1", "secrets", edited)
+	runCert(t, s, env, cfg)
+	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.cert) != string(good.cert) {
+		t.Error("an edited copy of the provided certificate was kept")
+	}
+}
+
+// issuer ca: a CA renewed with the same key (a new certificate, old key) still
+// reaches ca.crt; the leaf's signature alone would not tell.
+func TestSingleCertFollowsACARenewedWithTheSameKey(t *testing.T) {
+	s, env, _ := newFake(t)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caPEM := func(serial int64, years int) []byte {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "operator-ca"},
+			NotBefore: certNow.Add(-time.Hour), NotAfter: certNow.Add(time.Duration(years) * 365 * 24 * time.Hour),
+			IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		return pemCert(der)
+	}
+	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": caPEM(10, 2), "tls.key": pemKey(k)}))
+	cfg := certCfg(IssuerCA, "f5-bnk")
+	cfg.SourceSecret = "roksbnkargoctl-check/src"
+	runCert(t, s, env, cfg)
+	renewed := caPEM(11, 5)
+	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": renewed, "tls.key": pemKey(k)}))
+	runCert(t, s, env, cfg)
+	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.ca) != string(renewed) {
+		t.Error("ca.crt still holds the CA certificate before renewal")
 	}
 }

@@ -396,9 +396,12 @@ not in the middle of an install. The results go into the `resolved:` section of
 it attached the VPC itself, so that `uninstall --detach-tgw` removes only what `install`
 added) and `installed_layout` (the namespaces and certificate mode BNK was installed with,
 which `install` will not change and `uninstall` clears). Re-running `init` on an existing
-workspace, by interview or `--refresh`, keeps `trusted_profile_id`,
+workspace, by interview, `--refresh` or `--config-file`, keeps `trusted_profile_id`,
 `last_published_commit`, `tgw_connection_created_id` and `installed_layout` and
-re-resolves everything else; `init --config-file` starts the section afresh.
+re-resolves everything else (a `resolved:` section in the file itself is ignored). These
+belong to the cluster install created them on: when the config now names another cluster,
+`init` refuses while the workspace records an install there (uninstall it first, or use
+another workspace), and otherwise starts the section afresh.
 
 A command that needs the resolved facts on a workspace that has none stops:
 

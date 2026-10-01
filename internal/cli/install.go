@@ -148,6 +148,11 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 			return err
 		}
 	}
+	for _, obj := range o.Stale {
+		if err := k.Delete(ctx, obj); err != nil {
+			return err
+		}
+	}
 	p.ok("out-of-band objects applied")
 	if r.InstalledLayout != installLayout(c) {
 		r.InstalledLayout = installLayout(c)
@@ -809,7 +814,7 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if kerr != nil {
 		return kerr
 	}
-	r.InstalledLayout = "" // BNK is gone: the next install may choose another layout
+	r.InstalledLayout = layoutNone // BNK is gone: the next install may choose another layout
 
 	var errs []error
 	// Out-of-band objects, in reverse: Secrets, then RBAC, then the namespace.
@@ -900,8 +905,21 @@ func installLayout(c *config.Config) string {
 // installed with: moving to one namespace would delete the utilities
 // namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
 // and switching certificate modes swaps every component's certificates under it.
+// layoutNone records that uninstall removed BNK. An empty record is either a
+// workspace never installed or one installed before 0.7.0, which recorded no
+// layout.
+const layoutNone = "none"
+
 func checkLayout(r *config.Resolved, c *config.Config) error {
-	if r.InstalledLayout == "" || r.InstalledLayout == installLayout(c) {
+	if r.InstalledLayout == "" && r.TrustedProfileID != "" && c.BNK.Certificates.Mode != config.CertModeCertManager {
+		// Installed before 0.7.0 (the trusted profile is install's): with
+		// cert-manager, the only certificates there were; its namespaces are
+		// not known, so only the certificate switch is refused.
+		return fmt.Errorf("this workspace was installed before 0.7.0, with cert-manager, and config.yaml now asks for "+
+			"certificates=%s: changing it under a running install is not supported. Run `roksbnkargoctl uninstall`, "+
+			"then install again", c.BNK.Certificates.Mode)
+	}
+	if r.InstalledLayout == "" || r.InstalledLayout == layoutNone || r.InstalledLayout == installLayout(c) {
 		return nil
 	}
 	return fmt.Errorf("BNK is installed with %s, and config.yaml now asks for %s: changing either under a running "+

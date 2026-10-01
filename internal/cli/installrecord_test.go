@@ -249,3 +249,84 @@ git: {url: "https://git.example/r.git"}
 		t.Errorf("init -f lost the install record: %+v", r)
 	}
 }
+
+// init (with a file or --refresh after an edit) naming another cluster must not
+// carry one cluster's install record onto the other: it refuses while an
+// install is recorded, and starts afresh when none is.
+func TestInitRefusesToMoveAnInstallRecordToAnotherCluster(t *testing.T) {
+	home := isolate(t)
+	cfgYAML := `
+ibmcloud: {region: us-south}
+cluster: b
+transit_gateway: t
+cos: {instance: ci, bucket: b}
+argocd: {server: "https://a.example"}
+git: {url: "https://git.example/r.git"}
+`
+	resolveWorkspace = func(_ context.Context, s *session) error {
+		r := carriedOver(s.cfg.Resolved)
+		r.ClusterID, r.ClusterName, r.TransitGatewayID, r.TransitGatewayName = "cid-b", "b", "tid", "t"
+		s.cfg.Resolved = r
+		return nil
+	}
+	initRemoteChecks = func(context.Context, *session) error { return nil }
+	t.Cleanup(func() { resolveWorkspace, initRemoteChecks = resolve, defaultInitRemoteChecks })
+
+	writeWorkspace(t, home, "w", cfgYAML+`resolved: {cluster_id: cid-a, cluster_name: a, tgw_connection_created_id: conn-a,
+  installed_layout: "namespaces=f5-bnk,f5-utils certificates=cert-manager"}
+`)
+	out, err := runRoot(t, "init", "-w", "w", "--refresh")
+	if err == nil || !strings.Contains(err.Error(), "records an install on cluster a") {
+		t.Fatalf("moved an install record to another cluster: %v\n%s", err, out)
+	}
+	ws, _ := config.Open("w")
+	if c, _ := ws.LoadFile(); c.Resolved.TGWConnectionCreatedID != "conn-a" || c.Resolved.ClusterID != "cid-a" {
+		t.Errorf("the refused re-resolve changed the record: %+v", c.Resolved)
+	}
+
+	writeWorkspace(t, home, "w", cfgYAML+`resolved: {cluster_id: cid-a, cluster_name: a, last_published_commit: abc}
+`)
+	if out, err := runRoot(t, "init", "-w", "w", "--refresh"); err != nil {
+		t.Fatalf("nothing installed, yet refused: %v\n%s", err, out)
+	}
+	if c, _ := ws.LoadFile(); c.Resolved.ClusterID != "cid-b" || c.Resolved.LastPublishedCommitSHA != "" {
+		t.Errorf("not started afresh for the new cluster: %+v", c.Resolved)
+	}
+}
+
+// The guard as `install` runs it: refused before anything is touched (no IBM
+// Cloud, Argo CD or cluster call is reachable from this test), for a recorded
+// layout and for a workspace installed before 0.7.0 switching to single
+// certificates. A workspace uninstalled (none) or never installed passes the
+// guard (and then fails later, on the missing API key, which is the point).
+func TestInstallCommandRefusesAnotherLayout(t *testing.T) {
+	home := isolate(t)
+	t.Setenv("IBMCLOUD_API_KEY", "")
+	cfgYAML := `
+ibmcloud: {region: us-south}
+cluster: c
+transit_gateway: t
+cos: {instance: ci, bucket: b}
+argocd: {server: "https://a.example"}
+git: {url: "https://git.example/r.git"}
+`
+	rec := `resolved: {cluster_id: cid, cluster_name: c, vpc_id: v, vpc_crn: crn:vpc, transit_gateway_id: tid, transit_gateway_name: t`
+	for name, tc := range map[string]struct {
+		extra, record string
+		refused       bool
+	}{
+		"other layout":         {"", `, installed_layout: "namespaces=f5-bnk certificates=single"}`, true},
+		"pre-0.7.0 to single":  {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1}`, true},
+		"pre-0.7.0 unchanged":  {"", `, trusted_profile_id: Profile-1}`, false},
+		"uninstalled":          {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, installed_layout: none}`, false},
+		"never installed":      {"bnk: {certificates: {mode: single}}\n", `}`, false},
+		"same layout recorded": {"", `, installed_layout: "namespaces=f5-bnk,f5-utils certificates=cert-manager"}`, false},
+	} {
+		writeWorkspace(t, home, "w", cfgYAML+tc.extra+rec+tc.record+"\n")
+		_, err := runRoot(t, "install", "-w", "w")
+		refused := err != nil && strings.Contains(err.Error(), "under a running install is not supported")
+		if refused != tc.refused {
+			t.Errorf("%s: refused=%v, want %v (%v)", name, refused, tc.refused, err)
+		}
+	}
+}

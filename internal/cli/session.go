@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/jgruberf5/roksbnkargoctl/internal/far"
 	"github.com/jgruberf5/roksbnkargoctl/internal/ibm"
 	"github.com/jgruberf5/roksbnkargoctl/internal/kube"
+	"github.com/jgruberf5/roksbnkargoctl/internal/singlecert"
 )
 
 // noWorkspaceName stands in for the workspace name in the defaults that are
@@ -578,6 +580,23 @@ func (s *session) SingleCertSource() (cert, key, ca string, err error) {
 			return "", "", "", fmt.Errorf("bnk.certificates.%s: %w", f.key, err)
 		}
 		out[i] = string(b)
+	}
+	// Checked here, before anything is published: the sync hook checks the
+	// same again, but only after the commit is in Git.
+	now, renew := time.Now(), time.Duration(ct.RenewBeforeDays)*24*time.Hour
+	if ct.Issuer == "ca" {
+		if _, _, err := singlecert.CA([]byte(out[0]), []byte(out[1]), now, renew); err != nil {
+			return "", "", "", fmt.Errorf("bnk.certificates.ca_cert_file / ca_key_file: %w", err)
+		}
+	} else {
+		nss := []string{s.cfg.BNK.Namespace}
+		if s.cfg.BNK.UtilsNamespace != s.cfg.BNK.Namespace {
+			nss = append(nss, s.cfg.BNK.UtilsNamespace)
+		}
+		names := append(singlecert.SANs(nss, ct.ExtraDNSNames), ct.IPAddresses...)
+		if err := singlecert.Provided([]byte(out[0]), []byte(out[1]), []byte(out[2]), names, now); err != nil {
+			return "", "", "", fmt.Errorf("bnk.certificates.cert_file / key_file / ca_file: %w", err)
+		}
 	}
 	return out[0], out[1], out[2], nil
 }

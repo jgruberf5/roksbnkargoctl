@@ -24,7 +24,16 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
 - `install` records the namespaces and certificate mode it installed
   (`resolved.installed_layout`) and refuses a different layout until `uninstall`:
   switching in place deleted the utilities namespace, with CWC, RabbitMQ and the License,
-  under roksbnkctl on BNK 2.3. `init --refresh` keeps the record.
+  under roksbnkctl on BNK 2.3. `init` keeps the record, and refuses to carry it to a
+  config naming another cluster. A workspace installed before 0.7.0 (cert-manager only)
+  is refused a switch to single certificates.
+- Your CA or certificate files are checked on your host before anything is published:
+  a CA expiring within `renew_before_days` is refused (it issued an already-invalid
+  certificate and reissued it on every sync), and a provided certificate must chain to
+  its CA (through intermediates in `tls.crt`) and cover every name BNK uses.
+- Switching the issuer away from `ca` or `provided` deletes the source Secret, so your
+  CA's key does not stay in ROKS.
+
 - Verified live on OpenShift 4.21.31 with Argo CD 3.5.1 (connected, images from an
   Artifactory mirror), one namespace with a self-signed single certificate: install 6m11s,
   Synced and Healthy with nothing OutOfSync; only `f5-bnk` created, no cert-manager; 27 pods
@@ -32,6 +41,11 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   its CA (`CN=f5net` from `CN=f5net-ca`, valid ten years). A second install kept the same
   certificate; a layout change under the install was refused; uninstall left the cluster
   clean.
+
+### Fixed
+- `init --config-file` on an installed workspace dropped what `install` recorded (trusted
+  profile, TGW connection), so `uninstall` and `workspaces delete` no longer knew about
+  them. Present since `init --config-file` was added.
 
 ## [0.6.3] - 2026-09-30
 

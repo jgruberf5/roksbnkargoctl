@@ -338,12 +338,15 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    `<--state-namespace>/<--secret-name>-ca`, or generates one (subject from the flags, CN
    `--ca-common-name`) when it is missing, unreadable, not a CA, or within
    `--renew-before` of expiry. `ca`: reads `tls.crt` and `tls.key` from `--source-secret`
-   and requires a CA certificate whose key matches. `provided`: reads `tls.crt`, `tls.key`
+   and requires a CA certificate whose key matches, valid now and for longer than
+   `--renew-before` (`[FAIL] ca` otherwise, and nothing is written). `provided`: reads `tls.crt`, `tls.key`
    and `ca.crt` from `--source-secret` and verifies them (below).
-2. **Decides whether to keep the current Secret.** It keeps it when every namespace holds
-   the same certificate, its annotation `roksbnkargoctl.io/single-cert-spec` matches the
-   digest of the current settings, it is not within `--renew-before` of expiry, and it is
-   signed by the current CA. Otherwise it records why.
+2. **Decides whether to keep the current Secret.** It keeps it when, in every namespace,
+   the annotation `roksbnkargoctl.io/single-cert-spec` matches the digest of the current
+   settings, the key matches the certificate, it is not within `--renew-before` of expiry,
+   and it is signed by the current CA with that CA as `ca.crt` (`provided`: it is exactly
+   the source certificate). Otherwise it records why. A kept copy is written into every
+   namespace, so they end up identical.
 3. **Issues or copies.** A new certificate gets a fresh key, the subject from the flags with
    CN `--common-name`, F5's DNS names for every namespace plus `--dns`, the `--ip`
    addresses, server and client auth, and a lifetime of `--validity` capped at the CA's
@@ -352,21 +355,23 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    annotation.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
-match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time, or it does
-not cover every DNS name BNK uses; the message lists up to eight missing names and how many
-more.
+match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time (any
+certificates after the first in `tls.crt`, and any that are not self-signed in `ca.crt`,
+serve as intermediates), or it does not cover every DNS name and `--ip` address BNK uses;
+the message lists up to eight missing names and how many more.
 
 | Finding | Meaning |
 |---|---|
 | `[PASS] ca` | `self-signed CA <CN> kept (…)` or `generated (…)`, with its expiry |
 | `[PASS] certificate` | `kept: valid until <date>, issued for these settings`; `issued <CN>, valid until <date>, <n> DNS names (<why>)`; or `copying the provided certificate (<why>)` |
 | `[PASS] secret` | `<ns>/<name> is current`, one per namespace |
+| `[FAIL] ca` | issuer `ca`: the source is not a CA, its key does not match, or it is not valid for longer than `--renew-before` |
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
 
-`<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `the namespaces hold
-different certificates`, `it expires <date>, within the renewal window`, `it is not signed
-by the current CA`.
+`<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `<ns>/<name>: <parse
+error>`, `it expires <date>, within the renewal window`, `<ns>/<name> is not signed by the
+current CA`, `<ns>/<name> is not the provided certificate`.
 
 It needs `create` on Secrets, which the check ClusterRole carries only in this mode.
 

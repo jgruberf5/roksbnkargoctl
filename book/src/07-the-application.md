@@ -415,11 +415,16 @@ cert-manager's CRDs.
 | `bnk.certificates.issuer` | You supply | What `check cert` does |
 |---|---|---|
 | `self-signed` (default) | nothing | Generates a CA (CN `ca_common_name`, default `f5net-ca`) and keeps it in Secret `roksbnkargoctl-check/<secret_name>-ca`, so later syncs reuse it; replaces it when it is within `renew_before_days` of expiry. Issues the certificate from it |
-| `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`) or a key that does not match it. Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
-| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now, and that it covers every DNS name BNK uses (below); fails the hook, naming up to eight missing names, if not. Then copies it |
+| `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`), a key that does not match it, and a CA that is not yet valid or expires within `renew_before_days` (it would issue a certificate already, or soon, invalid). Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
+| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now, and that it covers every DNS name and IP address BNK uses (below); fails, naming up to eight missing names, if not. Then copies it. `tls.crt` may hold the full chain (the certificate, then its intermediates), and `ca.crt` the root alone |
 
-For `ca` and `provided`, `render` and `install` read the files on your host, and `install` writes them into Secret
-`roksbnkargoctl-check/bnk-single-cert-source`, out of band like the other Secrets. The
+Keys may be PKCS#1, SEC 1 (including `openssl ecparam -genkey` output) or PKCS#8;
+encrypted keys are refused. For `ca` and `provided`, `render` and `install` read the files
+on your host and make these checks there, before anything is published; the hook makes
+them again in the cluster. `install` writes the files into Secret
+`roksbnkargoctl-check/bnk-single-cert-source`, out of band like the other Secrets, and
+deletes that Secret when the issuer no longer uses it (switching to `self-signed` does not
+leave your CA's key in ROKS). The
 private key never goes to Git: the render refuses to publish if it appears in any Git object
 or values file, and `manifests/direct/` holds the Secret redacted. The `check pre-install`
 hook requires that Secret, so a missing one stops the sync at wave −18.
@@ -435,7 +440,7 @@ The defaults are F5's procedure:
 | Key | RSA 4096, written PKCS#1 (`RSA PRIVATE KEY`, as cert-manager writes it); `ecdsa` is P-256, written SEC 1 | `key_type`, `key_bits` (at least 2048) |
 | Lifetime | 3650 days, for the certificate and a generated CA | `validity_days` |
 | Renewal | reissued on a sync within 30 days of expiry | `renew_before_days` (less than `validity_days`) |
-| Key usage | digital signature, key encipherment; extended key usage server and client auth (one certificate serves both ends of every mTLS connection) | — |
+| Key usage | digital signature, plus key encipherment for an RSA key; extended key usage server and client auth (one certificate serves both ends of every mTLS connection) | — |
 | DNS names | F5's list of BNK service names (72 entries, such as `f5-tmm`, `otel-collector-svc.<ns>`, `rabbitmq-server.<ns>`, `f5-spk-cwc.<ns>.svc`), each `<ns>` form expanded for every BNK namespace, duplicates removed; then `extra_dns_names` | `extra_dns_names` |
 | IP addresses | none | `ip_addresses` |
 
@@ -447,17 +452,19 @@ component runs in. FLO mounts it in place of the cert-manager Secrets.
 
 `check cert` runs on every sync and is idempotent. Each Secret carries the annotation
 `roksbnkargoctl.io/single-cert-spec`, a digest of the settings it was issued for (issuer,
-subject, DNS names, IP addresses, key type and size, lifetime, and the CA or the provided
-certificate). A sync keeps the Secret when every namespace holds the same certificate, the
-digest matches, it is not within `renew_before_days` of expiry, and it is signed by the
-current CA. Otherwise it issues a new one (or copies the provided one) and writes it
-everywhere:
+subject, DNS names, IP addresses, key type and size, lifetime, and the provided
+certificate). A sync keeps the Secret when, in every namespace, the digest matches, the key
+matches the certificate, it is not within `renew_before_days` of expiry, and it is signed
+by the current CA with that CA as `ca.crt` (with `provided`: it is exactly your
+certificate). The first namespace's copy is then written into every namespace, so they
+always end up identical. Otherwise it issues a new one (or copies the provided one) and
+writes it everywhere:
 
 | Reissued when | Example |
 |---|---|
 | a namespace lacks the Secret | first install, or someone deleted it |
 | the settings changed | a new `extra_dns_names` entry, a new CA file, a new provided certificate |
-| the namespaces disagree | one Secret edited by hand |
+| a Secret was edited | `kubectl edit` keeps the annotation, but the certificate is no longer signed by the current CA |
 | it is close to expiry | within `renew_before_days` |
 | the CA changed | the self-signed CA was replaced near its own expiry |
 
@@ -507,10 +514,15 @@ run in the utilities namespace, and moving them under a running install is not s
 FLO does. With roksbnkctl on BNK 2.3, switching to one namespace deleted the utilities
 namespace with those components in it. Switching the certificate mode would swap every
 component's certificates under it.
-`uninstall` clears the record, so the next `install` may choose either layout. `init
---refresh` and a re-run of the interview keep it; `init --config-file` starts `resolved:`
-afresh and so forgets it. A workspace installed by a release before 0.7.0 has no record
-until its next `install`.
+`uninstall` records `installed_layout: none`, so the next `install` may choose either
+layout. `init`, by interview, `--refresh` or `--config-file`, keeps the record, and refuses
+to carry it to a config that names another cluster.
+
+A workspace installed by a release before 0.7.0 has no record. Those releases had only
+cert-manager, so `install` refuses a switch to `certificates=single` on a workspace that
+records a trusted profile but no layout; their namespaces are not known, so a namespace
+change is not caught until the next `install` records them. Run `uninstall` first if you
+are changing `bnk.utils_namespace` on such a workspace.
 
 ## How the Helm charts are installed
 
