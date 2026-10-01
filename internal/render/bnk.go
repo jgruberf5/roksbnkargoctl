@@ -131,6 +131,7 @@ type CNEInstanceParams struct {
 	TMMReplicas      int
 	StorageClass     string
 	Version          string
+	CertManager      bool // spec.certificate names the cert-manager issuer; absent in single-certificate mode
 }
 
 // CNEInstanceName is the CNEInstance's name in namespace ns. The check binary
@@ -163,7 +164,6 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 			"loggingSubsystem": map[string]any{"enabled": true},
 			"metricSubsystem":  map[string]any{"enabled": true},
 		},
-		"certificate":    map[string]any{"clusterIssuer": ClusterIssuerCA},
 		"deploymentSize": "Tiny",
 		"registry": map[string]any{
 			"uri": p.ImageHost, "imagePullSecrets": pullSecrets, "imagePullPolicy": "Always",
@@ -222,6 +222,10 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 	if p.StorageClass != "" {
 		spec["storageClassName"] = p.StorageClass
 	}
+	if p.CertManager {
+		// Single-certificate mode leaves it out: FLO ignores it there (F5).
+		spec["certificate"] = map[string]any{"clusterIssuer": ClusterIssuerCA}
+	}
 	o := Object{"apiVersion": "k8s.f5.com/v1", "kind": "CNEInstance",
 		"metadata": map[string]any{
 			"name": CNEInstanceName(p.Namespace), "namespace": p.Namespace,
@@ -244,10 +248,16 @@ func floValues(c *config.Config, pullSecret string) map[string]any {
 		ips = []any{map[string]any{"name": pullSecret}}
 	}
 	repo := c.ImageHost() + "/images"
+	certmgr := map[string]any{"clusterIssuer": ClusterIssuerCA}
+	if !c.UsesCertManager() {
+		// F5's single certificate: no cert-manager Certificates; FLO mounts
+		// this one Secret in their place in every component.
+		certmgr = map[string]any{"enabled": false, "secretName": c.BNK.Certificates.SecretName}
+	}
 	return map[string]any{
 		"global": map[string]any{
 			"imagePullSecrets": ips,
-			"certmgr":          map[string]any{"clusterIssuer": ClusterIssuerCA},
+			"certmgr":          certmgr,
 		},
 		"skipCertMgr": true,
 		// Explicit, though they are the chart's defaults: uninstall relies on

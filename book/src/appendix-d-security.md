@@ -20,7 +20,8 @@ ever published to it**:
   CRD requires it **inline** in `spec.jwt`. It is written to a Secret instead, and
   the `check license` hook builds the License inside the cluster.
 - As a last line of defence, the render **refuses to publish** if the registry
-  password or the subscription JWT appears anywhere in any Git object or values file:
+  password, the subscription JWT or (single-certificate mode) your certificate's or CA's
+  private key appears anywhere in any Git object or values file:
 
   ```text
   render: refusing to publish: the subscription JWT appears in <Kind> <namespace>/<name>
@@ -42,6 +43,8 @@ You can confirm the whole of what Git will contain before anything is published:
 | FAR auth key | MyF5 | read from COS (or `cos.local_far_auth_file`) at run time | pull Secret `far-secret` (`kubernetes.io/dockerconfigjson`) | COS object `f5-far-auth-key.tgz`; Argo CD repository credential for FAR's chart registry (`install` registers it) |
 | Subscription JWT | MyF5 | read from COS (or `cos.local_jwt_file`) at run time | Secret `roksbnkargoctl-check/bnk-license-jwt`; `License.spec.jwt` (built in-cluster) | COS object `subscription.jwt` |
 | FLP root CA and key | `flp up` | the state file: `flp-outputs.json` in the workspace, or `./<name>-flp.json` without one (mode 0600; holds the CA private key so a re-run reuses the CA). The certificate alone may also be in the `--ca-out` file | Secret `f5-utils/licenseserver-rootca` (certificate only) | the proxy VSI |
+| Single-certificate CA or certificate key (issuer `ca` or `provided`) | you | the files `bnk.certificates.ca_key_file` / `key_file` name (yours); read at `install` | Secret `roksbnkargoctl-check/bnk-single-cert-source`; the issued key in Secret `<secret_name>` in every BNK namespace | — |
+| Single-certificate generated CA key (issuer `self-signed`) | `check cert`, in the cluster | — | Secret `roksbnkargoctl-check/<secret_name>-ca`; the issued key in Secret `<secret_name>` in every BNK namespace | — |
 | Argo CD cluster credential | `install` | — | Secret `kube-system/roksbnkargoctl-argocd-manager-token` | Argo CD's cluster Secret on the hub |
 | Test hub admin password | `argocd up` | `argocd-hub.json` (mode 0600) | — | the test hub |
 | BNK Forge password | you | environment only (`BNK_FORGE_PASSWORD`) or a no-echo prompt; never a flag, never written | — | — |
@@ -104,6 +107,7 @@ and narrow elsewhere:
 | `admissionregistration.k8s.io` | `validatingadmissionpolicies`, `validatingadmissionpolicybindings`, `validatingwebhookconfigurations` | get, list, delete | gateway-api-sweep, F5 webhook sweep |
 | `cert-manager.io` | `certificates`, `clusterissuers`, `issuers` | get, list, watch | |
 | `cert-manager.io` | `clusterissuers` | create | cert-manager-ready's dry run (a dry-run create is authorized as a create; nothing is created) |
+| core | `secrets` | create | single-certificate mode only: `check cert` writes the certificate Secret into each BNK namespace (and keeps a generated CA); patch alone cannot create one |
 | `k8s.f5.com`, `k8s.f5net.com`, `gateway.k8s.f5.com`, `fic.f5.com`, `metrics.f5.com` | `*` | get, list, watch, create, update, patch, delete | license, pre-/post-uninstall |
 
 The ServiceAccount is also bound to OpenShift's **privileged** SCC

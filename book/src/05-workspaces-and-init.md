@@ -221,15 +221,46 @@ transit gateways. Press Enter to accept the value in brackets. In order:
    existing license proxy (then its URL and root CA file) instead of `flp up`;
 4. the image source (`far` or `mirror`); for `mirror`, its host, repository prefix,
    username and CA file;
-5. TMM replicas and the StorageClass;
-6. the COS instance, bucket, bucket region and the two object names;
-7. Argo CD, starting with `Use an existing Argo CD instance (3.3 or later)?` (below),
+5. the install's shape ([below](#namespaces-and-certificates)): one namespace or two, and
+   how BNK's components get their certificates;
+6. TMM replicas and the StorageClass;
+7. the COS instance, bucket, bucket region and the two object names;
+8. Argo CD, starting with `Use an existing Argo CD instance (3.3 or later)?` (below),
    then, in either case, the endpoint Argo CD uses to reach ROKS (`private` or `public`);
-8. the Git repository, branch and path; then a username for an `https://` URL, or an SSH
+9. the Git repository, branch and path; then a username for an `https://` URL, or an SSH
    key file and optional known_hosts file otherwise.
 
 If the API key is not set, the interview continues without account lookups and asks for
 names instead.
+
+#### Namespaces and certificates
+
+Two questions fix the shape of the install. The first:
+
+```text
+Install every BNK component into one namespace (f5-bnk), with no separate utilities namespace? (y/n) [n]:
+```
+
+`y` sets `bnk.utils_namespace` to `bnk.namespace`, so every BNK component runs in that one
+namespace; `n` keeps the separate utilities namespace (`f5-utils` by default, and back to
+`f5-utils` if the workspace was set to one namespace). The second offers the certificate
+mode:
+
+```text
+Certificates for BNK's components (cert-manager: installed and managed by cert-manager; single: F5's single certificate, no cert-manager):
+  * 1) cert-manager
+    2) single
+```
+
+For `single` it asks who issues the certificate (`self-signed`, `ca` or `provided`) and,
+for `ca`, the CA certificate and key files, or, for `provided`, the certificate, key and CA
+files. `render` and `install` read the files; `install` writes them into the cluster, never to Git. The
+subject, names, key and lifetime keep F5's defaults unless you set them in a config file.
+[One namespace](./07-the-application.md#one-namespace) and
+[Single certificate](./07-the-application.md#single-certificate) describe both in full.
+
+Neither can be changed while BNK is installed: `install` refuses a layout different from
+the one it recorded, until `uninstall`.
 
 #### Use an existing Argo CD instance?
 
@@ -261,8 +292,9 @@ Running `init` again on an existing workspace resumes the interview with the sav
 answers as the defaults.
 
 The interview covers the common settings. Some keys, such as `cos.local_far_auth_file`,
-`cos.local_jwt_file`, `argocd.ca_file`, `argocd.application`, `bnk.cert_manager` or
-`check.image`, are only set through a config file (or overridden for a run, below);
+`cos.local_jwt_file`, `argocd.ca_file`, `argocd.application`, `bnk.cert_manager`, the
+subject, name and key settings of `bnk.certificates`, or `check.image`, are only set
+through a config file (or overridden for a run, below);
 [Appendix A](./appendix-a-config.md) lists every key.
 
 ### From a config file
@@ -302,7 +334,12 @@ Validation also rejects a `bnk.version` other than `2.4.0`, `bnk.tmm_replicas` b
 a `registry.source` other than `far` or `mirror`, `registry.source: mirror` without
 `registry.mirror.host` (or with a scheme in it), `flp.external.url` without
 `flp.external.root_ca_file`, an `argocd.cluster_endpoint` other than `private` or
-`public`, and a `git.path` that is absolute or contains `..`.
+`public`, and a `git.path` that is absolute or contains `..`. In
+`bnk.certificates` it rejects a `mode` other than `cert-manager` or `single` and, in
+`single` mode, an `issuer` other than `self-signed`, `ca` or `provided`, issuer `ca` without both `ca_cert_file` and
+`ca_key_file`, issuer `provided` without all of `cert_file`, `key_file` and `ca_file`, a
+`key_type` other than `rsa` or `ecdsa`, `key_bits` below 2048, and `renew_before_days` not
+less than `validity_days`.
 
 ### The checks init makes before it saves
 
@@ -355,11 +392,16 @@ not in the middle of an install. The results go into the `resolved:` section of
 | The COS instance and bucket (unless `cos.local_far_auth_file` is set) | Both `cos.far_auth_object` and `cos.jwt_object` exist in the bucket | `cos_instance_crn` |
 
 `install` adds to the same section: `trusted_profile_id`, `last_published_commit`,
-`node_resolver_image` (private-CA mirror only) and `tgw_connection_created_id` (only when
+`node_resolver_image` (private-CA mirror only), `tgw_connection_created_id` (only when
 it attached the VPC itself, so that `uninstall --detach-tgw` removes only what `install`
-added). Re-running `init` on an existing workspace, by interview or `--refresh`, keeps
-`trusted_profile_id` and `last_published_commit` and re-resolves everything else;
-`init --config-file` starts the section afresh.
+added) and `installed_layout` (the namespaces and certificate mode BNK was installed with,
+which `install` will not change and `uninstall` clears). Re-running `init` on an existing
+workspace, by interview, `--refresh` or `--config-file`, keeps `trusted_profile_id`,
+`last_published_commit`, `tgw_connection_created_id` and `installed_layout` and
+re-resolves everything else (a `resolved:` section in the file itself is ignored). These
+belong to the cluster install created them on: when the config now names another cluster,
+`init` refuses while the workspace records an install there (uninstall it first, or use
+another workspace), and otherwise starts the section afresh.
 
 A command that needs the resolved facts on a workspace that has none stops:
 

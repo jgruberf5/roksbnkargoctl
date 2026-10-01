@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +35,7 @@ modes:
   node-probe         DNS/TCP/TLS from this node; publishes a pod annotation (DaemonSet)
   gateway-api-sweep  removes OpenShift's Gateway API CRD admission policy until the CRDs exist (Deployment)
   cert-manager-ready waits until cert-manager's webhook admits a ClusterIssuer (Sync hook, wave 1)
+  cert               single-certificate mode: writes the one TLS Secret FLO mounts into every BNK namespace (Sync hook)
   license            builds License from the JWT Secret; waits Active, then CNEInstance Available (Sync hook, wave 10)
   post-install       verifies FLO, CNEInstance, License, TMM, pod health (PostSync hook)
   pre-uninstall      drains F5 CRs while FLO runs; CNEInstance last (PreDelete hook)
@@ -122,6 +124,7 @@ var modes = map[string]modeFunc{
 	"gateway-api-sweep":  gatewaySweep,
 	"license":            license,
 	"cert-manager-ready": certManagerReady,
+	"cert":               singleCert,
 	"post-install":       postInstall,
 	"pre-uninstall":      preUninstall,
 	"post-uninstall":     postUninstall,
@@ -289,6 +292,46 @@ func certManagerReady(fs *flag.FlagSet) func(context.Context, *checks.Env, *chec
 	interval := fs.Duration("interval", 5*time.Second, "time between dry-run attempts")
 	return func(ctx context.Context, env *checks.Env, res *checks.Result) (bool, error) {
 		return false, checks.CertManagerReady(ctx, env, checks.CertManagerReadyConfig{Interval: *interval, Timeout: *timeout}, res)
+	}
+}
+
+func singleCert(fs *flag.FlagSet) func(context.Context, *checks.Env, *checks.Result) (bool, error) {
+	issuer := fs.String("issuer", checks.IssuerSelfSigned, "self-signed (a CA generated and kept here) | ca (--source-secret holds your CA's tls.crt and tls.key) | provided (--source-secret holds your tls.crt, tls.key and ca.crt)")
+	secret := fs.String("secret-name", "bnk-single-cert", "the Secret FLO mounts (global.certmgr.secretName)")
+	nss := &listFlag{}
+	fs.Var(nss, "namespace", "a BNK namespace to write the Secret into (repeatable, or comma-separated)")
+	source := fs.String("source-secret", "", "namespace/name of the CA (ca) or the certificate (provided)")
+	state := fs.String("state-namespace", envOr([]string{"POD_NAMESPACE"}, kube.PodNamespace()), "where a self-signed CA is kept (default: this pod's)")
+	cn := fs.String("common-name", "f5net", "the certificate's common name")
+	caCN := fs.String("ca-common-name", "f5net-ca", "a generated CA's common name")
+	c := fs.String("country", "US", "subject C")
+	st := fs.String("state", "Washington", "subject ST")
+	l := fs.String("locality", "Seattle", "subject L")
+	o := fs.String("organization", "F5 Networks", "subject O")
+	ou := fs.String("organizational-unit", "PD", "subject OU")
+	dns := &listFlag{}
+	fs.Var(dns, "dns", "an extra DNS name (repeatable, or comma-separated)")
+	ips := &listFlag{}
+	fs.Var(ips, "ip", "an IP address SAN (repeatable, or comma-separated)")
+	keyType := fs.String("key-type", "rsa", "rsa | ecdsa (P-256)")
+	bits := fs.Int("key-bits", 4096, "RSA key size")
+	validity := fs.Duration("validity", 3650*24*time.Hour, "lifetime of an issued certificate (and a generated CA)")
+	renew := fs.Duration("renew-before", 30*24*time.Hour, "reissue when this close to expiry")
+	return func(ctx context.Context, env *checks.Env, res *checks.Result) (bool, error) {
+		subj := pkix.Name{}
+		for _, f := range []struct {
+			v   string
+			dst *[]string
+		}{{*c, &subj.Country}, {*st, &subj.Province}, {*l, &subj.Locality}, {*o, &subj.Organization}, {*ou, &subj.OrganizationalUnit}} {
+			if f.v != "" {
+				*f.dst = []string{f.v}
+			}
+		}
+		return false, checks.SingleCert(ctx, env, checks.SingleCertConfig{
+			Issuer: *issuer, SecretName: *secret, Namespaces: nss.vals, SourceSecret: *source, StateNS: *state,
+			Subject: subj, CommonName: *cn, CACommonName: *caCN, ExtraDNS: dns.vals, IPs: ips.vals,
+			KeyType: *keyType, KeyBits: *bits, Validity: *validity, RenewBefore: *renew,
+		}, res)
 	}
 }
 

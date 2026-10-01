@@ -246,7 +246,10 @@ func caTrust(mirrorHost, caPEM, nodeImage string, wave int) []Object {
 // checkRBAC is created out of band with the check namespace. It is broad on the
 // F5 API groups (the uninstall checks delete whatever F5 CRs exist) and narrow
 // elsewhere.
-func checkRBAC() []Object {
+// checkRBAC is the check's namespace, ServiceAccount and cluster RBAC.
+// singleCert adds creating Secrets: the cert mode writes the single
+// certificate into the BNK namespaces (patch alone cannot create one).
+func checkRBAC(singleCert bool) []Object {
 	nsObj := Object{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": CheckNamespace,
 		"labels": map[string]any{LabelManagedBy: ManagedByValue}}}
 	sa := Object{"apiVersion": "v1", "kind": "ServiceAccount",
@@ -276,6 +279,9 @@ func checkRBAC() []Object {
 			rule([]string{"cert-manager.io"}, []string{"clusterissuers"}, []string{"create"}),
 			rule([]string{"k8s.f5.com", "k8s.f5net.com", "gateway.k8s.f5.com", "fic.f5.com", "metrics.f5.com"}, []string{"*"}, all),
 		}}
+	if singleCert {
+		role["rules"] = append(role["rules"].([]any), rule([]string{""}, []string{"secrets"}, []string{"create"}))
+	}
 	bind := Object{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
 		"metadata": map[string]any{"name": CheckClusterRole},
 		"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": CheckClusterRole},

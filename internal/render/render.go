@@ -38,6 +38,7 @@ const (
 	WaveNamespaces   = -20
 	WaveCATrust      = -19
 	WavePreInstall   = -18
+	WaveCert         = -10 // single-certificate mode: the Secret FLO mounts, before FLO
 	WaveNetwork      = -6
 	WaveSweep        = -6
 	WaveCharts       = 0 // cert-manager and FLO, from their Helm sources
@@ -56,6 +57,12 @@ type Secrets struct {
 	PullPassword string
 	JWT          string
 	FLPCAPEM     string
+	// Single-certificate mode, issuer ca (CertPEM, KeyPEM: your CA) or
+	// provided (CertPEM, KeyPEM, CAPEM: your certificate). Written into the
+	// check namespace as SingleCertSourceSecret; never to Git.
+	SingleCertPEM   string
+	SingleCertKey   string
+	SingleCertCAPEM string
 }
 
 // Inputs is everything a render needs. The caller does the network I/O.
@@ -86,6 +93,10 @@ type Output struct {
 	// Charts are the Application's Helm sources. Git holds each one's values
 	// file (ValuesFiles); the chart itself comes from the registry.
 	Charts []Chart
+	// Stale are out-of-band objects an earlier install may have written that
+	// these settings no longer use (identity only): install deletes them, so
+	// switching away from issuer ca does not leave the CA's key in ROKS.
+	Stale []Object
 }
 
 // Chart is a Helm chart the Application installs as a source of its own.
@@ -147,6 +158,10 @@ func Render(in Inputs) (*Output, error) {
 	bnkNS, utilsNS := c.BNK.Namespace, c.BNK.UtilsNamespace
 
 	out := &Output{}
+	if !singleCertSource(c) {
+		out.Stale = append(out.Stale, Object{"apiVersion": "v1", "kind": "Secret",
+			"metadata": map[string]any{"name": SingleCertSourceSecret, "namespace": CheckNamespace}})
+	}
 	add := func(objs ...Object) { out.Git = append(out.Git, objs...) }
 
 	// Namespaces.
@@ -181,6 +196,9 @@ func Render(in Inputs) (*Output, error) {
 	if c.BNK.Mode == config.ModeDisconnected {
 		cp.RequireSecrets = append(cp.RequireSecrets, utilsNS+"/"+FLPRootCASecret)
 	}
+	if singleCertSource(c) {
+		cp.RequireSecrets = append(cp.RequireSecrets, CheckNamespace+"/"+SingleCertSourceSecret)
+	}
 	if in.MirrorCAPEM != "" {
 		add(caTrust(c.Registry.Mirror.Host, in.MirrorCAPEM, in.NodeResolverImage, WaveCATrust)...)
 	}
@@ -199,10 +217,16 @@ func Render(in Inputs) (*Output, error) {
 		}
 		out.Charts = append(out.Charts, ch)
 	}
-	// Deployment health is not webhook readiness: gate the issuers on the
-	// webhook actually admitting one (a reinstall raced it live).
-	add(cp.hookJob("cert-manager-ready", "Sync", WaveCMReady, []string{"--timeout=10m"}, 12*60))
-	add(certChain(WaveIssuers)...)
+	if c.UsesCertManager() {
+		// Deployment health is not webhook readiness: gate the issuers on the
+		// webhook actually admitting one (a reinstall raced it live).
+		add(cp.hookJob("cert-manager-ready", "Sync", WaveCMReady, []string{"--timeout=10m"}, 12*60))
+		add(certChain(WaveIssuers)...)
+	} else {
+		// Single certificate: the one Secret FLO mounts everywhere, in every
+		// BNK namespace before FLO starts.
+		add(cp.hookJob("cert", "Sync", WaveCert, singleCertArgs(c), 10*60))
+	}
 
 	// Networking + FLO.
 	add(nad(bnkNS, c.BNK.NADAddress, WaveNetwork))
@@ -218,6 +242,7 @@ func Render(in Inputs) (*Output, error) {
 		Namespace: bnkNS, ImageHost: c.ImageHost(), PullSecret: pullSecret,
 		Region: c.IBMCloud.Region, VPCName: c.Resolved.VPCName, TrustedProfileID: c.Resolved.TrustedProfileID,
 		TMMReplicas: c.BNK.TMMReplicas, StorageClass: c.BNK.StorageClass, Version: c.BNK.Version,
+		CertManager: c.UsesCertManager(),
 	}, WaveCNEInstance))
 
 	// License + lifecycle checks.
@@ -248,7 +273,7 @@ func Render(in Inputs) (*Output, error) {
 	out.Git = git
 
 	// Direct objects.
-	out.Direct = append(checkRBAC(), out.Direct...)
+	out.Direct = append(checkRBAC(!c.UsesCertManager()), out.Direct...)
 	out.Direct = append(out.Direct, directNamespaces(nsNames)...)
 	out.Direct = append(out.Direct, secrets(c, in.Secrets, pullSecret)...)
 	for _, o := range out.Direct {
@@ -326,6 +351,15 @@ func pullSecretNamespaces(c *config.Config) []string {
 
 func secrets(c *config.Config, s Secrets, pullSecret string) []Object {
 	var out []Object
+	if singleCertSource(c) && s.SingleCertPEM != "" {
+		data := map[string]any{"tls.crt": s.SingleCertPEM, "tls.key": s.SingleCertKey}
+		if s.SingleCertCAPEM != "" {
+			data["ca.crt"] = s.SingleCertCAPEM
+		}
+		out = append(out, Object{"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+			"metadata":   map[string]any{"name": SingleCertSourceSecret, "namespace": CheckNamespace},
+			"stringData": data})
+	}
 	if pullSecret != "" {
 		dcj, _ := far.DockerConfigJSON(s.PullHost, s.PullUsername, s.PullPassword)
 		for _, n := range pullSecretNamespaces(c) {
@@ -349,7 +383,7 @@ func secrets(c *config.Config, s Secrets, pullSecret string) []Object {
 
 // checkNoSecretsInFiles is checkNoSecretsInGit for the charts' values files.
 func checkNoSecretsInFiles(files map[string][]byte, s Secrets) error {
-	vals := map[string]string{"registry password": s.PullPassword, "subscription JWT": s.JWT}
+	vals := map[string]string{"registry password": s.PullPassword, "subscription JWT": s.JWT, "single-certificate private key": s.SingleCertKey}
 	for name, b := range files {
 		for what, v := range vals {
 			if len(v) >= 8 && strings.Contains(string(b), v) {
@@ -364,7 +398,7 @@ func checkNoSecretsInFiles(files map[string][]byte, s Secrets) error {
 // values in Git": it fails the render if any secret value appears anywhere in a
 // Git object.
 func checkNoSecretsInGit(git []Object, s Secrets) error {
-	vals := map[string]string{"registry password": s.PullPassword, "subscription JWT": s.JWT}
+	vals := map[string]string{"registry password": s.PullPassword, "subscription JWT": s.JWT, "single-certificate private key": s.SingleCertKey}
 	for _, o := range git {
 		b, err := o.YAML()
 		if err != nil {
@@ -680,4 +714,43 @@ func licenseDeadlineSeconds() int {
 		total += w.d
 	}
 	return int(total.Seconds())
+}
+
+// SingleCertSourceSecret holds, in the check namespace, the CA (issuer ca) or
+// the certificate (issuer provided) the single-certificate Job reads.
+const SingleCertSourceSecret = "bnk-single-cert-source"
+
+// singleCertSource reports whether single-certificate mode reads operator
+// material (issuer ca or provided) rather than generating a CA.
+func singleCertSource(c *config.Config) bool {
+	i := c.BNK.Certificates.Issuer
+	return !c.UsesCertManager() && (i == "ca" || i == "provided")
+}
+
+// singleCertArgs are the `check cert` flags for the configured certificate.
+func singleCertArgs(c *config.Config) []string {
+	ct := c.BNK.Certificates
+	nss := c.BNK.Namespace
+	if c.BNK.UtilsNamespace != c.BNK.Namespace {
+		nss += "," + c.BNK.UtilsNamespace
+	}
+	args := []string{
+		"--issuer=" + ct.Issuer,
+		"--secret-name=" + ct.SecretName, "--namespace=" + nss,
+		"--common-name=" + ct.CommonName, "--ca-common-name=" + ct.CACommonName,
+		"--organization=" + ct.Organization, "--organizational-unit=" + ct.OrganizationalUnit,
+		"--country=" + ct.Country, "--state=" + ct.State, "--locality=" + ct.Locality,
+		"--key-type=" + ct.KeyType, fmt.Sprintf("--key-bits=%d", ct.KeyBits),
+		fmt.Sprintf("--validity=%dh", ct.ValidityDays*24), fmt.Sprintf("--renew-before=%dh", ct.RenewBeforeDays*24),
+	}
+	if singleCertSource(c) {
+		args = append(args, "--source-secret="+CheckNamespace+"/"+SingleCertSourceSecret)
+	}
+	for _, d := range ct.ExtraDNSNames {
+		args = append(args, "--dns="+d)
+	}
+	for _, ip := range ct.IPAddresses {
+		args = append(args, "--ip="+ip)
+	}
+	return args
 }

@@ -14,6 +14,9 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd/check/ ./cmd/check/
+# The module's own packages the binary imports (cmd/check/image_test.go
+# fails when one is missing here or in Dockerfile.dockerignore).
+COPY internal/singlecert/ ./internal/singlecert/
 ARG VERSION=dev
 # No defaults: a default (ARG TARGETARCH=amd64) wins over the value BuildKit
 # sets per platform, and v0.5.0's linux/arm64 image held an x86-64 binary (#17).

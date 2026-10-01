@@ -1,0 +1,4 @@
+# Each line is one inspected finding, by fingerprint; see .gitleaks.toml for the policy.
+# A test literal standing in for a private key (render must refuse it in Git); replaced in
+# c732ace by a low-entropy value, but still in this commit of PR #32's history.
+08d7c90d62da67b48b8c633b450bc02b73ccca50:internal/render/render_test.go:generic-api-key:631

@@ -50,7 +50,9 @@ For BNK 2.4.0 with cert-manager installed by roksbnkargoctl (the default), the l
 | cert-manager images | 4 | `quay.io/jetstack/cert-manager-{controller,webhook,cainjector,acmesolver}:v1.17.3` |
 | Check image | 1 | `ghcr.io/jgruberf5/roksbnkargoctl-check:<version>` (or `check.image`) |
 
-With `bnk.cert_manager.install: false` the five cert-manager artifacts are left out. The
+With `bnk.cert_manager.install: false`, or `bnk.certificates.mode: single` (no
+cert-manager at all; see [Single certificate](./07-the-application.md#single-certificate)),
+the five cert-manager artifacts are left out. The
 F5 License Proxy images are not in the list: the FLP VSI pulls them from FAR itself.
 
 ```text

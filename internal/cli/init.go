@@ -77,7 +77,16 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 		if c, err = config.Parse(data); err != nil {
 			return err
 		}
+		// A resolved section in the given file is not trusted; the
+		// workspace's own record is kept, so what install created (the
+		// trusted profile, the TGW connection, the installed layout) is
+		// carried through the re-resolve as it is with --refresh.
 		c.Resolved = nil
+		if ws.Exists() {
+			if old, err := ws.LoadFile(); err == nil {
+				c.Resolved = old.Resolved
+			}
+		}
 		c.Defaults(name)
 	case ws.Exists():
 		if c, err = ws.Load(); err != nil {
@@ -113,7 +122,11 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 	if err := initRemoteChecks(ctx, s); err != nil {
 		return err
 	}
+	old := s.cfg.Resolved
 	if err := resolveWorkspace(ctx, s); err != nil {
+		return err
+	}
+	if err := sameCluster(old, s.cfg.Resolved, name); err != nil {
 		return err
 	}
 	if err := s.save(); err != nil {
@@ -215,6 +228,7 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 		m.Username = ask("  Mirror username (password from $"+m.PasswordEnv+")", m.Username)
 		m.CAFile = ask("  Mirror CA PEM file (empty if publicly trusted)", m.CAFile)
 	}
+	interviewInstallShape(c)
 	c.BNK.TMMReplicas = askInt("TMM replicas", c.BNK.TMMReplicas)
 	c.BNK.StorageClass = ask("StorageClass for BNK volumes (empty = cluster default; any class works for any TMM replica count)", c.BNK.StorageClass)
 
@@ -453,6 +467,66 @@ func carriedOver(old *config.Resolved) *config.Resolved {
 	if old != nil {
 		r.TrustedProfileID, r.ArgoCDClusterServer, r.LastPublishedCommitSHA = old.TrustedProfileID, old.ArgoCDClusterServer, old.LastPublishedCommitSHA
 		r.TGWConnectionCreatedID = old.TGWConnectionCreatedID
+		r.InstalledLayout = old.InstalledLayout
 	}
 	return r
+}
+
+// sameCluster keeps what install created on the cluster it was created
+// for. When the config now names another cluster, a record of an install
+// refuses the re-resolve (the layout guard would refuse a cluster with nothing
+// installed, and uninstall --detach-tgw or workspaces delete would remove the
+// old cluster's TGW connection); otherwise the carried fields are dropped.
+func sameCluster(old, r *config.Resolved, ws string) error {
+	if old == nil || old.ClusterID == "" || old.ClusterID == r.ClusterID {
+		return nil
+	}
+	var held []string
+	if layoutInstalled(old.InstalledLayout) {
+		held = append(held, "BNK ("+old.InstalledLayout+"): `roksbnkargoctl uninstall`")
+	}
+	if old.TrustedProfileID != "" {
+		held = append(held, "trusted profile "+old.TrustedProfileID+": `roksbnkargoctl uninstall` without --keep-trusted-profile")
+	}
+	if old.TGWConnectionCreatedID != "" {
+		held = append(held, "transit gateway connection "+old.TGWConnectionCreatedID+": `roksbnkargoctl uninstall --detach-tgw`")
+	}
+	if len(held) > 0 {
+		return fmt.Errorf("workspace %s records what install created for cluster %s (%s), and the config now names cluster %s. "+
+			"Remove each with the old config first, or use another workspace for %s:\n  %s",
+			ws, old.ClusterName, old.ClusterID, r.ClusterName, r.ClusterName, strings.Join(held, "\n  "))
+	}
+	r.ArgoCDClusterServer, r.LastPublishedCommitSHA = "", ""
+	return nil
+}
+
+// interviewInstallShape asks for the namespace layout and the certificate
+// mode: one namespace for every BNK component (#31), and cert-manager or F5's
+// single certificate (#30).
+func interviewInstallShape(c *config.Config) {
+	bnkNS := firstOf(c.BNK.Namespace, "f5-bnk")
+	one := c.BNK.UtilsNamespace != "" && c.BNK.UtilsNamespace == bnkNS
+	if askYesNo("Install every BNK component into one namespace ("+bnkNS+"), with no separate utilities namespace?", one) {
+		c.BNK.Namespace, c.BNK.UtilsNamespace = bnkNS, bnkNS
+	} else if one {
+		c.BNK.UtilsNamespace = "" // back to the default f5-utils
+	}
+	ct := &c.BNK.Certificates
+	ct.Mode = choose("Certificates for BNK's components (cert-manager: installed and managed by cert-manager; "+
+		"single: F5's single certificate, no cert-manager)", []string{config.CertModeCertManager, config.CertModeSingle},
+		firstOf(ct.Mode, config.CertModeCertManager))
+	if ct.Mode != config.CertModeSingle {
+		return
+	}
+	ct.Issuer = choose("  Who issues it (self-signed: a CA generated in the cluster; ca: your CA signs it; provided: your own certificate)",
+		[]string{"self-signed", "ca", "provided"}, firstOf(ct.Issuer, "self-signed"))
+	switch ct.Issuer {
+	case "ca":
+		ct.CACertFile = ask("  Your CA certificate (PEM file)", ct.CACertFile)
+		ct.CAKeyFile = ask("  Your CA's private key (PEM file; written into the cluster, never to Git)", ct.CAKeyFile)
+	case "provided":
+		ct.CertFile = ask("  Your certificate (tls.crt, PEM file)", ct.CertFile)
+		ct.KeyFile = ask("  Its private key (tls.key, PEM file; written into the cluster, never to Git)", ct.KeyFile)
+		ct.CAFile = ask("  The CA that signed it (ca.crt, PEM file)", ct.CAFile)
+	}
 }

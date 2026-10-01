@@ -8,6 +8,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.0
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/google/go-containerregistry v0.22.1
+	github.com/moby/patternmatcher v0.6.1
 	github.com/skeema/knownhosts v1.3.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10

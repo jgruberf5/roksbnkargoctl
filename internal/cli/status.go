@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/argocd"
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"github.com/jgruberf5/roksbnkargoctl/internal/kube"
 	"github.com/jgruberf5/roksbnkargoctl/internal/render"
 )
@@ -195,7 +196,7 @@ func runDiagnose(ctx context.Context, s *session) (string, error) {
 		write("summary.md", sum.String())
 		return dir, nil
 	}
-	nss := []string{render.CheckNamespace, c.BNK.Namespace, c.BNK.UtilsNamespace, "cert-manager"}
+	nss := diagnoseNamespaces(c)
 	fmt.Fprint(&sum, "\n## Pods not Running/Succeeded\n\n")
 	bad := 0
 	for _, ns := range nss {
@@ -467,4 +468,18 @@ func readYAMLDir(dir string) ([]render.Object, error) {
 		out = append(out, objs...)
 	}
 	return out, nil
+}
+
+// diagnoseNamespaces are the namespaces diagnose collects from: one BNK
+// namespace when bnk.utils_namespace is the same, and cert-manager only when
+// install put it there.
+func diagnoseNamespaces(c *config.Config) []string {
+	nss := []string{render.CheckNamespace, c.BNK.Namespace}
+	if c.BNK.UtilsNamespace != c.BNK.Namespace {
+		nss = append(nss, c.BNK.UtilsNamespace)
+	}
+	if c.CertManagerInstall() {
+		nss = append(nss, "cert-manager")
+	}
+	return nss
 }

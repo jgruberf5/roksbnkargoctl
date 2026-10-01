@@ -4,6 +4,60 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.7.0] - 2026-10-01
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Added
+- Single-certificate mode, F5's "Single Certificate for BNK" (`bnk.certificates.mode:
+  single`, #30). No cert-manager: no chart, namespace, issuers or readiness gate, and the
+  registry BOM drops cert-manager's 5 artifacts. FLO mounts one `kubernetes.io/tls` Secret
+  (`global.certmgr.enabled: false`, `secretName`), which a new `check cert` Sync hook (wave
+  −10) writes into every BNK namespace. Issuer `self-signed` (a CA generated and kept in the
+  cluster), `ca` (your CA signs it) or `provided` (your certificate, checked for key match,
+  chain, validity and every BNK name); your key goes into the cluster, never to Git.
+  Defaults are F5's procedure (CN `f5net`, RSA 4096, 3650 days). A sync keeps the Secret
+  while it is current and reissues it when it is missing, the settings change, or it is
+  within 30 days of expiry, then restarts the pods that mount it, once every namespace
+  holds it, retrying on later syncs until the restart is recorded: on BNK 2.4.0 GA,
+  DSSM's Redis kept the old certificate after a CA change and failed its readiness
+  probe until restarted. The check gets `create` on Secrets in this mode only.
+- One namespace for every BNK component: set `bnk.utils_namespace` to `bnk.namespace`
+  (#31). The `init` interview asks for it and for the certificate mode.
+- `install` records the namespaces and certificate mode it installed
+  (`resolved.installed_layout`) and refuses a different layout until `uninstall`:
+  switching in place deleted the utilities namespace, with CWC, RabbitMQ and the License,
+  under roksbnkctl on BNK 2.3. `init` keeps the record, and refuses to carry it to a
+  config naming another cluster. A workspace installed before 0.7.0 (cert-manager only)
+  is refused a switch to single certificates.
+- Your CA or certificate files are checked on your host before anything is published:
+  a CA that is not a self-signed root, expires within `renew_before_days`, or lacks
+  `keyCertSign` is refused (it
+  issued an invalid certificate and reissued it on every sync), and a provided
+  certificate's key usage, if present, must include `digitalSignature`, and its extended
+  key usage, if present, must name both `serverAuth` and `clientAuth`
+  (F5's procedure writes none, which is accepted), it must chain to a self-signed root in
+  its `ca.crt` (intermediates may follow it in `tls.crt`), and cover every name BNK uses.
+- Switching the issuer away from `ca` or `provided` deletes the source Secret, so your
+  CA's key does not stay in ROKS.
+
+- Verified live on OpenShift 4.21.31 with Argo CD 3.5.1 (connected, images from an
+  Artifactory mirror), one namespace with a self-signed single certificate: install 6m11s,
+  Synced and Healthy with nothing OutOfSync; only `f5-bnk` created, no cert-manager; 27 pods
+  Running and 26 of them mounting the Secret; the License Active; the certificate chains to
+  its CA (`CN=f5net` from `CN=f5net-ca`, valid ten years). A second install kept the same
+  certificate; a layout change under the install was refused; uninstall left the cluster
+  clean. Then issuer `ca` with an operator CA whose key `openssl ecparam -genkey` wrote:
+  the certificate chained to it and was capped at its expiry. Switching the running
+  install between `ca` and `self-signed` (a CA change) deleted the source Secret when
+  unused and restarted the 26 pods mounting the certificate; all 28 pods were Ready, DSSM's
+  probe passed and the License stayed Active, the sync taking 4m50s.
+
+### Fixed
+- `init --config-file` on an installed workspace dropped what `install` recorded (trusted
+  profile, TGW connection), so `uninstall` and `workspaces delete` no longer knew about
+  them. Present since `init --config-file` was added.
+
 ## [0.6.3] - 2026-09-30
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.

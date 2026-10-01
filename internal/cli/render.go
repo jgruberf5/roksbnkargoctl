@@ -286,6 +286,9 @@ func renderAll(ctx context.Context, s *session, useCluster bool) (*render.Output
 	if sec.JWT, err = s.JWT(ctx); err != nil {
 		return nil, err
 	}
+	if sec.SingleCertPEM, sec.SingleCertKey, sec.SingleCertCAPEM, err = s.SingleCertSource(); err != nil {
+		return nil, err
+	}
 	// The run id hashes the config WITHOUT its resolved/bookkeeping section:
 	// recording a published commit must not change the next render.
 	stable := *c

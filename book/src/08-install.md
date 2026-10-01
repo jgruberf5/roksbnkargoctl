@@ -37,9 +37,11 @@ converged, not duplicated.
 ## The steps, in order
 
 Before step 1, `install` validates `config.yaml` (every invalid key is listed at once),
-checks that the workspace was resolved by `init`, and loads the Git credential and any
-`git.known_hosts_file`. A missing Git credential stops it here, except with
-`--no-publish`.
+checks that the workspace was resolved by `init`, refuses a namespace layout or
+certificate mode different from the one BNK is installed with
+([the layout is fixed while BNK is installed](./07-the-application.md#the-layout-is-fixed-while-bnk-is-installed)),
+and loads the Git credential and any `git.known_hosts_file`. A missing Git credential
+stops it here, except with `--no-publish`.
 
 | # | Step | What can fail | On re-run |
 |---|---|---|---|
@@ -47,7 +49,7 @@ checks that the workspace was resolved by `init`, and loads the Git credential a
 | 2 | Transit gateway attachment | Prefix overlap with a VPC already on the gateway; attach timeout (10 min) | Found attached, skipped |
 | 3 | IAM trusted profile | IAM permissions | Found by name; missing link or policies added |
 | 4 | Render | FAR or mirror unreachable or unauthorized; JWT or FAR key not found; check image missing from the mirror; a secret value in a Git object or a values file | Re-rendered; identical output for unchanged inputs |
-| 5 | Out-of-band objects into ROKS | Cluster API unreachable; RBAC | Server-side apply converges |
+| 5 | Out-of-band objects into ROKS; then records the layout (`resolved.installed_layout`) | Cluster API unreachable; RBAC | Server-side apply converges |
 | 6 | Register ROKS with Argo CD | Token Secret not populated in 2 min; Argo CD API errors | Apply and upsert converge |
 | 7 | Publish to Git | Credentials, host key, branch protection | No commit when nothing changed |
 | 8 | Repositories, Application, sync | Argo CD API errors; Argo CD cannot pull a chart; a check fails; timeout | Upsert, then a new sync |
@@ -141,12 +143,15 @@ path never comes up).
 This is the same render as [`render`](./07-the-application.md), reading the cluster:
 
 1. Fetch the BNK 2.4.0 manifest chart from FAR or the mirror, then the FLO chart it lists,
-   then the cert-manager chart (unless `bnk.cert_manager.install: false`).
+   then the cert-manager chart (unless `bnk.cert_manager.install: false` or
+   `bnk.certificates.mode: single`).
 2. Read the Kubernetes version from ROKS, and the `openshift-dns/node-resolver` image when
    a mirror CA is configured.
 3. Read the FLP URL and CA (disconnected mode) from `flp-outputs.json` or `flp.external`.
 4. Read the FAR service-account key (FAR mode) and the subscription JWT, from COS or the
-   local files named in `cos.local_far_auth_file` / `cos.local_jwt_file`.
+   local files named in `cos.local_far_auth_file` / `cos.local_jwt_file`; in
+   single-certificate mode with issuer `ca` or `provided`, the certificate files
+   `bnk.certificates.*` names.
 5. Resolve the check image to a digest (below).
 6. Build the Git and direct objects and the charts' values files, template both charts
    the way Argo CD will, and write `manifests/`.
@@ -251,7 +256,8 @@ Argo CD's known hosts so the hub verifies the same key. The environment variable
    ```
 
 The sync runs the waves in order: pre-install check, networking, the cert-manager and FLO
-charts, the webhook gate, the issuers, the CNEManifest and CNEInstance, then the license
+charts, the webhook gate, the issuers (in single-certificate mode: the `check cert` hook
+before the charts instead of the gate and the issuers), the CNEManifest and CNEInstance, then the license
 check, which
 waits for the `License` to become `Active` and the CNEInstance `Available`, then the
 post-install check. The pre-install check runs before any BNK object is applied, so a

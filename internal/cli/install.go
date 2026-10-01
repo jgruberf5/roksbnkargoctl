@@ -79,6 +79,9 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	if err != nil {
 		return err
 	}
+	if err := checkLayout(r, c); err != nil {
+		return err
+	}
 	gitOpts, err := gitOptions(c, p.warn)
 	if err != nil && !(noPublish && missingGitCredential(err)) {
 		return err
@@ -104,6 +107,22 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		}
 	} else if err := checkGitAccess(ctx, p, c, gitOpts, !noPublish, noPublish); err != nil {
 		return err
+	}
+
+	// Before the first change in the cloud (and before the IBM Cloud client,
+	// which makes none), the record is written. A workspace with nothing
+	// installed records the install as pending, which locks nothing: a first
+	// install that fails from here on, leaving a trusted profile, is then not
+	// mistaken for one made before 0.7.0 (a profile and no record). Such a
+	// pre-0.7.0 record is left as it is: pending would erase the only sign of
+	// the running install if this one failed, and recording the config's
+	// layout would guess its namespaces, which are not known. The layout itself
+	// is recorded once the Application exists (step 8).
+	if !layoutInstalled(r.InstalledLayout) && !(r.InstalledLayout == "" && r.TrustedProfileID != "") {
+		r.InstalledLayout = layoutPending + installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
 	}
 
 	ibmc, err := s.IBM()
@@ -232,12 +251,29 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return fmt.Errorf("creating the Application: %w", err)
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
+	// From here Argo CD installs BNK (now, or at the next sync): the layout is
+	// what is installed. Before, a failure (registration, Git, the
+	// Application) left nothing of BNK, and the record stays pending.
+	if r.InstalledLayout != installLayout(c) {
+		r.InstalledLayout = installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
+	}
 	gitPos, err := gitSourcePosition(o.Application)
 	if err != nil {
 		return err
 	}
 	if sha, err = revisionToSync(noPublish, sha, func() (string, error) { return checkGitMatchesRender(ctx, s, ac, gitPos) }); err != nil {
 		return err
+	}
+	// Only now, with the Application on a revision that no longer reads them:
+	// before, a refused --no-publish compare left Argo CD on the old revision,
+	// whose hooks require the Secret just deleted.
+	for _, obj := range o.Stale {
+		if err := k.Delete(ctx, obj); err != nil {
+			return err
+		}
 	}
 	if noSync {
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
@@ -800,6 +836,7 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if kerr != nil {
 		return kerr
 	}
+	r.InstalledLayout = layoutNone // BNK is gone: the next install may choose another layout
 
 	var errs []error
 	// Out-of-band objects, in reverse: Secrets, then RBAC, then the namespace.
@@ -875,3 +912,50 @@ func directObjectsOnDisk(s *session) []map[string]any {
 }
 
 var _ = kube.FieldManager
+
+// installLayout names what cannot change under a running install: the
+// namespaces and the certificate mode.
+func installLayout(c *config.Config) string {
+	nss := c.BNK.Namespace
+	if c.BNK.UtilsNamespace != c.BNK.Namespace {
+		nss += "," + c.BNK.UtilsNamespace
+	}
+	return "namespaces=" + nss + " certificates=" + c.BNK.Certificates.Mode
+}
+
+// layoutNone records that uninstall removed BNK; layoutPending prefixes the
+// layout of an install that has not yet applied anything of BNK. An empty
+// record is a workspace never installed by 0.7.0: with a trusted profile, one
+// installed before 0.7.0, which recorded no layout.
+const (
+	layoutNone    = "none"
+	layoutPending = "pending: "
+)
+
+// layoutInstalled reports whether the record names a layout BNK is installed
+// with.
+func layoutInstalled(l string) bool {
+	return l != "" && l != layoutNone && !strings.HasPrefix(l, layoutPending)
+}
+
+// checkLayout refuses to install with a different layout than the one BNK is
+// installed with: moving to one namespace would delete the utilities
+// namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
+// and switching certificate modes swaps every component's certificates under it.
+func checkLayout(r *config.Resolved, c *config.Config) error {
+	// An install made before 0.7.0: a trusted profile and no record at all
+	// (0.7.0 records pending, or the layout, before it creates the profile).
+	if r.InstalledLayout == "" && r.TrustedProfileID != "" && c.BNK.Certificates.Mode != config.CertModeCertManager {
+		// Installed before 0.7.0 (the trusted profile is install's): with
+		// cert-manager, the only certificates there were; its namespaces are
+		// not known, so only the certificate switch is refused.
+		return fmt.Errorf("this workspace was installed before 0.7.0, with cert-manager, and config.yaml now asks for "+
+			"certificates=%s: changing it under a running install is not supported. Run `roksbnkargoctl uninstall`, "+
+			"then install again", c.BNK.Certificates.Mode)
+	}
+	if !layoutInstalled(r.InstalledLayout) || r.InstalledLayout == installLayout(c) {
+		return nil
+	}
+	return fmt.Errorf("BNK is installed with %s, and config.yaml now asks for %s: changing either under a running "+
+		"install is not supported. Run `roksbnkargoctl uninstall`, then install again", r.InstalledLayout, installLayout(c))
+}

@@ -88,9 +88,30 @@ only. See [Workspaces and init](./05-workspaces-and-init.md#running-without-a-wo
 | `mode` | string | `connected` | `ROKSBNKARGOCTL_BNK_MODE` | `connected` (BNK licenses directly with F5) or `disconnected` (through an F5 License Proxy) |
 | `tmm_replicas` | int | `3` | `ROKSBNKARGOCTL_BNK_TMM_REPLICAS` | TMM replicas; must be ≥ 1. One per node, spread across zones |
 | `namespace` | string | `f5-bnk` | `ROKSBNKARGOCTL_BNK_NAMESPACE` | namespace of FLO and the CNEInstance |
-| `utils_namespace` | string | `f5-utils` | `ROKSBNKARGOCTL_BNK_UTILS_NAMESPACE` | namespace of BNK's shared components (CWC, License) |
+| `utils_namespace` | string | `f5-utils` | `ROKSBNKARGOCTL_BNK_UTILS_NAMESPACE` | namespace of BNK's shared components (CWC, License); set it to `namespace` to put every BNK component in one namespace ([One namespace](./07-the-application.md#one-namespace)). Fixed while BNK is installed |
 | `cert_manager.install` | bool | `true` | `ROKSBNKARGOCTL_BNK_CERT_MANAGER_INSTALL` | install the pinned cert-manager; `false` uses one already on the cluster |
 | `cert_manager.version` | string | `v1.17.3` | `ROKSBNKARGOCTL_BNK_CERT_MANAGER_VERSION` | cert-manager chart version |
+| `certificates.mode` | string | `cert-manager` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_MODE` | cert-manager installs and issues BNK's certificates; `single`: no cert-manager, one TLS Secret for every BNK component ([Single certificate](./07-the-application.md#single-certificate)) |
+| `certificates.issuer` | string | `self-signed` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_ISSUER` | single: `self-signed` (a CA generated in the cluster and kept there), `ca` (your CA signs it) or `provided` (your certificate) |
+| `certificates.secret_name` | string | `bnk-single-cert` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_SECRET_NAME` | single: the Secret FLO mounts (`global.certmgr.secretName`), written into every BNK namespace |
+| `certificates.ca_cert_file` | string | `""` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_CA_CERT_FILE` | single, `ca`: your CA certificate (PEM) |
+| `certificates.ca_key_file` | string | `""` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_CA_KEY_FILE` | single, `ca`: your CA's private key (PEM); `install` writes it into the cluster, never to Git |
+| `certificates.cert_file` | string | `""` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_CERT_FILE` | single, `provided`: your certificate (`tls.crt`) |
+| `certificates.key_file` | string | `""` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_KEY_FILE` | single, `provided`: its private key (`tls.key`); written into the cluster, never to Git |
+| `certificates.ca_file` | string | `""` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_CA_FILE` | single, `provided`: the CA that signed it (`ca.crt`) |
+| `certificates.common_name` | string | `f5net` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_COMMON_NAME` | single: the certificate's CN (F5's procedure) |
+| `certificates.ca_common_name` | string | `f5net-ca` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_CA_COMMON_NAME` | single, `self-signed`: the generated CA's CN, distinct from the certificate's |
+| `certificates.organization` | string | `F5 Networks` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_ORGANIZATION` | single: subject O |
+| `certificates.organizational_unit` | string | `PD` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_ORGANIZATIONAL_UNIT` | single: subject OU |
+| `certificates.country` | string | `US` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_COUNTRY` | single: subject C |
+| `certificates.state` | string | `Washington` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_STATE` | single: subject ST |
+| `certificates.locality` | string | `Seattle` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_LOCALITY` | single: subject L |
+| `certificates.extra_dns_names` | []string | `[]` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_EXTRA_DNS_NAMES` | single: DNS names added to F5's list |
+| `certificates.ip_addresses` | []string | `[]` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_IP_ADDRESSES` | single: IP address SANs |
+| `certificates.key_type` | string | `rsa` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_KEY_TYPE` | single: `rsa` or `ecdsa` (P-256) |
+| `certificates.key_bits` | int | `4096` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_KEY_BITS` | single: RSA key size (≥ 2048) |
+| `certificates.validity_days` | int | `3650` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_VALIDITY_DAYS` | single: lifetime of the certificate and of a generated CA |
+| `certificates.renew_before_days` | int | `30` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_RENEW_BEFORE_DAYS` | single: each sync reissues the certificate this close to expiry |
 | `nad_address` | string | `10.10.1.1/24` | `ROKSBNKARGOCTL_BNK_NAD_ADDRESS` | static address on the `ens3` ipvlan NetworkAttachmentDefinition `ens3-ipvlan-l2` |
 | `storage_class` | string | `""` | `ROKSBNKARGOCTL_BNK_STORAGE_CLASS` | StorageClass for BNK components that request one; empty uses the cluster default. Set on the CNEInstance as `storageClassName` |
 
