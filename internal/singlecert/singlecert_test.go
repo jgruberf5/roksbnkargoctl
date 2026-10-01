@@ -513,7 +513,9 @@ func TestProvidedRootNamesAsOpenSSLComparesThem(t *testing.T) {
 		"NumericString vs UTF8": {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("123"))))), name(one(atv(oidCN, ps("123")))), false},
 		"NumericString spaces":  {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("1  2"))))), name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("1 2"))))), false},
 		"NumericString same":    {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("12"))))), name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("12"))))), true},
-		"order":                 {name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), name(one(atv(oidO, ps("Acme"))), one(atv(oidCN, ps("Root")))), false},
+		// A string never reads as another type's encoding.
+		"string reads as hex": {name(one(atv(oidCN, ps("120131")))), name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("1"))))), false},
+		"order":               {name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), name(one(atv(oidO, ps("Acme"))), one(atv(oidCN, ps("Root")))), false},
 		// Only the grouping differs (DER sorts a set: CN before O either way).
 		"multi-valued RDN": {name(one(atv(oidCN, ps("Root")), atv(oidO, ps("Acme")))), name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), false},
 		"non-ASCII case":   {name(one(atv(oidCN, ps("Ärzte Root")))), name(one(atv(oidCN, ps("ärzte Root")))), false},
@@ -538,5 +540,97 @@ func TestProvidedRootNamesAsOpenSSLComparesThem(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: accepted=%v, OpenSSL: %v (%v)", label, err == nil, tc.ok, err)
 		}
+	}
+}
+
+// issuer ca: ca.crt is the CA certificate alone, and OpenSSL takes only a
+// self-signed root for an anchor, so an issuing (intermediate) CA is refused.
+func TestCARefusesAnIntermediate(t *testing.T) {
+	root := issue(t, nil, "root", true, now.Add(-day), now.Add(5*year))
+	inter := issue(t, &root, "issuing", true, now.Add(-day), now.Add(4*year))
+	if _, _, err := CA(append(inter.certPEM(), root.certPEM()...), inter.keyPEM(), now, 30*day); err == nil || !strings.Contains(err.Error(), "not a self-signed root") {
+		t.Errorf("an intermediate CA: %v", err)
+	}
+}
+
+// Key identifiers link a chain for OpenSSL (X509_check_akid); Go ignores
+// them. Each case's verdict was taken from openssl verify.
+func TestProvidedKeyIdentifiersLink(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	rootTmpl := func(skid, akid []byte) *x509.Certificate {
+		return &x509.Certificate{SerialNumber: big.NewInt(160), Subject: pkix.Name{CommonName: "kid-root"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign, SubjectKeyId: skid, AuthorityKeyId: akid}
+	}
+	leafFrom := func(parent *x509.Certificate) issued {
+		lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(161), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+		der, err := x509.CreateCertificate(rand.Reader, lt, parent, lk.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, lk}
+	}
+	mk := func(tmpl *x509.Certificate) *x509.Certificate {
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	good := mk(rootTmpl([]byte{1, 2, 3, 4}, nil))
+	l := leafFrom(good)
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{good, k}.certPEM(), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("control: %v", err)
+	}
+	// The root's own authority key identifier is not its subject key identifier.
+	odd := mk(rootTmpl([]byte{1, 2, 3, 4}, []byte{9, 9, 9, 9}))
+	l = leafFrom(odd)
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{odd, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("a root whose AKID is not its SKID was taken for an anchor (OpenSSL: unable to get issuer certificate)")
+	}
+	// The leaf names another key identifier than the root's (same name, same key).
+	other := *good
+	other.SubjectKeyId = []byte{5, 6, 7, 8}
+	l = leafFrom(&other)
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{good, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("a leaf whose AKID is not its issuer's SKID verified (OpenSSL: unable to get local issuer certificate)")
+	}
+}
+
+// A name attribute carrying more than a type and a value is malformed:
+// OpenSSL will not load the certificate, so it names nothing, not even itself.
+func TestSameNameRefusesAMalformedAttribute(t *testing.T) {
+	oid, _ := asn1.Marshal(asn1.ObjectIdentifier{2, 5, 4, 3})
+	val, _ := asn1.Marshal("Root")
+	extra, _ := asn1.Marshal("extra")
+	wrap := func(tag int, parts ...[]byte) []byte {
+		b, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: tag, IsCompound: true, Bytes: bytes.Join(parts, nil)})
+		return b
+	}
+	good := wrap(asn1.TagSequence, wrap(asn1.TagSet, wrap(asn1.TagSequence, oid, val)))
+	bad := wrap(asn1.TagSequence, wrap(asn1.TagSet, wrap(asn1.TagSequence, oid, val, extra)))
+	if !sameName(good, good) {
+		t.Fatal("a well-formed name is not the same as itself")
+	}
+	if sameName(bad, bad) {
+		t.Error("a name attribute with a third element compared equal")
+	}
+}
+
+// issuer ca: a root whose own AKID is not its SKID is no anchor for OpenSSL,
+// so the certificates it would issue (ca.crt = this root) would not verify.
+func TestCARefusesARootWhoseKeyIDsDisagree(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(170), Subject: pkix.Name{CommonName: "kid-root"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, SubjectKeyId: []byte{1, 2, 3, 4}, AuthorityKeyId: []byte{9, 9, 9, 9}}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+	c, _ := x509.ParseCertificate(der)
+	if _, _, err := CA(issued{c, k}.certPEM(), issued{c, k}.keyPEM(), now, 30*day); err == nil {
+		t.Error("a root whose AKID is not its SKID was accepted as the CA")
 	}
 }

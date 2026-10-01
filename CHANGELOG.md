@@ -31,7 +31,8 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   config naming another cluster. A workspace installed before 0.7.0 (cert-manager only)
   is refused a switch to single certificates.
 - Your CA or certificate files are checked on your host before anything is published:
-  a CA expiring within `renew_before_days`, or lacking `keyCertSign`, is refused (it
+  a CA that is not a self-signed root, expires within `renew_before_days`, or lacks
+  `keyCertSign` is refused (it
   issued an invalid certificate and reissued it on every sync), and a provided
   certificate's key usage, if present, must include `digitalSignature`, and its extended
   key usage, if present, must name both `serverAuth` and `clientAuth`

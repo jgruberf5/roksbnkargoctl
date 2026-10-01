@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,7 +62,7 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 	copied := map[string]bool{}
 	for _, line := range strings.Split(dockerfile, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 3 || !strings.EqualFold(f[0], "COPY") || strings.HasPrefix(f[1], "--from") {
+		if len(f) < 3 || !strings.EqualFold(f[0], "COPY") || slices.ContainsFunc(f, func(x string) bool { return strings.HasPrefix(x, "--from") }) {
 			continue
 		}
 		for _, src := range f[1 : len(f)-1] {

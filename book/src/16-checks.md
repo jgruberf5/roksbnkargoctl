@@ -369,7 +369,8 @@ match `tls.crt`, its key usage (when it has one) lacks `digitalSignature`, its e
 usage (when it has one) does not name both `serverAuth` and `clientAuth`,
 `tls.crt` does not chain at the current time to a self-signed root in `ca.crt` (judged as
 OpenSSL judges it: intermediates from `ca.crt` or after the first certificate in `tls.crt`,
-no other anchor), or it does not cover every DNS name and `--ip` address BNK uses;
+no other anchor; authority key identifiers must match their issuers' subject key
+identifiers), or it does not cover every DNS name and `--ip` address BNK uses;
 the message lists up to eight missing names and how many more.
 
 | Finding | Meaning |
@@ -377,7 +378,7 @@ the message lists up to eight missing names and how many more.
 | `[PASS] ca` | `self-signed CA <CN> kept (…)` or `generated (…)`, with its expiry |
 | `[PASS] certificate` | `kept: valid until <date>, issued for these settings`; `issued <CN>, valid until <date>, <n> DNS names (<why>)`; or `copying the provided certificate (<why>)` |
 | `[PASS] secret` | `<ns>/<name> is current`, one per namespace |
-| `[FAIL] ca` | issuer `ca`: the source is not a CA, lacks `keyCertSign`, its key does not match, or it is not valid now and for longer than `--renew-before` |
+| `[FAIL] ca` | issuer `ca`: the source is not a CA, is not a self-signed root, lacks `keyCertSign`, its key does not match, or it is not valid now and for longer than `--renew-before` |
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
 | `[PASS] restart` | `<ns>: restarted <n> pods onto the current certificate` |

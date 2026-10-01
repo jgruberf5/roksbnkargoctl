@@ -5,6 +5,7 @@
 package singlecert
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/x509"
 	"encoding/asn1"
@@ -161,6 +162,13 @@ func CA(certPEM, keyPEM []byte, now time.Time, renewBefore time.Duration) (*x509
 	if !ca.IsCA {
 		return nil, nil, errors.New("the certificate is not a CA (basicConstraints CA:false)")
 	}
+	// ca.crt is this certificate alone, and OpenSSL takes nothing but a
+	// self-signed root for an anchor: an issuing (intermediate) CA's
+	// certificates would fail at every peer.
+	if !selfSigned(ca) {
+		return nil, nil, errors.New("the CA is not a self-signed root (an issuing CA's certificates would not verify against it alone): " +
+			"give the root, or issue the certificate from your intermediate yourself and use issuer provided, with the intermediate after it in tls.crt and the root in ca.crt")
+	}
 	if ca.KeyUsage != 0 && ca.KeyUsage&x509.KeyUsageCertSign == 0 {
 		return nil, nil, errors.New("the CA's key usage lacks keyCertSign, so certificates it signs do not verify")
 	}
@@ -228,8 +236,12 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 		}
 	}
 	for _, u := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
-		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: now,
-			KeyUsages: []x509.ExtKeyUsage{u}}); err != nil {
+		chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: now,
+			KeyUsages: []x509.ExtKeyUsage{u}})
+		if err == nil && !slices.ContainsFunc(chains, keyIDsLink) {
+			err = errors.New("no chain whose authority key identifiers match their issuers' subject key identifiers (OpenSSL requires that)")
+		}
+		if err != nil {
 			return fmt.Errorf("tls.crt does not verify against ca.crt for %s: %w", map[x509.ExtKeyUsage]string{
 				x509.ExtKeyUsageServerAuth: "server auth", x509.ExtKeyUsageClientAuth: "client auth"}[u], err)
 		}
@@ -261,7 +273,7 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 // accept it). An algorithm Go will not check at all (MD5; SHA-1 it does) is
 // left to the names: OpenSSL does not check a trusted root's own signature.
 func selfSigned(c *x509.Certificate) bool {
-	if !sameName(c.RawSubject, c.RawIssuer) {
+	if !sameName(c.RawSubject, c.RawIssuer) || !keyIDLinks(c, c) {
 		return false
 	}
 	err := c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
@@ -299,12 +311,21 @@ func canonName(der []byte) ([][]string, error) {
 		}
 		var rdn []string
 		for in := set.Bytes; len(in) > 0; {
+			var seq asn1.RawValue
+			if in, err = asn1.Unmarshal(in, &seq); err != nil {
+				return nil, err
+			}
 			var atv struct {
 				Type  asn1.ObjectIdentifier
 				Value asn1.RawValue
 			}
-			if in, err = asn1.Unmarshal(in, &atv); err != nil {
-				return nil, err
+			// Exactly a type and a value: OpenSSL will not load a name whose
+			// attribute carries more.
+			if rest, err := asn1.Unmarshal(seq.FullBytes, &atv); err != nil || len(rest) > 0 {
+				return nil, errors.New("malformed name attribute")
+			}
+			if b, _ := asn1.Marshal(atv); !bytes.Equal(b, seq.FullBytes) {
+				return nil, errors.New("malformed name attribute")
 			}
 			rdn = append(rdn, atv.Type.String()+"="+canonValue(atv.Value))
 		}
@@ -367,4 +388,20 @@ func canonValue(v asn1.RawValue) string {
 		b.WriteRune(r)
 	}
 	return "s:" + b.String()
+}
+
+// keyIDLinks: OpenSSL (X509_check_akid) takes parent as child's issuer only
+// when child's authority key identifier, if both are present, equals
+// parent's subject key identifier; Go's Verify ignores them.
+func keyIDLinks(child, parent *x509.Certificate) bool {
+	return len(child.AuthorityKeyId) == 0 || len(parent.SubjectKeyId) == 0 || bytes.Equal(child.AuthorityKeyId, parent.SubjectKeyId)
+}
+
+func keyIDsLink(chain []*x509.Certificate) bool {
+	for i := 0; i+1 < len(chain); i++ {
+		if !keyIDLinks(chain[i], chain[i+1]) {
+			return false
+		}
+	}
+	return keyIDLinks(chain[len(chain)-1], chain[len(chain)-1])
 }
