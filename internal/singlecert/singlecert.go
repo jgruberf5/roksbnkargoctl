@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"slices"
 	"sort"
 	"strings"
@@ -215,6 +216,16 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 			inter.AddCert(c)
 		}
 	}
+	// Every name, not only the anchor's: OpenSSL will not load a certificate
+	// with a malformed one, though Go's parser does.
+	for _, c := range append(append([]*x509.Certificate{leaf}, chain...), cas...) {
+		if _, err := canonName(c.RawSubject); err != nil {
+			return fmt.Errorf("a certificate's subject (%s) is malformed", c.Subject)
+		}
+		if _, err := canonName(c.RawIssuer); err != nil {
+			return fmt.Errorf("a certificate's issuer (%s) is malformed", c.Issuer)
+		}
+	}
 	if !hasRoot {
 		return errors.New("ca.crt holds no self-signed root certificate: give the root of the chain (OpenSSL accepts nothing else as an anchor)")
 	}
@@ -321,7 +332,9 @@ func canonName(der []byte) ([][]string, error) {
 			}
 			// Exactly a type and a value: OpenSSL will not load a name whose
 			// attribute carries more.
-			if rest, err := asn1.Unmarshal(seq.FullBytes, &atv); err != nil || len(rest) > 0 {
+			// (Re-encoding is what catches a third element: decoding into the
+			// struct ignores trailing fields.)
+			if _, err := asn1.Unmarshal(seq.FullBytes, &atv); err != nil {
 				return nil, errors.New("malformed name attribute")
 			}
 			if b, _ := asn1.Marshal(atv); !bytes.Equal(b, seq.FullBytes) {
@@ -390,18 +403,60 @@ func canonValue(v asn1.RawValue) string {
 	return "s:" + b.String()
 }
 
-// keyIDLinks: OpenSSL (X509_check_akid) takes parent as child's issuer only
-// when child's authority key identifier, if both are present, equals
-// parent's subject key identifier; Go's Verify ignores them.
+// keyIDLinks is OpenSSL's X509_check_akid, which Go's Verify ignores:
+// parent is child's issuer only when child's authority key identifier
+// agrees with it — its keyIdentifier with parent's subject key identifier
+// (when both are present), its authorityCertSerialNumber with parent's
+// serial, and a directoryName in its authorityCertIssuer with parent's
+// issuer.
 func keyIDLinks(child, parent *x509.Certificate) bool {
-	return len(child.AuthorityKeyId) == 0 || len(parent.SubjectKeyId) == 0 || bytes.Equal(child.AuthorityKeyId, parent.SubjectKeyId)
+	if len(child.AuthorityKeyId) > 0 && len(parent.SubjectKeyId) > 0 && !bytes.Equal(child.AuthorityKeyId, parent.SubjectKeyId) {
+		return false
+	}
+	for _, e := range child.Extensions {
+		if !e.Id.Equal(oidAuthorityKeyID) {
+			continue
+		}
+		var akid asn1.RawValue
+		if _, err := asn1.Unmarshal(e.Value, &akid); err != nil {
+			return false
+		}
+		for in := akid.Bytes; len(in) > 0; {
+			var f asn1.RawValue
+			var err error
+			if in, err = asn1.Unmarshal(in, &f); err != nil || f.Class != asn1.ClassContextSpecific {
+				return false
+			}
+			switch f.Tag {
+			case 1: // authorityCertIssuer: GeneralNames
+				for gn := f.Bytes; len(gn) > 0; {
+					var n asn1.RawValue
+					if gn, err = asn1.Unmarshal(gn, &n); err != nil {
+						return false
+					}
+					if n.Class == asn1.ClassContextSpecific && n.Tag == 4 && !sameName(n.Bytes, parent.RawIssuer) {
+						return false
+					}
+				}
+			case 2: // authorityCertSerialNumber
+				if new(big.Int).SetBytes(f.Bytes).Cmp(parent.SerialNumber) != 0 {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
+var oidAuthorityKeyID = asn1.ObjectIdentifier{2, 5, 29, 35}
+
+// keyIDsLink: every certificate of the chain links to the next. The anchor
+// itself is in the pool only if it links to itself (selfSigned).
 func keyIDsLink(chain []*x509.Certificate) bool {
 	for i := 0; i+1 < len(chain); i++ {
 		if !keyIDLinks(chain[i], chain[i+1]) {
 			return false
 		}
 	}
-	return keyIDLinks(chain[len(chain)-1], chain[len(chain)-1])
+	return true
 }

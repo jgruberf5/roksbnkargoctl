@@ -634,3 +634,78 @@ func TestCARefusesARootWhoseKeyIDsDisagree(t *testing.T) {
 		t.Error("a root whose AKID is not its SKID was accepted as the CA")
 	}
 }
+
+// The other half of X509_check_akid: an AKID naming its issuer by issuer name
+// and serial links only to that certificate. A root renewed with the same key
+// and name but a new serial is not the issuer of a leaf whose AKID names the
+// old serial (OpenSSL: unable to get local issuer certificate).
+func TestProvidedAKIDIssuerAndSerial(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	root := func(serial int64) *x509.Certificate {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "akid-root"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	root1, root2 := root(1), root(2)
+	akid := func(dirName []byte, serial int64) pkix.Extension {
+		keyID, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: root1.SubjectKeyId})
+		dn, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 4, IsCompound: true, Bytes: dirName})
+		issuer, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: dn})
+		sn, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 2, Bytes: big.NewInt(serial).Bytes()})
+		v, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: bytes.Join([][]byte{keyID, issuer, sn}, nil)})
+		return pkix.Extension{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: v}
+	}
+	leaf := func(ext pkix.Extension) issued {
+		lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(180), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}, ExtraExtensions: []pkix.Extension{ext}}
+		der, err := x509.CreateCertificate(rand.Reader, lt, root1, lk.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, lk}
+	}
+	l := leaf(akid(root1.RawIssuer, 1))
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{root1, k}.certPEM(), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("AKID naming this root's issuer and serial: %v", err)
+	}
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{root2, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("a root with another serial was taken for the issuer the AKID names")
+	}
+	other, _ := asn1.Marshal(pkix.Name{CommonName: "someone-else"}.ToRDNSequence())
+	l = leaf(akid(other, 1))
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{root1, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("an AKID naming another issuer's name linked")
+	}
+}
+
+// A malformed name anywhere, not only on the anchor: OpenSSL will not load
+// the certificate.
+func TestProvidedRefusesAMalformedLeafName(t *testing.T) {
+	root := issue(t, nil, "root", true, now.Add(-day), now.Add(5*year))
+	oid, _ := asn1.Marshal(asn1.ObjectIdentifier{2, 5, 4, 3})
+	v1, _ := asn1.Marshal("f5net")
+	v2, _ := asn1.Marshal("e")
+	wrap := func(tag int, parts ...[]byte) []byte {
+		b, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: tag, IsCompound: true, Bytes: bytes.Join(parts, nil)})
+		return b
+	}
+	lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(190), RawSubject: wrap(asn1.TagSequence, wrap(asn1.TagSet, wrap(asn1.TagSequence, oid, v1, v2))),
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+	der, err := x509.CreateCertificate(rand.Reader, lt, root.cert, lk.Public(), root.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Skip("Go's parser refuses the name itself now:", err)
+	}
+	l := issued{c, lk}
+	if err := Provided(l.certPEM(), l.keyPEM(), root.certPEM(), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Errorf("a leaf with a malformed subject: %v", err)
+	}
+}
