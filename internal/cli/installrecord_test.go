@@ -173,3 +173,34 @@ func TestInstallNamesTheResourceWhenItCannotRecordIt(t *testing.T) {
 		t.Errorf("profile: %v", err)
 	}
 }
+
+// install refuses to switch an installed BNK between one and two namespaces,
+// or between certificate modes; a fresh workspace (nothing installed) and the
+// same layout pass. init --refresh keeps the record.
+func TestInstallRefusesAnotherLayoutUnderAnInstall(t *testing.T) {
+	c := &config.Config{BNK: config.BNK{Namespace: "f5-bnk", UtilsNamespace: "f5-utils", Certificates: config.Certificates{Mode: config.CertModeCertManager}}}
+	installed := installLayout(c)
+	if installed != "namespaces=f5-bnk,f5-utils certificates=cert-manager" {
+		t.Fatalf("layout %q", installed)
+	}
+	if err := checkLayout(&config.Resolved{}, c); err != nil {
+		t.Errorf("nothing installed yet: %v", err)
+	}
+	if err := checkLayout(&config.Resolved{InstalledLayout: installed}, c); err != nil {
+		t.Errorf("same layout: %v", err)
+	}
+	one := *c
+	one.BNK.UtilsNamespace = "f5-bnk"
+	if err := checkLayout(&config.Resolved{InstalledLayout: installed}, &one); err == nil || !strings.Contains(err.Error(), "uninstall") ||
+		!strings.Contains(err.Error(), "namespaces=f5-bnk certificates=cert-manager") {
+		t.Errorf("one namespace under a two-namespace install: %v", err)
+	}
+	single := *c
+	single.BNK.Certificates.Mode = config.CertModeSingle
+	if err := checkLayout(&config.Resolved{InstalledLayout: installed}, &single); err == nil {
+		t.Error("certificate mode switched under an install")
+	}
+	if carriedOver(&config.Resolved{InstalledLayout: installed}).InstalledLayout != installed {
+		t.Error("init --refresh dropped the installed layout")
+	}
+}

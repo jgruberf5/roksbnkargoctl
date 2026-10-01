@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -520,4 +521,165 @@ func keys(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Single-certificate mode (F5's procedure): no cert-manager at all — no chart,
+// namespace, issuers or readiness gate — the cert Job before the charts, FLO
+// told to mount the one Secret, the CNEInstance without spec.certificate, and
+// the check allowed to create Secrets only in this mode.
+func TestSingleCertificateMode(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.Certificates.Mode = config.CertModeSingle
+	c.Defaults("ws")
+	out := doRender(t, c, nil)
+	for _, ch := range out.Charts {
+		if ch.Name == "cert-manager" {
+			t.Fatal("the cert-manager chart is installed in single-certificate mode")
+		}
+	}
+	for _, o := range out.Git {
+		switch {
+		case o.Kind() == "Namespace" && o.Name() == "cert-manager",
+			o.Kind() == "ClusterIssuer", o.Kind() == "Certificate",
+			o.Kind() == "Job" && o.Name() == "check-cert-manager-ready":
+			t.Errorf("%s %s rendered in single-certificate mode", o.Kind(), o.Name())
+		}
+	}
+	job := find(out.Git, "Job", "check-cert")
+	if job == nil {
+		t.Fatal("no cert Job")
+	}
+	if w := job.Wave(); w >= WaveCharts || w <= WavePreInstall {
+		t.Errorf("cert Job in wave %d: it must run after the pre-install check and before FLO (wave %d)", w, WaveCharts)
+	}
+	args := strings.Join(jobArgs(job), " ")
+	for _, want := range []string{"cert", "--issuer=self-signed", "--secret-name=bnk-single-cert", "--namespace=f5-bnk,f5-utils",
+		"--common-name=f5net", "--ca-common-name=f5net-ca", "--key-type=rsa", "--key-bits=4096", "--validity=87600h"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("cert Job args lack %q: %s", want, args)
+		}
+	}
+	var flo map[string]any
+	for _, ch := range out.Charts {
+		if ch.Name == "flo" {
+			flo = ch.Values
+		}
+	}
+	cm := flo["global"].(map[string]any)["certmgr"].(map[string]any)
+	if cm["enabled"] != false || cm["secretName"] != "bnk-single-cert" {
+		t.Errorf("FLO certmgr values %v", cm)
+	}
+	cne := find(out.Git, "CNEInstance", CNEInstanceName("f5-bnk"))
+	if _, has := cne["spec"].(map[string]any)["certificate"]; has {
+		t.Error("CNEInstance keeps spec.certificate in single-certificate mode")
+	}
+	if !secretCreateGranted(out.Direct) {
+		t.Error("the check cannot create the Secret: no create on secrets")
+	}
+	if post := find(out.Git, "Job", "check-post-uninstall"); strings.Contains(strings.Join(jobArgs(post), " "), "cert-manager") {
+		t.Error("post-uninstall deletes a cert-manager namespace that was never created")
+	}
+
+	// cert-manager mode is unchanged: issuers, gate, spec.certificate, no create.
+	d := doRender(t, baseConfig(config.ModeConnected, config.SourceFAR), nil)
+	if find(d.Git, "Job", "check-cert") != nil || find(d.Git, "Job", "check-cert-manager-ready") == nil || find(d.Git, "ClusterIssuer", ClusterIssuerCA) == nil {
+		t.Error("cert-manager mode lost its issuers or gained the cert Job")
+	}
+	if _, has := find(d.Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"].(map[string]any)["certificate"]; !has {
+		t.Error("cert-manager mode lost spec.certificate")
+	}
+	if secretCreateGranted(d.Direct) {
+		t.Error("cert-manager mode grants the check create on Secrets")
+	}
+}
+
+// issuer ca / provided: the operator's material goes into the check namespace
+// as a direct Secret the Job reads, never into Git or a values file.
+func TestSingleCertificateSourceStaysOutOfGit(t *testing.T) {
+	for _, issuer := range []string{"ca", "provided"} {
+		c := baseConfig(config.ModeConnected, config.SourceFAR)
+		c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: issuer}
+		c.Defaults("ws")
+		key := "-----BEGIN EC PRIVATE KEY-----\nSECRETKEYMATERIAL-" + issuer + "\n-----END EC PRIVATE KEY-----\n"
+		out := doRender(t, c, func(in *Inputs) {
+			in.Secrets.SingleCertPEM, in.Secrets.SingleCertKey = "-----BEGIN CERTIFICATE-----\nC\n-----END CERTIFICATE-----\n", key
+			if issuer == "provided" {
+				in.Secrets.SingleCertCAPEM = "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n"
+			}
+		})
+		src := find(out.Direct, "Secret", SingleCertSourceSecret)
+		if src == nil || src.Namespace() != CheckNamespace {
+			t.Fatalf("%s: no source Secret in the check namespace", issuer)
+		}
+		if find(out.Git, "Secret", SingleCertSourceSecret) != nil {
+			t.Fatalf("%s: the source Secret is in Git", issuer)
+		}
+		if !strings.Contains(strings.Join(jobArgs(find(out.Git, "Job", "check-cert")), " "), "--source-secret="+CheckNamespace+"/"+SingleCertSourceSecret) {
+			t.Errorf("%s: the Job does not read the source Secret", issuer)
+		}
+		if !strings.Contains(strings.Join(jobArgs(find(out.Git, "Job", "check-pre-install")), " "), CheckNamespace+"/"+SingleCertSourceSecret) {
+			t.Errorf("%s: the pre-install check does not require the source Secret", issuer)
+		}
+	}
+	// The guard fires if the key reaches Git.
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: "ca"}
+	c.Defaults("ws")
+	c.BNK.NADAddress = "LEAKEDKEYMATERIAL-123"
+	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"),
+		FLOChartRef: "r/charts/f5-lifecycle-operator:1", CheckImage: "i", RunID: "r",
+		Secrets: Secrets{SingleCertPEM: "x", SingleCertKey: "LEAKEDKEYMATERIAL-123"}}
+	if _, err := Render(in); err == nil || !strings.Contains(err.Error(), "single-certificate private key") {
+		t.Errorf("a private key in Git was not refused: %v", err)
+	}
+}
+
+// One namespace (bnk.utils_namespace = bnk.namespace): every object lands in
+// it, no object is rendered twice, and nothing names a second namespace.
+func TestSingleNamespaceRendersNoCollisions(t *testing.T) {
+	for _, src := range []string{config.SourceFAR, config.SourceMirror} {
+		for _, mode := range []string{config.ModeConnected, config.ModeDisconnected} {
+			for _, certs := range []string{config.CertModeCertManager, config.CertModeSingle} {
+				c := baseConfig(mode, src)
+				c.BNK.UtilsNamespace = c.BNK.Namespace
+				c.BNK.Certificates.Mode = certs
+				c.Defaults("ws")
+				out := doRender(t, c, nil)
+				where := mode + "/" + src + "/" + certs
+				for _, set := range [][]Object{out.Git, out.Direct} {
+					seen := map[string]bool{}
+					for _, o := range set {
+						k := o.Kind() + " " + o.Namespace() + "/" + o.Name()
+						if seen[k] {
+							t.Errorf("%s: %s rendered twice", where, k)
+						}
+						seen[k] = true
+					}
+				}
+				all := append(append([]Object{}, out.Git...), out.Direct...)
+				for _, o := range all {
+					b, _ := o.YAML()
+					if strings.Contains(string(b), "f5-utils") {
+						t.Errorf("%s: %s %s still names f5-utils", where, o.Kind(), o.Name())
+					}
+				}
+				if certs == config.CertModeSingle {
+					if args := jobArgs(find(out.Git, "Job", "check-cert")); !slices.Contains(args, "--namespace=f5-bnk") {
+						t.Errorf("%s: the cert Job must write into the one namespace only: %v", where, args)
+					}
+				}
+			}
+		}
+	}
+}
+
+func secretCreateGranted(direct []Object) bool {
+	role := find(direct, "ClusterRole", CheckClusterRole)
+	for _, r := range role["rules"].([]any) {
+		m := r.(map[string]any)
+		if fmt.Sprint(m["resources"]) == "[secrets]" && fmt.Sprint(m["verbs"]) == "[create]" {
+			return true
+		}
+	}
+	return false
 }

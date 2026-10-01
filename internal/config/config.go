@@ -72,6 +72,8 @@ type BNK struct {
 	UtilsNamespace string `yaml:"utils_namespace,omitempty" help:"namespace for the BNK utilities"`
 	// CertManager: install the pinned cert-manager (default) or adopt an existing one.
 	CertManager CertManager `yaml:"cert_manager,omitempty"`
+	// Certificates: cert-manager (default) or F5's single certificate.
+	Certificates Certificates `yaml:"certificates,omitempty"`
 	// NADAddress is the static address on the ens3 ipvlan attachment (roksbnkctl default).
 	NADAddress string `yaml:"nad_address,omitempty" help:"static address on the ens3 ipvlan attachment"`
 	// StorageClass for BNK components that request one; empty uses the default class.
@@ -82,6 +84,41 @@ type BNK struct {
 type CertManager struct {
 	Install *bool  `yaml:"install,omitempty" help:"install the pinned cert-manager (false adopts an existing one)"`
 	Version string `yaml:"version,omitempty" help:"cert-manager version"`
+}
+
+// Certificate modes.
+const (
+	CertModeCertManager = "cert-manager"
+	CertModeSingle      = "single"
+)
+
+// Certificates chooses how BNK's components get their mTLS certificates:
+// cert-manager (the default), or F5's "Single Certificate for BNK": no
+// cert-manager at all, FLO mounting one kubernetes.io/tls Secret everywhere.
+// The defaults are F5's procedure.
+type Certificates struct {
+	Mode       string `yaml:"mode,omitempty" help:"cert-manager (default) or single: one TLS Secret for every BNK component, no cert-manager"`
+	Issuer     string `yaml:"issuer,omitempty" help:"single: self-signed (a CA generated in the cluster), ca (ca_cert_file and ca_key_file sign it) or provided (cert_file, key_file, ca_file)"`
+	SecretName string `yaml:"secret_name,omitempty" help:"single: the Secret FLO mounts in every BNK namespace"`
+	CACertFile string `yaml:"ca_cert_file,omitempty" help:"single, issuer ca: your CA certificate (PEM)"`
+	CAKeyFile  string `yaml:"ca_key_file,omitempty" help:"single, issuer ca: your CA's private key (PEM); written into the cluster, never to Git"`
+	CertFile   string `yaml:"cert_file,omitempty" help:"single, issuer provided: your certificate (PEM, tls.crt)"`
+	KeyFile    string `yaml:"key_file,omitempty" help:"single, issuer provided: its private key (PEM, tls.key); written into the cluster, never to Git"`
+	CAFile     string `yaml:"ca_file,omitempty" help:"single, issuer provided: the CA that signed it (PEM, ca.crt)"`
+	CommonName string `yaml:"common_name,omitempty" help:"single: the certificate's common name"`
+	// CACommonName names a self-signed CA; F5 gives it a subject distinct from the certificate's.
+	CACommonName       string   `yaml:"ca_common_name,omitempty" help:"single, issuer self-signed: the generated CA's common name"`
+	Organization       string   `yaml:"organization,omitempty" help:"single: subject O"`
+	OrganizationalUnit string   `yaml:"organizational_unit,omitempty" help:"single: subject OU"`
+	Country            string   `yaml:"country,omitempty" help:"single: subject C"`
+	State              string   `yaml:"state,omitempty" help:"single: subject ST"`
+	Locality           string   `yaml:"locality,omitempty" help:"single: subject L"`
+	ExtraDNSNames      []string `yaml:"extra_dns_names,omitempty" help:"single: DNS names added to F5's list"`
+	IPAddresses        []string `yaml:"ip_addresses,omitempty" help:"single: IP address SANs"`
+	KeyType            string   `yaml:"key_type,omitempty" help:"single: rsa or ecdsa (P-256)"`
+	KeyBits            int      `yaml:"key_bits,omitempty" help:"single: RSA key size"`
+	ValidityDays       int      `yaml:"validity_days,omitempty" help:"single: lifetime of the certificate (and a generated CA), in days"`
+	RenewBeforeDays    int      `yaml:"renew_before_days,omitempty" help:"single: a sync reissues the certificate this many days before it expires"`
 }
 
 // Registry says where ROKS pulls BNK images from.
@@ -224,6 +261,10 @@ type Resolved struct {
 	// TGWConnectionCreatedID is set when install attached the cluster VPC to the
 	// gateway itself, so uninstall --detach-tgw removes only what install added.
 	TGWConnectionCreatedID string `yaml:"tgw_connection_created_id,omitempty"`
+	// InstalledLayout is the namespace layout and certificate mode install
+	// installed BNK with; uninstall clears it. install refuses a different one
+	// while it is set (switching either in place destroys a running install).
+	InstalledLayout string `yaml:"installed_layout,omitempty"`
 }
 
 // Defaults fills every optional field with the value DESIGN.md specifies.
@@ -252,6 +293,34 @@ func (c *Config) Defaults(workspace string) {
 	}
 	if b.CertManager.Version == "" {
 		b.CertManager.Version = "v1.17.3"
+	}
+	if b.Certificates.Mode == "" {
+		b.Certificates.Mode = CertModeCertManager
+	}
+	if b.Certificates.Mode == CertModeSingle {
+		ct := &b.Certificates
+		for _, d := range []struct {
+			dst *string
+			def string
+		}{
+			{&ct.Issuer, "self-signed"}, {&ct.SecretName, "bnk-single-cert"},
+			{&ct.CommonName, "f5net"}, {&ct.CACommonName, "f5net-ca"},
+			{&ct.Organization, "F5 Networks"}, {&ct.OrganizationalUnit, "PD"},
+			{&ct.Country, "US"}, {&ct.State, "Washington"}, {&ct.Locality, "Seattle"}, {&ct.KeyType, "rsa"},
+		} {
+			if *d.dst == "" {
+				*d.dst = d.def
+			}
+		}
+		if ct.KeyBits == 0 {
+			ct.KeyBits = 4096
+		}
+		if ct.ValidityDays == 0 {
+			ct.ValidityDays = 3650
+		}
+		if ct.RenewBeforeDays == 0 {
+			ct.RenewBeforeDays = 30
+		}
 	}
 	if b.CertManager.Install == nil {
 		t := true
@@ -344,8 +413,12 @@ func (c *Config) Defaults(workspace string) {
 
 // CertManagerInstall reports whether the pinned cert-manager is part of the install.
 func (c *Config) CertManagerInstall() bool {
-	return c.BNK.CertManager.Install == nil || *c.BNK.CertManager.Install
+	return c.UsesCertManager() && (c.BNK.CertManager.Install == nil || *c.BNK.CertManager.Install)
 }
+
+// UsesCertManager reports whether BNK's certificates come from cert-manager
+// (installed or adopted); false in single-certificate mode.
+func (c *Config) UsesCertManager() bool { return c.BNK.Certificates.Mode != CertModeSingle }
 
 // Validate rejects configs the tool cannot install. It is deliberately strict: a
 // wrong value found here costs a second; found by a failed sync it costs an hour.
@@ -390,6 +463,32 @@ func (c *Config) Validate() error {
 	}
 	if c.COS.LocalFARAuthFile == "" && (c.COS.Instance == "" || c.COS.Bucket == "") {
 		add("cos.instance and cos.bucket are required unless cos.local_far_auth_file is set")
+	}
+	if ct := c.BNK.Certificates; ct.Mode != "" && ct.Mode != CertModeCertManager && ct.Mode != CertModeSingle {
+		add("bnk.certificates.mode %q: must be %q or %q", ct.Mode, CertModeCertManager, CertModeSingle)
+	} else if ct.Mode == CertModeSingle {
+		switch ct.Issuer {
+		case "", "self-signed":
+		case "ca":
+			if ct.CACertFile == "" || ct.CAKeyFile == "" {
+				add("bnk.certificates.issuer ca needs ca_cert_file and ca_key_file")
+			}
+		case "provided":
+			if ct.CertFile == "" || ct.KeyFile == "" || ct.CAFile == "" {
+				add("bnk.certificates.issuer provided needs cert_file, key_file and ca_file")
+			}
+		default:
+			add("bnk.certificates.issuer %q: must be self-signed, ca or provided", ct.Issuer)
+		}
+		if ct.KeyType != "" && ct.KeyType != "rsa" && ct.KeyType != "ecdsa" {
+			add("bnk.certificates.key_type %q: must be rsa or ecdsa", ct.KeyType)
+		}
+		if ct.KeyBits != 0 && ct.KeyBits < 2048 {
+			add("bnk.certificates.key_bits %d: at least 2048", ct.KeyBits)
+		}
+		if ct.ValidityDays < 0 || ct.RenewBeforeDays < 0 || (ct.ValidityDays > 0 && ct.RenewBeforeDays >= ct.ValidityDays) {
+			add("bnk.certificates: renew_before_days must be less than validity_days")
+		}
 	}
 	if c.ArgoCD.Server == "" {
 		add("argocd.server (https URL of the existing Argo CD) is required")

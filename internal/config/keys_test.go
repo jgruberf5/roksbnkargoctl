@@ -93,7 +93,7 @@ func TestKeyNamesFollowTheYAMLPaths(t *testing.T) {
 	if _, ok := LookupKey("bnk.version"); ok {
 		t.Error("bnk.version must have no override (one valid value; the name is install.sh's)")
 	}
-	if n := len(Keys()); n != 70 {
+	if n := len(Keys()); n != 91 {
 		t.Errorf("%d keys; update this count (and the documentation) when adding one", n)
 	}
 }

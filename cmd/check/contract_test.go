@@ -38,6 +38,15 @@ func TestRenderedArgsParse(t *testing.T) {
 			in.MirrorCAPEM = "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"
 			in.NodeResolverImage = "quay.io/openshift/node-resolver@sha256:0"
 		},
+		"single-cert/self-signed/one-namespace": func(c *config.Config, _ *render.Inputs) {
+			c.BNK.Certificates.Mode = config.CertModeSingle
+			c.BNK.Namespace, c.BNK.UtilsNamespace = "bnk", "bnk"
+		},
+		"single-cert/ca/extra-names": func(c *config.Config, in *render.Inputs) {
+			c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: "ca", CACertFile: "ca.pem", CAKeyFile: "ca.key",
+				ExtraDNSNames: []string{"bnk.example.com", "x.example.com"}, IPAddresses: []string{"10.0.0.7"}, KeyType: "ecdsa"}
+			in.Secrets.SingleCertPEM, in.Secrets.SingleCertKey = "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n", "-----BEGIN EC PRIVATE KEY-----\nY\n-----END EC PRIVATE KEY-----\n"
+		},
 	}
 	for name, shape := range shapes {
 		t.Run(name, func(t *testing.T) {
@@ -57,10 +66,12 @@ func TestRenderedArgsParse(t *testing.T) {
 				t.Fatal(err)
 			}
 			seen := 0
+			modesSeen := map[string]bool{}
 			for _, o := range out.Git {
 				for _, args := range checkArgs(o, in.CheckImage) {
 					seen++
 					mode := args[0]
+					modesSeen[mode] = true
 					m, ok := modes[mode]
 					if !ok {
 						t.Errorf("%s %s runs unknown mode %q", o.Kind(), o.Name(), mode)
@@ -77,6 +88,10 @@ func TestRenderedArgsParse(t *testing.T) {
 			// pre-install, node-probe, sweep, license, post-install, pre- and post-uninstall.
 			if seen < 7 {
 				t.Fatalf("found %d check containers; expected every mode to be rendered", seen)
+			}
+			single := c.BNK.Certificates.Mode == config.CertModeSingle
+			if modesSeen["cert"] != single || modesSeen["cert-manager-ready"] == single {
+				t.Errorf("single=%v but modes %v", single, modesSeen)
 			}
 		})
 	}

@@ -1,0 +1,493 @@
+package checks
+
+import (
+	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
+	"net"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/jgruberf5/roksbnkargoctl/cmd/check/internal/kube"
+)
+
+// Single-certificate mode (F5's "Single Certificate for BNK"): FLO runs with
+// global.certmgr.enabled=false and mounts one kubernetes.io/tls Secret
+// (tls.crt, tls.key, ca.crt) in place of every cert-manager Certificate
+// Secret. The Secret must exist in every namespace a BNK component runs in.
+const (
+	IssuerSelfSigned = "self-signed" // a CA generated here, kept in the check namespace
+	IssuerCA         = "ca"          // the operator's CA certificate and key
+	IssuerProvided   = "provided"    // the operator's own tls.crt, tls.key and ca.crt
+
+	// annoSingleCertSpec is the digest of the settings the Secret was issued
+	// for: a settings change reissues it.
+	annoSingleCertSpec = "roksbnkargoctl.io/single-cert-spec"
+)
+
+// singleCertNames are the DNS names F5's procedure puts in the certificate,
+// with <ns> for each BNK namespace (F5's list, its duplicates removed).
+var singleCertNames = []string{
+	"*.f5-observer.<ns>.svc.cluster.local", "dssm-f5-dssm.<ns>", "dssm-svc", "f5-access-renderer",
+	"f5-afm.<ns>", "f5-analyzer-grpc-svc", "f5-analyzer.<ns>", "f5-bdosd", "f5-bdosd.<ns>",
+	"f5-csrc-grpc-svc", "f5-downloader.<ns>", "f5-dssm-db.<ns>", "f5-dssm-sentinel.<ns>", "f5-dssm.<ns>",
+	"f5-dwbld.<ns>", "f5-ipam-ctlr.<ns>", "f5-ipsd.<ns>", "f5-observer", "f5-observer.<ns>",
+	"f5-rabbit.<ns>", "f5-spk-csrc.<ns>", "f5-spk-cwc", "f5-spk-cwc.<ns>", "f5-spk-cwc.<ns>.svc",
+	"f5-tmm", "f5-tmm.<ns>", "f5-toda-fluentd-external.<ns>", "f5-toda-fluentd.<ns>",
+	"f5-validation-svc.<ns>.svc", "f5dr-svc-f5dr", "f5net", "grpc-apmd-svc", "grpc-bdosd-svc",
+	"grpc-bdosd-svc.<ns>", "grpc-downloader-svc", "grpc-dwbld-svc", "grpc-ipsd-svc", "grpc-pccd-svc",
+	"grpc-stream-ipsd-svc", "grpc-svc", "grpc-svc-f5dr", "grpc-svc-f5dr.<ns>",
+	"grpc-svc-f5dr.<ns>.svc.cluster.local", "grpc-svc.<ns>", "grpc-urlcat-svc", "observer",
+	"otel-collector", "otel-collector-svc", "otel-collector-svc.<ns>", "otel-collector.<ns>",
+	"rabbitmq-server.<ns>", "f5-cne-controller", "f5-cne-controller.<ns>", "f5-cne-controller.<ns>.svc",
+	"f5-coremond.<ns>", "f5-coremond.<ns>.svc", "f5-coremond.<ns>.svc.cluster.local",
+	"f5-observer-operator", "f5-observer-operator.<ns>", "f5-observer-receiver", "f5-observer-receiver.<ns>",
+	"*.f5-observer-operator.<ns>.svc.cluster.local", "*.f5-observer-receiver.<ns>.svc.cluster.local",
+	"f5-ebc-grpc-svc", "f5-ebc-grpc-svc.<ns>", "f5-ebc-grpc-svc.<ns>.svc", "f5-ext-bigip-controller.<ns>",
+	"f5-ipsec-qkview", "f5-ipsec-qkview.<ns>", "f5-ipsec-qkview.<ns>.svc.cluster.local", "f5-ipsec", "f5-ipsec.<ns>",
+}
+
+// SingleCertSANs is F5's name list for every namespace, plus extra names,
+// deduplicated in order.
+func SingleCertSANs(namespaces, extra []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, n := range singleCertNames {
+		if !strings.Contains(n, "<ns>") {
+			add(n)
+			continue
+		}
+		for _, ns := range namespaces {
+			add(strings.ReplaceAll(n, "<ns>", ns))
+		}
+	}
+	for _, e := range extra {
+		add(e)
+	}
+	return out
+}
+
+// SingleCertConfig configures `check cert`.
+type SingleCertConfig struct {
+	Issuer       string   // self-signed | ca | provided
+	SecretName   string   // the Secret FLO mounts (global.certmgr.secretName)
+	Namespaces   []string // every BNK namespace
+	SourceSecret string   // namespace/name: the CA (ca) or the certificate (provided)
+	StateNS      string   // where a self-signed CA is kept
+	Subject      pkix.Name
+	CommonName   string // the certificate's CN (F5: f5net)
+	CACommonName string // a generated CA's CN (F5: f5net-ca)
+	ExtraDNS     []string
+	IPs          []string
+	KeyType      string // rsa | ecdsa
+	KeyBits      int    // RSA key size (F5: 4096)
+	Validity     time.Duration
+	RenewBefore  time.Duration
+	Now          func() time.Time
+}
+
+// tlsMaterial is the content of the Secret.
+type tlsMaterial struct{ cert, key, ca []byte }
+
+// SingleCert makes sure the single-certificate Secret is current in every BNK
+// namespace: kept when it is valid for these settings and not about to expire,
+// issued (or copied) otherwise.
+func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result) error {
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if len(cfg.Namespaces) == 0 || cfg.SecretName == "" {
+		return errors.New("cert: --namespace and --secret-name are required")
+	}
+	sans := SingleCertSANs(cfg.Namespaces, cfg.ExtraDNS)
+
+	var signer *x509.Certificate
+	var signerKey crypto.Signer
+	var provided *tlsMaterial
+	switch cfg.Issuer {
+	case IssuerSelfSigned:
+		var err error
+		if signer, signerKey, err = selfSignedCA(ctx, env, cfg, res); err != nil {
+			return err
+		}
+	case IssuerCA:
+		m, err := readTLS(ctx, env, cfg.SourceSecret, false)
+		if err != nil {
+			return err
+		}
+		if signer, signerKey, err = parsePair(m.cert, m.key); err != nil {
+			return fmt.Errorf("CA in %s: %w", cfg.SourceSecret, err)
+		}
+		if !signer.IsCA {
+			return fmt.Errorf("the certificate in %s is not a CA (basicConstraints CA:false)", cfg.SourceSecret)
+		}
+	case IssuerProvided:
+		m, err := readTLS(ctx, env, cfg.SourceSecret, true)
+		if err != nil {
+			return err
+		}
+		if err := verifyProvided(m, sans, cfg.Now()); err != nil {
+			res.Fail("provided", "%s: %v", cfg.SourceSecret, err)
+			return nil
+		}
+		provided = m
+	default:
+		return fmt.Errorf("cert: --issuer %q: must be %s, %s or %s", cfg.Issuer, IssuerSelfSigned, IssuerCA, IssuerProvided)
+	}
+
+	spec := certSpec(cfg, sans, signer, provided)
+	cur, why := currentSecret(ctx, env, cfg, spec, signer)
+	var m *tlsMaterial
+	switch {
+	case cur != nil:
+		m = cur
+		res.Pass("certificate", "kept: valid until %s, issued for these settings", leafNotAfter(cur.cert))
+	case provided != nil:
+		m = provided
+		res.Pass("certificate", "copying the provided certificate (%s)", why)
+	default:
+		var err error
+		if m, err = issueLeaf(cfg, sans, signer, signerKey); err != nil {
+			return err
+		}
+		res.Pass("certificate", "issued %s, valid until %s, %d DNS names (%s)", cfg.CommonName, leafNotAfter(m.cert), len(sans), why)
+	}
+	for _, ns := range cfg.Namespaces {
+		if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec); err != nil {
+			res.Fail("secret", "%s/%s: %v", ns, cfg.SecretName, err)
+			continue
+		}
+		res.Pass("secret", "%s/%s is current", ns, cfg.SecretName)
+	}
+	return nil
+}
+
+// certSpec digests everything the Secret depends on.
+func certSpec(cfg SingleCertConfig, sans []string, signer *x509.Certificate, provided *tlsMaterial) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s|%s|%s|%v|%s|%s|%d|%s|", cfg.Issuer, cfg.CommonName, cfg.Subject.String(), sans, strings.Join(cfg.IPs, ","), cfg.KeyType, cfg.KeyBits, cfg.Validity)
+	if signer != nil {
+		h.Write(signer.Raw)
+	}
+	if provided != nil {
+		h.Write(provided.cert)
+		h.Write(provided.key)
+		h.Write(provided.ca)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// currentSecret returns the Secret's material when every namespace already
+// holds the same, valid, unexpired certificate issued for spec; otherwise nil
+// and why it must be (re)written.
+func currentSecret(ctx context.Context, env *Env, cfg SingleCertConfig, spec string, signer *x509.Certificate) (*tlsMaterial, string) {
+	var first *tlsMaterial
+	for _, ns := range cfg.Namespaces {
+		s, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName))
+		if err != nil {
+			return nil, fmt.Sprintf("%s/%s missing", ns, cfg.SecretName)
+		}
+		if s.Annotations()[annoSingleCertSpec] != spec {
+			return nil, "the settings changed"
+		}
+		m, err := tlsFromSecret(s, true)
+		if err != nil {
+			return nil, fmt.Sprintf("%s/%s: %v", ns, cfg.SecretName, err)
+		}
+		if first == nil {
+			first = m
+		} else if string(m.cert) != string(first.cert) || string(m.key) != string(first.key) || string(m.ca) != string(first.ca) {
+			return nil, "the namespaces hold different certificates"
+		}
+	}
+	leaf, _, err := parsePair(first.cert, first.key)
+	if err != nil {
+		return nil, err.Error()
+	}
+	if cfg.Now().Add(cfg.RenewBefore).After(leaf.NotAfter) {
+		return nil, fmt.Sprintf("it expires %s, within the renewal window", leaf.NotAfter.Format(time.DateOnly))
+	}
+	if signer != nil {
+		if err := leaf.CheckSignatureFrom(signer); err != nil {
+			return nil, "it is not signed by the current CA"
+		}
+	}
+	return first, ""
+}
+
+// selfSignedCA returns the CA kept in <StateNS>/<SecretName>-ca, generating
+// it (or a fresh one when it is about to expire).
+func selfSignedCA(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result) (*x509.Certificate, crypto.Signer, error) {
+	ref := cfg.StateNS + "/" + cfg.SecretName + "-ca"
+	if s, err := env.Kube.Get(ctx, GVRSecret.Path(cfg.StateNS, cfg.SecretName+"-ca")); err == nil {
+		if m, err := tlsFromSecret(s, false); err == nil {
+			if ca, key, err := parsePair(m.cert, m.key); err == nil && ca.IsCA && cfg.Now().Add(cfg.RenewBefore).Before(ca.NotAfter) {
+				res.Pass("ca", "self-signed CA %s kept (%s), valid until %s", ca.Subject.CommonName, ref, ca.NotAfter.Format(time.DateOnly))
+				return ca, key, nil
+			}
+		}
+	}
+	key, err := newKey(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	subj := cfg.Subject
+	subj.CommonName = cfg.CACommonName
+	now := cfg.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial(), Subject: subj,
+		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(cfg.Validity),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageCRLSign | x509.KeyUsageCertSign,
+		SubjectKeyId: keyID(key.Public()),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		return nil, nil, err
+	}
+	ca, _ := x509.ParseCertificate(der)
+	m := &tlsMaterial{cert: pemCert(der), key: pemKey(key)}
+	if err := writeTLS(ctx, env, cfg.StateNS, cfg.SecretName+"-ca", m, ""); err != nil {
+		return nil, nil, fmt.Errorf("keeping the CA in %s: %w", ref, err)
+	}
+	res.Pass("ca", "self-signed CA %s generated (%s), valid until %s", subj.CommonName, ref, ca.NotAfter.Format(time.DateOnly))
+	return ca, key, nil
+}
+
+// issueLeaf issues the single certificate: F5's subject and names, for both
+// server and client use (it serves every component's mTLS in both directions).
+func issueLeaf(cfg SingleCertConfig, sans []string, ca *x509.Certificate, caKey crypto.Signer) (*tlsMaterial, error) {
+	key, err := newKey(cfg)
+	if err != nil {
+		return nil, err
+	}
+	subj := cfg.Subject
+	subj.CommonName = cfg.CommonName
+	now := cfg.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial(), Subject: subj, DNSNames: sans,
+		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(cfg.Validity),
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		SubjectKeyId:          keyID(key.Public()),
+	}
+	for _, ip := range cfg.IPs {
+		if p := net.ParseIP(ip); p != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, p)
+		} else {
+			return nil, fmt.Errorf("cert: --ip %q is not an IP address", ip)
+		}
+	}
+	if tmpl.NotAfter.After(ca.NotAfter) {
+		tmpl.NotAfter = ca.NotAfter // a certificate cannot outlive its CA
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, key.Public(), caKey)
+	if err != nil {
+		return nil, err
+	}
+	return &tlsMaterial{cert: pemCert(der), key: pemKey(key), ca: pemCert(ca.Raw)}, nil
+}
+
+// verifyProvided checks an operator's certificate before it is copied: key
+// matches, chains to ca.crt, valid now, and carries every name BNK uses.
+func verifyProvided(m *tlsMaterial, sans []string, now time.Time) error {
+	leaf, _, err := parsePair(m.cert, m.key)
+	if err != nil {
+		return err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(m.ca) {
+		return errors.New("ca.crt holds no PEM certificate")
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
+		return fmt.Errorf("tls.crt does not verify against ca.crt: %w", err)
+	}
+	var missing []string
+	for _, n := range sans {
+		if leaf.VerifyHostname(n) != nil {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		if len(missing) > 8 {
+			missing = append(missing[:8], fmt.Sprintf("… %d more", len(missing)-8))
+		}
+		return fmt.Errorf("tls.crt does not cover names BNK uses: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func readTLS(ctx context.Context, env *Env, ref string, needCA bool) (*tlsMaterial, error) {
+	ns, name, ok := strings.Cut(ref, "/")
+	if !ok || ns == "" || name == "" {
+		return nil, fmt.Errorf("cert: --source-secret %q: want namespace/name", ref)
+	}
+	s, err := env.Kube.Get(ctx, GVRSecret.Path(ns, name))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", ref, err)
+	}
+	m, err := tlsFromSecret(s, needCA)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ref, err)
+	}
+	return m, nil
+}
+
+func tlsFromSecret(s kube.Object, needCA bool) (*tlsMaterial, error) {
+	get := func(k string) ([]byte, error) {
+		enc := s.String("data", k)
+		if enc == "" {
+			return nil, fmt.Errorf("no %s", k)
+		}
+		return base64.StdEncoding.DecodeString(enc)
+	}
+	m := &tlsMaterial{}
+	var err error
+	if m.cert, err = get("tls.crt"); err != nil {
+		return nil, err
+	}
+	if m.key, err = get("tls.key"); err != nil {
+		return nil, err
+	}
+	if needCA {
+		if m.ca, err = get("ca.crt"); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
+}
+
+func writeTLS(ctx context.Context, env *Env, ns, name string, m *tlsMaterial, spec string) error {
+	data := map[string]any{
+		"tls.crt": base64.StdEncoding.EncodeToString(m.cert),
+		"tls.key": base64.StdEncoding.EncodeToString(m.key),
+	}
+	if m.ca != nil {
+		data["ca.crt"] = base64.StdEncoding.EncodeToString(m.ca)
+	}
+	md := map[string]any{"name": name, "namespace": ns,
+		"labels": map[string]any{"app.kubernetes.io/managed-by": "roksbnkargoctl"}}
+	if spec != "" {
+		md["annotations"] = map[string]any{annoSingleCertSpec: spec}
+	}
+	obj := map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls", "metadata": md, "data": data}
+	_, err := env.Kube.Apply(ctx, GVRSecret.Path(ns, name), obj, FieldManager, true)
+	return err
+}
+
+// parsePair parses a PEM certificate and its PEM private key and checks they
+// belong together.
+func parsePair(certPEM, keyPEM []byte) (*x509.Certificate, crypto.Signer, error) {
+	b, _ := pem.Decode(certPEM)
+	if b == nil {
+		return nil, nil, errors.New("tls.crt holds no PEM certificate")
+	}
+	cert, err := x509.ParseCertificate(b.Bytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("tls.crt: %w", err)
+	}
+	kb, _ := pem.Decode(keyPEM)
+	if kb == nil {
+		return nil, nil, errors.New("tls.key holds no PEM key")
+	}
+	var key any
+	switch kb.Type {
+	case "RSA PRIVATE KEY":
+		key, err = x509.ParsePKCS1PrivateKey(kb.Bytes)
+	case "EC PRIVATE KEY":
+		key, err = x509.ParseECPrivateKey(kb.Bytes)
+	default:
+		key, err = x509.ParsePKCS8PrivateKey(kb.Bytes)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("tls.key: %w", err)
+	}
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return nil, nil, errors.New("tls.key: unsupported key type")
+	}
+	pub, _ := x509.MarshalPKIXPublicKey(signer.Public())
+	certPub, _ := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if string(pub) != string(certPub) {
+		return nil, nil, errors.New("tls.key does not match tls.crt")
+	}
+	return cert, signer, nil
+}
+
+func newKey(cfg SingleCertConfig) (crypto.Signer, error) {
+	switch cfg.KeyType {
+	case "", "rsa":
+		bits := cfg.KeyBits
+		if bits == 0 {
+			bits = 4096
+		}
+		if bits < 2048 {
+			return nil, fmt.Errorf("cert: --key-bits %d: at least 2048", bits)
+		}
+		return rsa.GenerateKey(rand.Reader, bits)
+	case "ecdsa":
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
+	return nil, fmt.Errorf("cert: --key-type %q: rsa or ecdsa", cfg.KeyType)
+}
+
+// pemKey encodes a key as cert-manager does (PKCS#1 for RSA, SEC 1 for EC),
+// which is what BNK's components read from cert-manager's Secrets today.
+func pemKey(k crypto.Signer) []byte {
+	switch key := k.(type) {
+	case *rsa.PrivateKey:
+		return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	case *ecdsa.PrivateKey:
+		b, _ := x509.MarshalECPrivateKey(key)
+		return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: b})
+	}
+	return nil
+}
+
+func pemCert(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func serial() *big.Int {
+	n, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	return n
+}
+
+func keyID(pub crypto.PublicKey) []byte {
+	b, _ := x509.MarshalPKIXPublicKey(pub)
+	sum := sha256.Sum256(b)
+	return sum[:20]
+}
+
+func leafNotAfter(certPEM []byte) string {
+	b, _ := pem.Decode(certPEM)
+	if b == nil {
+		return "?"
+	}
+	c, err := x509.ParseCertificate(b.Bytes)
+	if err != nil {
+		return "?"
+	}
+	return c.NotAfter.Format(time.DateOnly)
+}

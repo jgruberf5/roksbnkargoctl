@@ -79,6 +79,9 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	if err != nil {
 		return err
 	}
+	if err := checkLayout(r, c); err != nil {
+		return err
+	}
 	gitOpts, err := gitOptions(c, p.warn)
 	if err != nil && !(noPublish && missingGitCredential(err)) {
 		return err
@@ -146,6 +149,12 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		}
 	}
 	p.ok("out-of-band objects applied")
+	if r.InstalledLayout != installLayout(c) {
+		r.InstalledLayout = installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
+	}
 
 	// 6. Register ROKS with Argo CD.
 	p.step("registering %s with Argo CD (%s endpoint %s)", r.ClusterName, c.ArgoCD.ClusterEndpoint, r.ArgoCDClusterServer)
@@ -800,6 +809,7 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 	if kerr != nil {
 		return kerr
 	}
+	r.InstalledLayout = "" // BNK is gone: the next install may choose another layout
 
 	var errs []error
 	// Out-of-band objects, in reverse: Secrets, then RBAC, then the namespace.
@@ -875,3 +885,25 @@ func directObjectsOnDisk(s *session) []map[string]any {
 }
 
 var _ = kube.FieldManager
+
+// installLayout names what cannot change under a running install: the
+// namespaces and the certificate mode.
+func installLayout(c *config.Config) string {
+	nss := c.BNK.Namespace
+	if c.BNK.UtilsNamespace != c.BNK.Namespace {
+		nss += "," + c.BNK.UtilsNamespace
+	}
+	return "namespaces=" + nss + " certificates=" + c.BNK.Certificates.Mode
+}
+
+// checkLayout refuses to install with a different layout than the one BNK is
+// installed with: moving to one namespace would delete the utilities
+// namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
+// and switching certificate modes swaps every component's certificates under it.
+func checkLayout(r *config.Resolved, c *config.Config) error {
+	if r.InstalledLayout == "" || r.InstalledLayout == installLayout(c) {
+		return nil
+	}
+	return fmt.Errorf("BNK is installed with %s, and config.yaml now asks for %s: changing either under a running "+
+		"install is not supported. Run `roksbnkargoctl uninstall`, then install again", r.InstalledLayout, installLayout(c))
+}

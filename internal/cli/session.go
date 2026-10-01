@@ -554,6 +554,34 @@ func (s *session) MirrorCA() (string, error) {
 	return string(b), nil
 }
 
+// SingleCertSource reads the operator's certificate material for
+// single-certificate mode: the CA certificate and key (issuer ca), or the
+// certificate, key and CA (issuer provided). Empty otherwise.
+func (s *session) SingleCertSource() (cert, key, ca string, err error) {
+	ct := s.cfg.BNK.Certificates
+	if s.cfg.UsesCertManager() {
+		return "", "", "", nil
+	}
+	var files []struct{ key, path string }
+	switch ct.Issuer {
+	case "ca":
+		files = []struct{ key, path string }{{"ca_cert_file", ct.CACertFile}, {"ca_key_file", ct.CAKeyFile}}
+	case "provided":
+		files = []struct{ key, path string }{{"cert_file", ct.CertFile}, {"key_file", ct.KeyFile}, {"ca_file", ct.CAFile}}
+	default:
+		return "", "", "", nil
+	}
+	out := make([]string, 3)
+	for i, f := range files {
+		b, err := os.ReadFile(f.path)
+		if err != nil {
+			return "", "", "", fmt.Errorf("bnk.certificates.%s: %w", f.key, err)
+		}
+		out[i] = string(b)
+	}
+	return out[0], out[1], out[2], nil
+}
+
 // Puller returns an OCI puller with FAR and mirror credentials, each scoped to
 // its own host.
 func (s *session) Puller(ctx context.Context, needFAR bool) (*far.Puller, error) {

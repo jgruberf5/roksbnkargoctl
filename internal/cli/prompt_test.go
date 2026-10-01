@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 	"golang.org/x/term"
 )
 
@@ -240,5 +242,39 @@ func TestInterruptedSecretRestoresTheTerminal(t *testing.T) {
 	wantInterrupted(t, err)
 	if restored != captured {
 		t.Error("the terminal state was not restored after an interrupted password read")
+	}
+}
+
+// The interview's install-shape questions: one namespace, and the single
+// certificate with each issuer's files; answering no to one namespace on a
+// workspace that had it goes back to the default utilities namespace.
+func TestInterviewInstallShape(t *testing.T) {
+	answer := func(lines string, c *config.Config) {
+		t.Helper()
+		pr, pw := io.Pipe()
+		go func() { _, _ = io.WriteString(pw, lines); pw.Close() }()
+		withPrompt(t, pr, context.Background())
+		interviewInstallShape(c)
+	}
+	c := &config.Config{}
+	answer("y\n2\n2\n/p/ca.pem\n/p/ca.key\n", c)
+	if c.BNK.Namespace != "f5-bnk" || c.BNK.UtilsNamespace != "f5-bnk" {
+		t.Errorf("one namespace: %q %q", c.BNK.Namespace, c.BNK.UtilsNamespace)
+	}
+	ct := c.BNK.Certificates
+	if ct.Mode != config.CertModeSingle || ct.Issuer != "ca" || ct.CACertFile != "/p/ca.pem" || ct.CAKeyFile != "/p/ca.key" {
+		t.Errorf("certificates: %+v", ct)
+	}
+
+	c = &config.Config{}
+	answer("\n2\n3\n/p/tls.crt\n/p/tls.key\n/p/ca.crt\n", c)
+	if c.BNK.UtilsNamespace != "" || c.BNK.Certificates.Issuer != "provided" || c.BNK.Certificates.CAFile != "/p/ca.crt" {
+		t.Errorf("provided, two namespaces: %+v %q", c.BNK.Certificates, c.BNK.UtilsNamespace)
+	}
+
+	c = &config.Config{BNK: config.BNK{Namespace: "bnk", UtilsNamespace: "bnk", Certificates: config.Certificates{Mode: config.CertModeSingle}}}
+	answer("n\n1\n", c)
+	if c.BNK.UtilsNamespace != "" || c.BNK.Certificates.Mode != config.CertModeCertManager {
+		t.Errorf("back to two namespaces and cert-manager: %q %+v", c.BNK.UtilsNamespace, c.BNK.Certificates)
 	}
 }

@@ -195,7 +195,13 @@ func runDiagnose(ctx context.Context, s *session) (string, error) {
 		write("summary.md", sum.String())
 		return dir, nil
 	}
-	nss := []string{render.CheckNamespace, c.BNK.Namespace, c.BNK.UtilsNamespace, "cert-manager"}
+	nss := []string{render.CheckNamespace, c.BNK.Namespace}
+	if c.BNK.UtilsNamespace != c.BNK.Namespace {
+		nss = append(nss, c.BNK.UtilsNamespace)
+	}
+	if c.CertManagerInstall() {
+		nss = append(nss, "cert-manager")
+	}
 	fmt.Fprint(&sum, "\n## Pods not Running/Succeeded\n\n")
 	bad := 0
 	for _, ns := range nss {
