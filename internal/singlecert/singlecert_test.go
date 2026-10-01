@@ -819,3 +819,29 @@ func TestProvidedEmptyKeyIdentifiersCompare(t *testing.T) {
 		t.Error("a root whose own AKID keyid is empty was accepted as the CA")
 	}
 }
+
+// An issuer without a subject key identifier is not compared by keyid, as
+// OpenSSL skips it (openssl writes such certificates with
+// subjectKeyIdentifier=none, authorityKeyIdentifier=keyid:always; verify OK).
+// A self-signed non-CA certificate as its own ca.crt: Go writes no SKID for it
+// but does write the template's AKID.
+func TestProvidedIssuerWithoutSKIDNotCompared(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(5), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"},
+		KeyUsage:       x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		AuthorityKeyId: []byte{1, 2, 3, 4}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := x509.ParseCertificate(der)
+	if len(c.SubjectKeyId) != 0 || len(c.AuthorityKeyId) == 0 {
+		t.Fatalf("fixture: skid=%x akid=%x", c.SubjectKeyId, c.AuthorityKeyId)
+	}
+	is := issued{c, k}
+	if err := Provided(is.certPEM(), is.keyPEM(), is.certPEM(), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("refused (openssl verify: OK): %v", err)
+	}
+}
