@@ -53,9 +53,23 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 		}
 	}
 	walk("cmd/check")
+	workflow := read(".github/workflows/check-image.yml")
 	for dir := range seen {
+		// Excluded inside an admitted tree (kubefake is, as test-only).
+		for _, line := range strings.Split(ignore, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") || strings.Contains(line, "*") {
+				continue
+			}
+			if dir+"/" == line || strings.HasPrefix(dir+"/", line) {
+				t.Errorf("the check binary imports %s, which Dockerfile.dockerignore excludes (%s)", dir, line)
+			}
+		}
 		if strings.HasPrefix(dir, "cmd/check") {
 			continue
+		}
+		if strings.Count(workflow, "'"+dir+"/**'") != 2 {
+			t.Errorf("the check-image workflow's push and pull_request paths do not both name %s/**", dir)
 		}
 		if !strings.Contains(dockerfile, "COPY "+dir+"/ ./"+dir+"/") {
 			t.Errorf("the Dockerfile does not copy %s, which the check binary imports", dir)

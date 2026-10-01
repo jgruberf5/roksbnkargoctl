@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -174,11 +175,13 @@ func CA(certPEM, keyPEM []byte, now time.Time, renewBefore time.Duration) (*x509
 }
 
 // Provided checks an operator's own certificate before it is used: key
-// matches, chains to a certificate in ca.crt (through any intermediates after
-// the leaf in tls.crt), valid now for both server and client auth (one
-// certificate serves both ends of every mTLS connection), and carries every
-// name BNK uses. Every ca.crt certificate is a trust anchor, as it is to the
-// components that read the file.
+// matches, valid now for both server and client auth (one certificate serves
+// both ends of every mTLS connection), carries every name BNK uses, and
+// chains to a self-signed root in ca.crt. The chain is judged as OpenSSL
+// (without -partial_chain) judges it, the strictest of the TLS stacks that may
+// read ca.crt: it must end at a self-signed root there; intermediates come
+// from ca.crt or after the leaf in tls.crt; and anyExtendedKeyUsage is not
+// server or client auth (Go accepts all three of these where OpenSSL does not).
 func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error {
 	leaf, chain, _, err := Pair(certPEM, keyPEM)
 	if err != nil {
@@ -189,11 +192,25 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 		return fmt.Errorf("ca.crt: %w", err)
 	}
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
+	hasRoot := false
 	for _, c := range cas {
-		roots.AddCert(c)
+		if c.CheckSignatureFrom(c) == nil {
+			roots.AddCert(c)
+			hasRoot = true
+		} else {
+			inter.AddCert(c)
+		}
+	}
+	if !hasRoot {
+		return errors.New("ca.crt holds no self-signed root certificate: give the root of the chain (OpenSSL accepts nothing else as an anchor)")
 	}
 	for _, c := range chain {
 		inter.AddCert(c)
+	}
+	if len(leaf.ExtKeyUsage) > 0 || len(leaf.UnknownExtKeyUsage) > 0 {
+		if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) || !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
+			return errors.New("tls.crt's extended key usage must name both serverAuth and clientAuth (one certificate serves both ends of every mTLS connection)")
+		}
 	}
 	for _, u := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
 		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: now,

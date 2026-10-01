@@ -338,7 +338,8 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    `<--state-namespace>/<--secret-name>-ca`, or generates one (subject from the flags, CN
    `--ca-common-name`) when it is missing, unreadable, not a CA, or within
    `--renew-before` of expiry. `ca`: reads `tls.crt` and `tls.key` from `--source-secret`
-   and requires a CA certificate whose key matches, valid now and for longer than
+   and requires a CA certificate whose key matches, whose key usage (if present) includes
+   `keyCertSign`, valid now (5 minutes of clock skew allowed) and for longer than
    `--renew-before` (`[FAIL] ca` otherwise, and nothing is written). `provided`: reads `tls.crt`, `tls.key`
    and `ca.crt` from `--source-secret` and verifies them (below).
 2. **Decides whether to keep the current Secret.** It keeps it when, in every namespace,
@@ -359,10 +360,10 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    Redis did, live). Nothing restarts on the first issue or an unchanged sync.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
-match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time for both
-server and client auth (every certificate in `ca.crt` is a trust anchor, as it is to the
-components that read it; any after the first in `tls.crt` serve as intermediates), or it
-does not cover every DNS name and `--ip` address BNK uses;
+match `tls.crt`, its extended key usage does not name both `serverAuth` and `clientAuth`,
+`tls.crt` does not chain at the current time to a self-signed root in `ca.crt` (judged as
+OpenSSL judges it: intermediates from `ca.crt` or after the first certificate in `tls.crt`,
+no other anchor), or it does not cover every DNS name and `--ip` address BNK uses;
 the message lists up to eight missing names and how many more.
 
 | Finding | Meaning |
@@ -370,7 +371,7 @@ the message lists up to eight missing names and how many more.
 | `[PASS] ca` | `self-signed CA <CN> kept (…)` or `generated (…)`, with its expiry |
 | `[PASS] certificate` | `kept: valid until <date>, issued for these settings`; `issued <CN>, valid until <date>, <n> DNS names (<why>)`; or `copying the provided certificate (<why>)` |
 | `[PASS] secret` | `<ns>/<name> is current`, one per namespace |
-| `[FAIL] ca` | issuer `ca`: the source is not a CA, its key does not match, or it is not valid for longer than `--renew-before` |
+| `[FAIL] ca` | issuer `ca`: the source is not a CA, lacks `keyCertSign`, its key does not match, or it is not valid now and for longer than `--renew-before` |
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
 | `[PASS] restart` | `<ns>: restarted <n> pods that mount the replaced certificate` |

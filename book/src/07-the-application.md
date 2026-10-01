@@ -416,7 +416,7 @@ cert-manager's CRDs.
 |---|---|---|
 | `self-signed` (default) | nothing | Generates a CA (CN `ca_common_name`, default `f5net-ca`) and keeps it in Secret `roksbnkargoctl-check/<secret_name>-ca`, so later syncs reuse it; replaces it when it is within `renew_before_days` of expiry. Issues the certificate from it |
 | `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`), a CA whose key usage lacks `keyCertSign`, a key that does not match it, and a CA that is not yet valid (5 minutes of clock skew allowed) or expires within `renew_before_days`: the certificate is capped at the CA's expiry, so it would be inside its own renewal window and reissued on every sync. Renew the CA before that. Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
-| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now for both server and client auth (one certificate serves both ends of every mTLS connection; a server-auth-only certificate is refused), and that it covers every DNS name and IP address BNK uses (below); fails, naming up to eight missing names, if not. Then copies it. `tls.crt` may hold the full chain (the certificate, then its intermediates), and `ca.crt` the root alone |
+| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now, that its extended key usage names both `serverAuth` and `clientAuth` (one certificate serves both ends of every mTLS connection; `anyExtendedKeyUsage` alone is refused, as OpenSSL refuses it; no extension at all is accepted), that it chains to a self-signed root in `ca.crt`, and that it covers every DNS name and IP address BNK uses (below); fails, naming up to eight missing names, if not. Then copies it. Intermediates may follow the certificate in `tls.crt` (a full chain) or sit in `ca.crt` beside the root; `ca.crt` must hold the root, since OpenSSL accepts no other anchor |
 
 Keys may be PKCS#1, SEC 1 (including `openssl ecparam -genkey` output) or PKCS#8;
 encrypted keys are refused. For `ca` and `provided`, `render` and `install` read the files
@@ -520,14 +520,16 @@ run in the utilities namespace, and moving them under a running install is not s
 FLO does. With roksbnkctl on BNK 2.3, switching to one namespace deleted the utilities
 namespace with those components in it. Switching the certificate mode would swap every
 component's certificates under it.
-`uninstall` records `installed_layout: none`, so the next `install` may choose either
-layout. `init`, by interview, `--refresh` or `--config-file`, keeps the record, and refuses
+`install` records `pending: <layout>` before its first change in the cloud, and the layout
+itself once BNK's objects are applied: a first install that fails in between locks
+nothing, and a retry may choose another layout. `uninstall` records `installed_layout:
+none`, so the next `install` may choose either layout. `init`, by interview, `--refresh` or `--config-file`, keeps the record, and refuses
 to carry it to a config that names another cluster.
 
 A workspace installed by a release before 0.7.0 has no record. Those releases had only
 cert-manager, so `install` refuses a switch to `certificates=single` on a workspace that
-records a trusted profile and a published commit but no layout (an install made with
-`--no-publish` before 0.7.0 has no published commit and is not caught); their namespaces are not known, so a namespace
+records a trusted profile but no layout at all (0.7.0 always records one before it creates
+the profile); their namespaces are not known, so a namespace
 change is not caught until the next `install` records them. Run `uninstall` first if you
 are changing `bnk.utils_namespace` on such a workspace.
 

@@ -331,9 +331,12 @@ git: {url: "https://git.example/r.git"}
 	}{
 		"other layout":        {"", `, installed_layout: "namespaces=f5-bnk certificates=single"}`, true},
 		"pre-0.7.0 to single": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, last_published_commit: abc}`, true},
-		"pre-0.7.0 unchanged": {"", `, trusted_profile_id: Profile-1, last_published_commit: abc}`, false},
-		// A first 0.7.0 install that failed after creating the profile.
-		"failed first install": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1}`, false},
+		// --no-publish installs never recorded a commit; still caught.
+		"pre-0.7.0 no-publish": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1}`, true},
+		"pre-0.7.0 unchanged":  {"", `, trusted_profile_id: Profile-1, last_published_commit: abc}`, false},
+		// A first 0.7.0 install that failed after creating the profile: pending
+		// locks nothing, so another layout may be tried.
+		"failed first install": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, installed_layout: "pending: namespaces=f5-bnk,f5-utils certificates=cert-manager"}`, false},
 		"uninstalled":          {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, installed_layout: none}`, false},
 		"never installed":      {"bnk: {certificates: {mode: single}}\n", `}`, false},
 		"same layout recorded": {"", `, installed_layout: "namespaces=f5-bnk,f5-utils certificates=cert-manager"}`, false},

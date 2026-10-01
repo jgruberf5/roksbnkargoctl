@@ -114,11 +114,13 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return err
 	}
 
-	// The layout is recorded before the first change in the cloud, so a failed
-	// first install is not mistaken for one made before 0.7.0 (whose record is a
-	// trusted profile and no layout), and the next install keeps the layout.
-	if r.InstalledLayout != installLayout(c) {
-		r.InstalledLayout = installLayout(c)
+	// Before the first change in the cloud, a workspace with nothing installed
+	// records the install as pending: a first install that fails from here on
+	// (and leaves a trusted profile) is not then mistaken for one made before
+	// 0.7.0, whose record is a profile and no layout. Pending locks nothing;
+	// the layout itself is recorded once BNK's objects are applied (step 5).
+	if !layoutInstalled(r.InstalledLayout) {
+		r.InstalledLayout = layoutPending + installLayout(c)
 		if err := s.save(); err != nil {
 			return err
 		}
@@ -159,6 +161,12 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		}
 	}
 	p.ok("out-of-band objects applied")
+	if r.InstalledLayout != installLayout(c) {
+		r.InstalledLayout = installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
+	}
 
 	// 6. Register ROKS with Argo CD.
 	p.step("registering %s with Argo CD (%s endpoint %s)", r.ClusterName, c.ArgoCD.ClusterEndpoint, r.ArgoCDClusterServer)
@@ -912,17 +920,25 @@ func installLayout(c *config.Config) string {
 // installed with: moving to one namespace would delete the utilities
 // namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
 // and switching certificate modes swaps every component's certificates under it.
-// layoutNone records that uninstall removed BNK. An empty record is either a
-// workspace never installed or one installed before 0.7.0, which recorded no
-// layout.
-const layoutNone = "none"
+// layoutNone records that uninstall removed BNK; layoutPending prefixes the
+// layout of an install that has not yet applied anything of BNK. An empty
+// record is a workspace never installed by 0.7.0: with a trusted profile, one
+// installed before 0.7.0, which recorded no layout.
+const (
+	layoutNone    = "none"
+	layoutPending = "pending: "
+)
+
+// layoutInstalled reports whether the record names a layout BNK is installed
+// with.
+func layoutInstalled(l string) bool {
+	return l != "" && l != layoutNone && !strings.HasPrefix(l, layoutPending)
+}
 
 func checkLayout(r *config.Resolved, c *config.Config) error {
-	// An install made before 0.7.0: a trusted profile and a published commit,
-	// and no layout. A first 0.7.0 install that failed has no published commit
-	// (and since 0.7.0 the layout is recorded before the profile is created).
-	if r.InstalledLayout == "" && r.TrustedProfileID != "" && r.LastPublishedCommitSHA != "" &&
-		c.BNK.Certificates.Mode != config.CertModeCertManager {
+	// An install made before 0.7.0: a trusted profile and no record at all
+	// (0.7.0 records pending before it creates the profile).
+	if r.InstalledLayout == "" && r.TrustedProfileID != "" && c.BNK.Certificates.Mode != config.CertModeCertManager {
 		// Installed before 0.7.0 (the trusted profile is install's): with
 		// cert-manager, the only certificates there were; its namespaces are
 		// not known, so only the certificate switch is refused.
@@ -930,7 +946,7 @@ func checkLayout(r *config.Resolved, c *config.Config) error {
 			"certificates=%s: changing it under a running install is not supported. Run `roksbnkargoctl uninstall`, "+
 			"then install again", c.BNK.Certificates.Mode)
 	}
-	if r.InstalledLayout == "" || r.InstalledLayout == layoutNone || r.InstalledLayout == installLayout(c) {
+	if !layoutInstalled(r.InstalledLayout) || r.InstalledLayout == installLayout(c) {
 		return nil
 	}
 	return fmt.Errorf("BNK is installed with %s, and config.yaml now asks for %s: changing either under a running "+

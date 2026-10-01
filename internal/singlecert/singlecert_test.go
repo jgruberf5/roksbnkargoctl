@@ -172,9 +172,10 @@ func TestCAKeyUsageAndSkew(t *testing.T) {
 	}
 }
 
-// provided: one certificate serves both ends of mTLS, so server-auth-only is
-// refused; ca.crt holding an unrelated root next to the issuing intermediate
-// verifies, as it does for the components that read ca.crt.
+// provided, judged as OpenSSL judges it: both serverAuth and clientAuth
+// (anyExtendedKeyUsage is neither to OpenSSL; no EKU at all is both), and a
+// chain ending at a self-signed root in ca.crt — an intermediate alone, or
+// beside an unrelated root, is "unable to get issuer certificate" there.
 func TestProvidedUsageAndAnchors(t *testing.T) {
 	root := issue(t, nil, "root", true, now.Add(-day), now.Add(5*year))
 	inter := issue(t, &root, "intermediate", true, now.Add(-day), now.Add(4*year))
@@ -186,13 +187,59 @@ func TestProvidedUsageAndAnchors(t *testing.T) {
 		c, _ := x509.ParseCertificate(der)
 		return issued{c, k}
 	}
-	server := leaf(x509.ExtKeyUsageServerAuth)
-	if err := Provided(server.certPEM(), server.keyPEM(), inter.certPEM(), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "client auth") {
-		t.Errorf("server auth only: %v", err)
+	full := append(inter.certPEM(), root.certPEM()...)
+	names := []string{"f5-tmm"}
+	for name, tc := range map[string]struct {
+		l  issued
+		ok bool
+	}{
+		"server and client": {leaf(x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth), true},
+		"no EKU":            {leaf(), true},
+		"server only":       {leaf(x509.ExtKeyUsageServerAuth), false},
+		"client only":       {leaf(x509.ExtKeyUsageClientAuth), false},
+		"any only":          {leaf(x509.ExtKeyUsageAny), false},
+		// Go reads anyExtendedKeyUsage as client auth; OpenSSL does not.
+		"any and server": {leaf(x509.ExtKeyUsageAny, x509.ExtKeyUsageServerAuth), false},
+	} {
+		err := Provided(tc.l.certPEM(), tc.l.keyPEM(), full, names, now)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 	both := leaf(x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth)
 	unrelated := issue(t, nil, "unrelated", true, now.Add(-day), now.Add(5*year))
-	if err := Provided(both.certPEM(), both.keyPEM(), append(unrelated.certPEM(), inter.certPEM()...), []string{"f5-tmm"}, now); err != nil {
-		t.Errorf("an unrelated root beside the issuing intermediate: %v", err)
+	if err := Provided(both.certPEM(), both.keyPEM(), inter.certPEM(), names, now); err == nil || !strings.Contains(err.Error(), "no self-signed root") {
+		t.Errorf("intermediate-only ca.crt: %v", err)
+	}
+	if err := Provided(both.certPEM(), both.keyPEM(), append(unrelated.certPEM(), inter.certPEM()...), names, now); err == nil {
+		t.Error("an unrelated root beside the issuing intermediate was accepted (OpenSSL: unable to get issuer certificate)")
+	}
+}
+
+// A CA with no keyUsage extension at all (OpenSSL's default v3_ca writes
+// none) may sign; the clock-skew allowance is five minutes.
+func TestCAWithoutKeyUsageAndSkewWidth(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	mk := func(from time.Time) issued {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(70), Subject: pkix.Name{CommonName: "ca"},
+			NotBefore: from, NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, k}
+	}
+	if c := mk(now.Add(-day)); c.cert.KeyUsage != 0 {
+		t.Fatalf("test CA has key usage %v", c.cert.KeyUsage)
+	} else if _, _, err := CA(c.certPEM(), c.keyPEM(), now, 30*day); err != nil {
+		t.Errorf("a CA without a keyUsage extension: %v", err)
+	}
+	if c := mk(now.Add(4*time.Minute + 50*time.Second)); true {
+		if _, _, err := CA(c.certPEM(), c.keyPEM(), now, 30*day); err != nil {
+			t.Errorf("a CA under five minutes ahead: %v", err)
+		}
+	}
+	if c := mk(now.Add(5*time.Minute + 10*time.Second)); true {
+		if _, _, err := CA(c.certPEM(), c.keyPEM(), now, 30*day); err == nil {
+			t.Error("a CA over five minutes ahead was accepted")
+		}
 	}
 }

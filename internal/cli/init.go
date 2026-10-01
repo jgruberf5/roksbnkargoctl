@@ -482,7 +482,7 @@ func sameCluster(old, r *config.Resolved, ws string) error {
 		return nil
 	}
 	var held []string
-	if old.InstalledLayout != "" && old.InstalledLayout != layoutNone {
+	if layoutInstalled(old.InstalledLayout) {
 		held = append(held, "BNK ("+old.InstalledLayout+"): `roksbnkargoctl uninstall`")
 	}
 	if old.TrustedProfileID != "" {

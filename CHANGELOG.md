@@ -30,9 +30,10 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   config naming another cluster. A workspace installed before 0.7.0 (cert-manager only)
   is refused a switch to single certificates.
 - Your CA or certificate files are checked on your host before anything is published:
-  a CA expiring within `renew_before_days` is refused (it issued an already-invalid
-  certificate and reissued it on every sync), and a provided certificate must chain to
-  its CA (through intermediates in `tls.crt`) and cover every name BNK uses.
+  a CA expiring within `renew_before_days`, or lacking `keyCertSign`, is refused (it
+  issued an invalid certificate and reissued it on every sync), and a provided
+  certificate must name both `serverAuth` and `clientAuth`, chain to a self-signed root in
+  its `ca.crt` (intermediates may follow it in `tls.crt`), and cover every name BNK uses.
 - Switching the issuer away from `ca` or `provided` deletes the source Secret, so your
   CA's key does not stay in ROKS.
 
@@ -42,7 +43,11 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   Running and 26 of them mounting the Secret; the License Active; the certificate chains to
   its CA (`CN=f5net` from `CN=f5net-ca`, valid ten years). A second install kept the same
   certificate; a layout change under the install was refused; uninstall left the cluster
-  clean.
+  clean. Then issuer `ca` with an operator CA whose key `openssl ecparam -genkey` wrote:
+  the certificate chained to it and was capped at its expiry. Switching the running
+  install between `ca` and `self-signed` (a CA change) deleted the source Secret when
+  unused and restarted the 26 pods mounting the certificate; all 28 pods were Ready, DSSM's
+  probe passed and the License stayed Active, the sync taking 4m50s.
 
 ### Fixed
 - `init --config-file` on an installed workspace dropped what `install` recorded (trusted
