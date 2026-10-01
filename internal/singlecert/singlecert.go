@@ -270,9 +270,12 @@ func selfSigned(c *x509.Certificate) bool {
 }
 
 // sameName compares two DER names as OpenSSL does (x509_name_canon): RDN by
-// RDN in order, attribute by attribute, the same type, and string values
-// equal once converted to UTF-8, trimmed of ASCII whitespace, internal runs of
-// it collapsed to one space and ASCII lowercased; other values byte for byte.
+// RDN in order (empty RDNs dropped), the attributes of each RDN as a set
+// (OpenSSL re-encodes them as a DER SET OF, which sorts them), the same type,
+// and directory string values (UTF8, BMP, Universal, Printable, T61, IA5,
+// Visible: ASN1_MASK_CANON, which excludes NumericString) equal once converted
+// to UTF-8, trimmed of ASCII whitespace, internal runs of it collapsed to one
+// space and ASCII lowercased; other values byte for byte, with their type.
 // pkix.Name.String() is not that form: it re-orders attributes, flattens
 // multi-valued RDNs, folds non-ASCII case, and hex-encodes DC or emailAddress.
 func sameName(a, b []byte) bool {
@@ -305,18 +308,25 @@ func canonName(der []byte) ([][]string, error) {
 			}
 			rdn = append(rdn, atv.Type.String()+"="+canonValue(atv.Value))
 		}
-		out = append(out, rdn)
+		if len(rdn) > 0 {
+			slices.Sort(rdn)
+			out = append(out, rdn)
+		}
 	}
 	return out, nil
 }
 
+// canonValue marks its two forms apart: "s:" a canonical directory string,
+// "x:" the hex of anything else with its tag, so that no string can read as
+// another type's encoding.
 func canonValue(v asn1.RawValue) string {
+	raw := "x:" + hex.EncodeToString(v.FullBytes)
 	var s string
 	switch {
 	case v.Class != asn1.ClassUniversal:
-		return "#" + hex.EncodeToString(v.FullBytes)
+		return raw
 	case v.Tag == asn1.TagUTF8String || v.Tag == asn1.TagPrintableString || v.Tag == asn1.TagIA5String ||
-		v.Tag == 26 /* VisibleString */ || v.Tag == asn1.TagNumericString:
+		v.Tag == 26 /* VisibleString */ :
 		s = string(v.Bytes)
 	case v.Tag == asn1.TagT61String: // read as Latin-1, as OpenSSL does
 		r := make([]rune, len(v.Bytes))
@@ -338,7 +348,7 @@ func canonValue(v asn1.RawValue) string {
 		}
 		s = string(r)
 	default:
-		return "#" + hex.EncodeToString(v.FullBytes)
+		return raw
 	}
 	var b strings.Builder
 	space := false
@@ -356,5 +366,5 @@ func canonValue(v asn1.RawValue) string {
 		}
 		b.WriteRune(r)
 	}
-	return b.String()
+	return "s:" + b.String()
 }

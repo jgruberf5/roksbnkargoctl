@@ -56,15 +56,21 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 		}
 	}
 	walk("cmd/check")
-	// The module files the build needs, beside the packages.
+	// What the Dockerfile copies from the context: COPY lines, not comments,
+	// and not from another stage.
 	copied := map[string]bool{}
 	for _, line := range strings.Split(dockerfile, "\n") {
-		if f := strings.Fields(line); len(f) > 2 && strings.EqualFold(f[0], "COPY") {
-			for _, src := range f[1 : len(f)-1] {
-				copied[src] = true
+		f := strings.Fields(line)
+		if len(f) < 3 || !strings.EqualFold(f[0], "COPY") || strings.HasPrefix(f[1], "--from") {
+			continue
+		}
+		for _, src := range f[1 : len(f)-1] {
+			if !strings.HasPrefix(src, "--") {
+				copied[strings.TrimSuffix(src, "/")] = true
 			}
 		}
 	}
+	// The module files the build needs, beside the packages.
 	for _, f := range []string{"go.mod", "go.sum"} {
 		if !copied[f] {
 			t.Errorf("the Dockerfile does not copy %s", f)
@@ -90,7 +96,7 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 		if strings.Count(workflow, "'"+dir+"/**'") != 2 {
 			t.Errorf("the check-image workflow's push and pull_request paths do not both name %s/**", dir)
 		}
-		if !strings.Contains(dockerfile, "COPY "+dir+"/ ./"+dir+"/") {
+		if !copied[dir] {
 			t.Errorf("the Dockerfile does not copy %s, which the check binary imports", dir)
 		}
 	}

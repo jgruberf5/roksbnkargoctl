@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 var now = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -460,6 +461,16 @@ func TestProvidedRootNamesAsOpenSSLComparesThem(t *testing.T) {
 	ia5 := func(s string) asn1.RawValue {
 		return asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagIA5String, Bytes: []byte(s)}
 	}
+	tagged := func(tag int, b []byte) asn1.RawValue {
+		return asn1.RawValue{Class: asn1.ClassUniversal, Tag: tag, Bytes: b}
+	}
+	bmp := func(s string) asn1.RawValue {
+		var b []byte
+		for _, u := range utf16.Encode([]rune(s)) {
+			b = append(b, byte(u>>8), byte(u))
+		}
+		return tagged(asn1.TagBMPString, b)
+	}
 	var (
 		oidCN = asn1.ObjectIdentifier{2, 5, 4, 3}
 		oidO  = asn1.ObjectIdentifier{2, 5, 4, 10}
@@ -490,7 +501,19 @@ func TestProvidedRootNamesAsOpenSSLComparesThem(t *testing.T) {
 		"leading space":     {name(one(atv(oidCN, ps(" Root")))), name(one(atv(oidCN, ps("Root")))), true},
 		"DC case":           {name(one(atv(oidDC, ia5("Corp"))), one(atv(oidCN, ps("Root")))), name(one(atv(oidDC, ia5("corp"))), one(atv(oidCN, ps("Root")))), true},
 		"emailAddress case": {name(one(atv(oidE, ia5("PKI@corp.example")))), name(one(atv(oidE, ia5("pki@corp.example")))), true},
-		"order":             {name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), name(one(atv(oidO, ps("Acme"))), one(atv(oidCN, ps("Root")))), false},
+		// Directory strings of other types, canonicalised the same way.
+		"T61 Latin-1 vs UTF8":  {name(one(atv(oidCN, tagged(asn1.TagT61String, []byte("\xc4rzte"))))), name(one(atv(oidCN, ps("Ärzte")))), true},
+		"BMP vs UTF8 case":     {name(one(atv(oidCN, bmp("Root")))), name(one(atv(oidCN, ps("root")))), true},
+		"leading vertical tab": {name(one(atv(oidCN, ps("\vRoot")))), name(one(atv(oidCN, ps("Root")))), true},
+		// A multi-valued RDN is a set: valid DER order differs once canonical.
+		"RDN as a set": {name(one(atv(oidCN, ps("a")), atv(oidCN, tagged(asn1.TagPrintableString, []byte("B"))))),
+			name(one(atv(oidCN, ps("b")), atv(oidCN, tagged(asn1.TagPrintableString, []byte("A"))))), true},
+		"empty RDN dropped": {name(one(atv(oidCN, ps("Root"))), one()), name(one(atv(oidCN, ps("Root")))), true},
+		// NumericString is outside OpenSSL's canonical types: byte for byte, with its type.
+		"NumericString vs UTF8": {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("123"))))), name(one(atv(oidCN, ps("123")))), false},
+		"NumericString spaces":  {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("1  2"))))), name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("1 2"))))), false},
+		"NumericString same":    {name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("12"))))), name(one(atv(oidCN, tagged(asn1.TagNumericString, []byte("12"))))), true},
+		"order":                 {name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), name(one(atv(oidO, ps("Acme"))), one(atv(oidCN, ps("Root")))), false},
 		// Only the grouping differs (DER sorts a set: CN before O either way).
 		"multi-valued RDN": {name(one(atv(oidCN, ps("Root")), atv(oidO, ps("Acme")))), name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), false},
 		"non-ASCII case":   {name(one(atv(oidCN, ps("Ärzte Root")))), name(one(atv(oidCN, ps("ärzte Root")))), false},
