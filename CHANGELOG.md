@@ -33,7 +33,8 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
 - Your CA or certificate files are checked on your host before anything is published:
   a CA expiring within `renew_before_days`, or lacking `keyCertSign`, is refused (it
   issued an invalid certificate and reissued it on every sync), and a provided
-  certificate's extended key usage, if present, must name both `serverAuth` and `clientAuth`
+  certificate's key usage, if present, must include `digitalSignature`, and its extended
+  key usage, if present, must name both `serverAuth` and `clientAuth`
   (F5's procedure writes none, which is accepted), it must chain to a self-signed root in
   its `ca.crt` (intermediates may follow it in `tls.crt`), and cover every name BNK uses.
 - Switching the issuer away from `ca` or `provided` deletes the source Secret, so your

@@ -365,8 +365,8 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    once the restart is recorded.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
-match `tls.crt`, its extended key usage (when it has one) does not name both `serverAuth`
-and `clientAuth`,
+match `tls.crt`, its key usage (when it has one) lacks `digitalSignature`, its extended key
+usage (when it has one) does not name both `serverAuth` and `clientAuth`,
 `tls.crt` does not chain at the current time to a self-signed root in `ca.crt` (judged as
 OpenSSL judges it: intermediates from `ca.crt` or after the first certificate in `tls.crt`,
 no other anchor), or it does not cover every DNS name and `--ip` address BNK uses;

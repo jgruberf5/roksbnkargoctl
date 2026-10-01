@@ -57,6 +57,9 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 	}
 	walk("cmd/check")
 	// The module files the build needs, beside the packages.
+	if !strings.Contains(dockerfile, "COPY go.mod go.sum ./") {
+		t.Error("the Dockerfile does not copy go.mod and go.sum")
+	}
 	if pm, err := patternmatcher.New(mustPatterns(t, ignore)); err != nil {
 		t.Fatal(err)
 	} else {

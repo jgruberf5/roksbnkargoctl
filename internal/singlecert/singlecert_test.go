@@ -1,6 +1,7 @@
 package singlecert
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"strings"
@@ -245,10 +247,9 @@ func TestCAWithoutKeyUsageAndSkewWidth(t *testing.T) {
 	}
 }
 
-// A root signed with SHA-1 (older corporate roots) is still a root: OpenSSL
-// accepts it as an anchor, since a trusted root is not verified, while Go
-// will not check its signature — judging self-signed by that check called it
-// an intermediate and refused "no self-signed root".
+// A root signed with SHA-1 (older corporate roots) is a root, as OpenSSL
+// holds: Go's CheckSignature verifies SHA-1 (CheckSignatureFrom, used once,
+// refused it and called the root an intermediate).
 func TestProvidedSHA1Root(t *testing.T) {
 	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
 	rt := &x509.Certificate{SerialNumber: big.NewInt(80), Subject: pkix.Name{CommonName: "old-root"},
@@ -259,9 +260,6 @@ func TestProvidedSHA1Root(t *testing.T) {
 		t.Fatal(err)
 	}
 	root, _ := x509.ParseCertificate(der)
-	if root.CheckSignatureFrom(root) == nil {
-		t.Fatal("Go checked a SHA-1 signature: the test no longer shows the case")
-	}
 	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	lt := &x509.Certificate{SerialNumber: big.NewInt(81), Subject: pkix.Name{CommonName: "f5net"},
 		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
@@ -372,5 +370,78 @@ func TestProvidedSelfSignedLeafAsItsOwnCA(t *testing.T) {
 		if err := Provided(l.certPEM(), l.keyPEM(), l.certPEM(), []string{"f5-tmm"}, now); err != nil {
 			t.Errorf("%s: a self-signed certificate as its own ca.crt: %v", name, err)
 		}
+	}
+}
+
+// An anchor names itself as its issuer: a certificate signed by its own key
+// under another issuer's name is none ("unable to get local issuer
+// certificate" in OpenSSL 3.5.5), nor is a CA issued with its issuer's reused
+// key, alone in ca.crt.
+func TestProvidedAnchorNamesItself(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(120), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+	parent := &x509.Certificate{Subject: pkix.Name{CommonName: "other-name"}}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := x509.ParseCertificate(der)
+	l := issued{c, k}
+	if err := Provided(l.certPEM(), l.keyPEM(), l.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("a certificate signed by its own key under another issuer's name was taken for an anchor")
+	}
+}
+
+// MD5, which Go will not check at all, is left to the names: OpenSSL does not
+// check a trusted root's own signature, and accepts the root. Go cannot make
+// an MD5 certificate, so a SHA-256 root's algorithm identifiers are rewritten
+// to md5WithRSAEncryption (same length); its own signature no longer matters.
+func TestProvidedMD5Root(t *testing.T) {
+	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rt := &x509.Certificate{SerialNumber: big.NewInt(130), Subject: pkix.Name{CommonName: "md5-root"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, SignatureAlgorithm: x509.SHA256WithRSA}
+	der, err := x509.CreateCertificate(rand.Reader, rt, rt, rk.Public(), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha256WithRSA := []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b}
+	md5WithRSA := []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x04}
+	md5DER := bytes.ReplaceAll(der, sha256WithRSA, md5WithRSA)
+	root, err := x509.ParseCertificate(md5DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var insecure x509.InsecureAlgorithmError
+	if err := root.CheckSignature(root.SignatureAlgorithm, root.RawTBSCertificate, root.Signature); !errors.As(err, &insecure) {
+		t.Fatalf("the rewritten root is not refused as an insecure algorithm (%v): the test no longer shows the case", err)
+	}
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(131), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+	ld, err := x509.CreateCertificate(rand.Reader, lt, root, k.Public(), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(ld)
+	l := issued{leaf, k}
+	if err := Provided(l.certPEM(), l.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: md5DER}), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("an MD5 root: %v", err)
+	}
+}
+
+// Client auth signs the handshake: a leaf whose key usage lacks
+// digitalSignature is refused, as OpenSSL refuses it for sslclient.
+func TestProvidedLeafNeedsDigitalSignature(t *testing.T) {
+	root := issue(t, nil, "root", true, now.Add(-day), now.Add(5*year))
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(140), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}, KeyUsage: x509.KeyUsageKeyEncipherment}
+	der, _ := x509.CreateCertificate(rand.Reader, lt, root.cert, k.Public(), root.key)
+	c, _ := x509.ParseCertificate(der)
+	l := issued{c, k}
+	if err := Provided(l.certPEM(), l.keyPEM(), root.certPEM(), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "digitalSignature") {
+		t.Errorf("keyEncipherment only: %v", err)
 	}
 }

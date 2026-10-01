@@ -94,8 +94,7 @@ func TestSingleCertSourceIsCheckedBeforePublishing(t *testing.T) {
 		t.Errorf("a certificate for f5-bnk alone, with f5-utils in use: %v", err)
 	}
 	s.cfg.BNK.Certificates.Issuer = "provided"
-	s.cfg.BNK.Certificates.CertFile, s.cfg.BNK.Certificates.KeyFile = writeCA(t, time.Now().Add(365*24*time.Hour))
-	s.cfg.BNK.Certificates.CAFile = s.cfg.BNK.Certificates.CertFile
+	s.cfg.BNK.Certificates.CertFile, s.cfg.BNK.Certificates.KeyFile, s.cfg.BNK.Certificates.CAFile = writeProvided(t, []string{"f5-tmm"})
 	if _, _, _, err := s.SingleCertSource(); err == nil || !strings.Contains(err.Error(), "does not cover names BNK uses") {
 		t.Errorf("a provided certificate without BNK's names: %v", err)
 	}

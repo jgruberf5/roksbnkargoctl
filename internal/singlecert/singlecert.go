@@ -5,7 +5,6 @@
 package singlecert
 
 import (
-	"bytes"
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
@@ -195,13 +194,9 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
 	hasRoot := false
 	for _, c := range cas {
-		// An anchor signs itself: a root, or a self-signed certificate given
-		// as its own ca.crt. Its own signature is checked — stricter than
-		// OpenSSL, which takes a certificate naming itself as issuer but signed
-		// by another key unless -check_ss_sig — except for an algorithm Go
-		// refuses to check and OpenSSL accepts: SHA-1, on older corporate
-		// roots, judged self-signed by its names. Whether it may sign is
-		// judged by Verify below, not here.
+		// An anchor is self-signed: a root, or a certificate given as its own
+		// ca.crt. See selfSigned. Whether it may sign is judged by Verify
+		// below, not here.
 		if selfSigned(c) {
 			roots.AddCert(c)
 			hasRoot = true
@@ -214,6 +209,12 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	}
 	for _, c := range chain {
 		inter.AddCert(c)
+	}
+	// Client auth signs the handshake: OpenSSL refuses a client certificate
+	// whose key usage lacks digitalSignature ("unsuitable certificate
+	// purpose"), and one certificate serves both ends.
+	if leaf.KeyUsage != 0 && leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return errors.New("tls.crt's key usage lacks digitalSignature, which client auth needs (one certificate serves both ends of every mTLS connection)")
 	}
 	if len(leaf.ExtKeyUsage) > 0 || len(leaf.UnknownExtKeyUsage) > 0 {
 		if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) || !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
@@ -243,11 +244,25 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	return nil
 }
 
+// selfSigned: it names itself as its issuer (compared as OpenSSL compares
+// names, ignoring case and runs of spaces) and is signed by its own key. The
+// names: OpenSSL takes nothing else for an anchor ("unable to get local issuer
+// certificate" for a certificate signed by its own key under another issuer's
+// name). The signature: stricter than OpenSSL, which takes a certificate
+// naming itself but signed by another key unless -check_ss_sig. It is checked
+// with CheckSignature, not CheckSignatureFrom, which also demands a CA and so
+// refused a self-signed leaf given as its own ca.crt (OpenSSL and Go's Verify
+// accept it). An algorithm Go will not check at all (MD5; SHA-1 it does) is
+// left to the names: OpenSSL does not check a trusted root's own signature.
 func selfSigned(c *x509.Certificate) bool {
-	// CheckSignature, not CheckSignatureFrom: the latter also refuses a
-	// parent that is not a CA, which would make a self-signed leaf used as
-	// its own ca.crt "no self-signed root" (OpenSSL and Go's Verify accept it).
+	if !sameName(c.Subject.String(), c.Issuer.String()) {
+		return false
+	}
 	err := c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
 	var insecure x509.InsecureAlgorithmError
-	return err == nil || (errors.As(err, &insecure) && bytes.Equal(c.RawSubject, c.RawIssuer))
+	return err == nil || errors.As(err, &insecure)
+}
+
+func sameName(a, b string) bool {
+	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
 }
