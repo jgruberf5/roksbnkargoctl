@@ -128,14 +128,78 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 		}
 		res.Pass("certificate", "issued %s, valid until %s, %d DNS names (%s)", cfg.CommonName, leafNotAfter(m.cert), len(sans), why)
 	}
+	var replaced []string
 	for _, ns := range cfg.Namespaces {
+		if old, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName)); err == nil {
+			if om, err := tlsFromSecret(old, false); err == nil &&
+				(string(om.cert) != string(m.cert) || old.String("data", "ca.crt") != base64.StdEncoding.EncodeToString(m.ca)) {
+				replaced = append(replaced, ns)
+			}
+		}
 		if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec); err != nil {
 			res.Fail("secret", "%s/%s: %v", ns, cfg.SecretName, err)
 			continue
 		}
 		res.Pass("secret", "%s/%s is current", ns, cfg.SecretName)
 	}
+	if len(replaced) > 0 {
+		restartMounting(ctx, env, cfg, res)
+	}
 	return nil
+}
+
+// restartMounting deletes every pod in the BNK namespaces that mounts the
+// Secret, once a certificate it already held was replaced. Components load
+// the certificate at start and do not all reload it: measured on BNK 2.4.0
+// GA, after a CA change the DSSM Redis kept serving the old certificate and
+// failed its own readiness probe ("certificate verify failed") against the
+// new ca.crt, while the sentinels, restarted, trusted only the new CA. Every
+// pod is restarted at once so they all hold the same CA; their controllers
+// re-create them.
+func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result) {
+	for _, ns := range cfg.Namespaces {
+		pods, err := env.Kube.List(ctx, GVRPod.Path(ns, ""), kube.ListOptions{})
+		if err != nil {
+			res.Fail("restart", "%s: listing pods: %v", ns, err)
+			continue
+		}
+		n := 0
+		for _, p := range pods {
+			if !mountsSecret(p, cfg.SecretName) || p.Deleting() {
+				continue
+			}
+			if _, err := env.Kube.DeleteIfExists(ctx, GVRPod.Path(ns, p.Name()), ""); err != nil {
+				res.Fail("restart", "%s/%s: %v", ns, p.Name(), err)
+				continue
+			}
+			n++
+		}
+		if n > 0 {
+			res.Pass("restart", "%s: restarted %d pods that mount the replaced certificate", ns, n)
+		}
+	}
+}
+
+// mountsSecret reports whether a pod mounts the Secret as a volume, directly
+// or through a projected volume.
+func mountsSecret(p kube.Object, name string) bool {
+	for _, v := range p.Slice("spec", "volumes") {
+		vol := kube.Object(asMap(v))
+		if vol.String("secret", "secretName") == name {
+			return true
+		}
+		for _, src := range vol.Slice("projected", "sources") {
+			if kube.Object(asMap(src)).String("secret", "name") == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func asMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
 }
 
 // certSpec digests the settings the Secret was issued for. The CA is not in

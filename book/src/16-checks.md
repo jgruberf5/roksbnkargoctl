@@ -353,6 +353,10 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    expiry. `provided` copies your certificate unchanged.
 4. **Writes** the Secret into each namespace by server-side apply, with the digest
    annotation.
+5. **Restarts** every pod in those namespaces that mounts the Secret (directly or through
+   a projected volume), when a certificate already there was replaced: components load it
+   at start, and a component left on the old CA fails mTLS against the others (DSSM's
+   Redis did, live). Nothing restarts on the first issue or an unchanged sync.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
 match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time for both
@@ -369,6 +373,8 @@ the message lists up to eight missing names and how many more.
 | `[FAIL] ca` | issuer `ca`: the source is not a CA, its key does not match, or it is not valid for longer than `--renew-before` |
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
+| `[PASS] restart` | `<ns>: restarted <n> pods that mount the replaced certificate` |
+| `[FAIL] restart` | a pod could not be listed or deleted; restart it by hand |
 
 `<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `<ns>/<name>: <parse
 error>`, `it expires <date>, within the renewal window`, `<ns>/<name> is not signed by the

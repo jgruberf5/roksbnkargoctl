@@ -567,3 +567,44 @@ func TestSingleCertFollowsACARenewedWithTheSameKey(t *testing.T) {
 		t.Error("ca.crt still holds the CA certificate before renewal")
 	}
 }
+
+// A replaced certificate restarts the pods that mount it (directly or
+// projected), in every namespace, so all load the new CA together — live, a
+// CA change left DSSM's Redis on the old certificate, unready. The first
+// issue, and an unchanged re-run, restart nothing.
+func TestSingleCertRestartsPodsWhenReplaced(t *testing.T) {
+	s, env, _ := newFake(t)
+	pod := func(ns, name string, vol map[string]any) {
+		p := kubefake.Obj("v1", "Pod", ns, name)
+		p["spec"] = map[string]any{"volumes": []any{vol}}
+		s.Put("", "v1", "pods", p)
+	}
+	put := func() {
+		pod("f5-bnk", "dssm-db-0", map[string]any{"name": "tls", "secret": map[string]any{"secretName": "bnk-single-cert"}})
+		pod("f5-utils", "cwc-0", map[string]any{"name": "tls", "projected": map[string]any{"sources": []any{
+			map[string]any{"secret": map[string]any{"name": "bnk-single-cert"}}}}})
+		pod("f5-bnk", "unrelated", map[string]any{"name": "x", "secret": map[string]any{"secretName": "other"}})
+	}
+	exists := func(ns, name string) bool { return s.Get("", "v1", "pods", ns, name) != nil }
+	put()
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk", "f5-utils")
+	runCert(t, s, env, cfg) // first issue
+	if !exists("f5-bnk", "dssm-db-0") || !exists("f5-utils", "cwc-0") {
+		t.Fatal("the first issue restarted pods")
+	}
+	runCert(t, s, env, cfg) // unchanged
+	if !exists("f5-bnk", "dssm-db-0") {
+		t.Fatal("an unchanged re-run restarted pods")
+	}
+	cfg.ExtraDNS = []string{"bnk.example.com"} // reissued
+	res := runCert(t, s, env, cfg)
+	if exists("f5-bnk", "dssm-db-0") || exists("f5-utils", "cwc-0") {
+		t.Error("pods mounting the replaced certificate were not restarted")
+	}
+	if !exists("f5-bnk", "unrelated") {
+		t.Error("a pod not mounting the certificate was restarted")
+	}
+	if !strings.Contains(strings.Join(passes(res), "\n"), "restarted 1 pods") {
+		t.Errorf("the restart is not reported: %v", passes(res))
+	}
+}
