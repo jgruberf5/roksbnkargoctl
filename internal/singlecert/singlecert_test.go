@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"errors"
 	"math/big"
@@ -443,5 +444,76 @@ func TestProvidedLeafNeedsDigitalSignature(t *testing.T) {
 	l := issued{c, k}
 	if err := Provided(l.certPEM(), l.keyPEM(), root.certPEM(), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "digitalSignature") {
 		t.Errorf("keyEncipherment only: %v", err)
+	}
+}
+
+// Names compared as OpenSSL 3.5.5 compares them (each case's verdict was
+// taken from `openssl verify` on the same certificates): a root whose issuer
+// name differs from its subject only as below.
+func TestProvidedRootNamesAsOpenSSLComparesThem(t *testing.T) {
+	ps := func(s string) asn1.RawValue { // PrintableString/UTF8String as Go marshals them
+		b, _ := asn1.Marshal(s)
+		var v asn1.RawValue
+		_, _ = asn1.Unmarshal(b, &v)
+		return v
+	}
+	ia5 := func(s string) asn1.RawValue {
+		return asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagIA5String, Bytes: []byte(s)}
+	}
+	var (
+		oidCN = asn1.ObjectIdentifier{2, 5, 4, 3}
+		oidO  = asn1.ObjectIdentifier{2, 5, 4, 10}
+		oidDC = asn1.ObjectIdentifier{0, 9, 2342, 19200300, 100, 1, 25}
+		oidE  = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 1}
+	)
+	atv := func(oid asn1.ObjectIdentifier, v asn1.RawValue) pkix.AttributeTypeAndValue {
+		return pkix.AttributeTypeAndValue{Type: oid, Value: v}
+	}
+	name := func(rdns ...[]pkix.AttributeTypeAndValue) []byte {
+		seq := pkix.RDNSequence{}
+		for _, r := range rdns {
+			seq = append(seq, pkix.RelativeDistinguishedNameSET(r))
+		}
+		b, err := asn1.Marshal(seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	one := func(a ...pkix.AttributeTypeAndValue) []pkix.AttributeTypeAndValue { return a }
+	for label, tc := range map[string]struct {
+		subject, issuer []byte
+		ok              bool
+	}{
+		"identical":         {name(one(atv(oidCN, ps("Root")))), name(one(atv(oidCN, ps("Root")))), true},
+		"case and spaces":   {name(one(atv(oidCN, ps("Corp  Root")))), name(one(atv(oidCN, ps("corp root")))), true},
+		"leading space":     {name(one(atv(oidCN, ps(" Root")))), name(one(atv(oidCN, ps("Root")))), true},
+		"DC case":           {name(one(atv(oidDC, ia5("Corp"))), one(atv(oidCN, ps("Root")))), name(one(atv(oidDC, ia5("corp"))), one(atv(oidCN, ps("Root")))), true},
+		"emailAddress case": {name(one(atv(oidE, ia5("PKI@corp.example")))), name(one(atv(oidE, ia5("pki@corp.example")))), true},
+		"order":             {name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), name(one(atv(oidO, ps("Acme"))), one(atv(oidCN, ps("Root")))), false},
+		// Only the grouping differs (DER sorts a set: CN before O either way).
+		"multi-valued RDN": {name(one(atv(oidCN, ps("Root")), atv(oidO, ps("Acme")))), name(one(atv(oidCN, ps("Root"))), one(atv(oidO, ps("Acme")))), false},
+		"non-ASCII case":   {name(one(atv(oidCN, ps("Ärzte Root")))), name(one(atv(oidCN, ps("ärzte Root")))), false},
+		"no-break space":   {name(one(atv(oidCN, ps("Corp Root")))), name(one(atv(oidCN, ps("Corp Root")))), false},
+	} {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		rt := &x509.Certificate{SerialNumber: big.NewInt(150), RawSubject: tc.subject,
+			NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+		parent := &x509.Certificate{RawSubject: tc.issuer}
+		der, err := x509.CreateCertificate(rand.Reader, rt, parent, k.Public(), k)
+		if err != nil {
+			t.Fatal(label, err)
+		}
+		root, _ := x509.ParseCertificate(der)
+		lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(151), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+		ld, _ := x509.CreateCertificate(rand.Reader, lt, root, lk.Public(), k)
+		leaf, _ := x509.ParseCertificate(ld)
+		l := issued{leaf, lk}
+		err = Provided(l.certPEM(), l.keyPEM(), issued{root, k}.certPEM(), []string{"f5-tmm"}, now)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: accepted=%v, OpenSSL: %v (%v)", label, err == nil, tc.ok, err)
+		}
 	}
 }

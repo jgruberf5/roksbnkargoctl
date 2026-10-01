@@ -7,6 +7,8 @@ package singlecert
 import (
 	"crypto"
 	"crypto/x509"
+	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // names are the DNS names F5's procedure puts in the certificate, with <ns>
@@ -210,11 +213,14 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	for _, c := range chain {
 		inter.AddCert(c)
 	}
-	// Client auth signs the handshake: OpenSSL refuses a client certificate
-	// whose key usage lacks digitalSignature ("unsuitable certificate
-	// purpose"), and one certificate serves both ends.
+	// Both ends sign with the one certificate: as a TLS 1.2 ECDHE server it
+	// signs the key exchange, and as a client it signs CertificateVerify.
+	// Measured with OpenSSL 3.5.5: an RSA keyEncipherment-only certificate is
+	// refused for client auth ("unsuitable certificate purpose"); an EC
+	// keyAgreement-only one passes `verify` but a TLS 1.2 server holding it
+	// has "no shared cipher".
 	if leaf.KeyUsage != 0 && leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-		return errors.New("tls.crt's key usage lacks digitalSignature, which client auth needs (one certificate serves both ends of every mTLS connection)")
+		return errors.New("tls.crt's key usage lacks digitalSignature: the certificate signs the handshake at both ends of every mTLS connection")
 	}
 	if len(leaf.ExtKeyUsage) > 0 || len(leaf.UnknownExtKeyUsage) > 0 {
 		if !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageServerAuth) || !slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth) {
@@ -245,7 +251,7 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 }
 
 // selfSigned: it names itself as its issuer (compared as OpenSSL compares
-// names, ignoring case and runs of spaces) and is signed by its own key. The
+// names, see sameName) and is signed by its own key. The
 // names: OpenSSL takes nothing else for an anchor ("unable to get local issuer
 // certificate" for a certificate signed by its own key under another issuer's
 // name). The signature: stricter than OpenSSL, which takes a certificate
@@ -255,7 +261,7 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 // accept it). An algorithm Go will not check at all (MD5; SHA-1 it does) is
 // left to the names: OpenSSL does not check a trusted root's own signature.
 func selfSigned(c *x509.Certificate) bool {
-	if !sameName(c.Subject.String(), c.Issuer.String()) {
+	if !sameName(c.RawSubject, c.RawIssuer) {
 		return false
 	}
 	err := c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
@@ -263,6 +269,92 @@ func selfSigned(c *x509.Certificate) bool {
 	return err == nil || errors.As(err, &insecure)
 }
 
-func sameName(a, b string) bool {
-	return strings.EqualFold(strings.Join(strings.Fields(a), " "), strings.Join(strings.Fields(b), " "))
+// sameName compares two DER names as OpenSSL does (x509_name_canon): RDN by
+// RDN in order, attribute by attribute, the same type, and string values
+// equal once converted to UTF-8, trimmed of ASCII whitespace, internal runs of
+// it collapsed to one space and ASCII lowercased; other values byte for byte.
+// pkix.Name.String() is not that form: it re-orders attributes, flattens
+// multi-valued RDNs, folds non-ASCII case, and hex-encodes DC or emailAddress.
+func sameName(a, b []byte) bool {
+	ca, errA := canonName(a)
+	cb, errB := canonName(b)
+	return errA == nil && errB == nil && slices.EqualFunc(ca, cb, func(x, y []string) bool { return slices.Equal(x, y) })
+}
+
+// canonName is a DER name as RDNs, each a list of "OID=canonical value".
+func canonName(der []byte) ([][]string, error) {
+	var seq asn1.RawValue
+	if rest, err := asn1.Unmarshal(der, &seq); err != nil || len(rest) > 0 {
+		return nil, errors.New("malformed name")
+	}
+	var out [][]string
+	for rest := seq.Bytes; len(rest) > 0; {
+		var set asn1.RawValue
+		var err error
+		if rest, err = asn1.Unmarshal(rest, &set); err != nil {
+			return nil, err
+		}
+		var rdn []string
+		for in := set.Bytes; len(in) > 0; {
+			var atv struct {
+				Type  asn1.ObjectIdentifier
+				Value asn1.RawValue
+			}
+			if in, err = asn1.Unmarshal(in, &atv); err != nil {
+				return nil, err
+			}
+			rdn = append(rdn, atv.Type.String()+"="+canonValue(atv.Value))
+		}
+		out = append(out, rdn)
+	}
+	return out, nil
+}
+
+func canonValue(v asn1.RawValue) string {
+	var s string
+	switch {
+	case v.Class != asn1.ClassUniversal:
+		return "#" + hex.EncodeToString(v.FullBytes)
+	case v.Tag == asn1.TagUTF8String || v.Tag == asn1.TagPrintableString || v.Tag == asn1.TagIA5String ||
+		v.Tag == 26 /* VisibleString */ || v.Tag == asn1.TagNumericString:
+		s = string(v.Bytes)
+	case v.Tag == asn1.TagT61String: // read as Latin-1, as OpenSSL does
+		r := make([]rune, len(v.Bytes))
+		for i, c := range v.Bytes {
+			r[i] = rune(c)
+		}
+		s = string(r)
+	case v.Tag == asn1.TagBMPString && len(v.Bytes)%2 == 0:
+		u := make([]uint16, len(v.Bytes)/2)
+		for i := range u {
+			u[i] = uint16(v.Bytes[2*i])<<8 | uint16(v.Bytes[2*i+1])
+		}
+		s = string(utf16.Decode(u))
+	case v.Tag == 28 /* UniversalString */ && len(v.Bytes)%4 == 0:
+		r := make([]rune, len(v.Bytes)/4)
+		for i := range r {
+			b := v.Bytes[4*i:]
+			r[i] = rune(b[0])<<24 | rune(b[1])<<16 | rune(b[2])<<8 | rune(b[3])
+		}
+		s = string(r)
+	default:
+		return "#" + hex.EncodeToString(v.FullBytes)
+	}
+	var b strings.Builder
+	space := false
+	for _, r := range strings.Trim(s, " \t\n\v\f\r") {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r' {
+			space = true
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
