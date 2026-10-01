@@ -625,10 +625,11 @@ func TestSingleCertificateSourceStaysOutOfGit(t *testing.T) {
 	c := baseConfig(config.ModeConnected, config.SourceFAR)
 	c.BNK.Certificates = config.Certificates{Mode: config.CertModeSingle, Issuer: "ca"}
 	c.Defaults("ws")
-	c.BNK.NADAddress = "LEAKEDKEYMATERIAL-123"
+	fake := strings.Repeat("z", 12) // stands in for a key; low entropy, so no scanner mistakes it for one
+	c.BNK.NADAddress = fake
 	in := Inputs{Config: c, Workspace: "ws", Manifest: manifest(), FLOChart: fakeChart(t, "flo"),
 		FLOChartRef: "r/charts/f5-lifecycle-operator:1", CheckImage: "i", RunID: "r",
-		Secrets: Secrets{SingleCertPEM: "x", SingleCertKey: "LEAKEDKEYMATERIAL-123"}}
+		Secrets: Secrets{SingleCertPEM: "x", SingleCertKey: fake}}
 	if _, err := Render(in); err == nil || !strings.Contains(err.Error(), "single-certificate private key") {
 		t.Errorf("a private key in Git was not refused: %v", err)
 	}
