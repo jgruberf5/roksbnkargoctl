@@ -608,3 +608,68 @@ func TestSingleCertRestartsPodsWhenReplaced(t *testing.T) {
 		t.Errorf("the restart is not reported: %v", passes(res))
 	}
 }
+
+// Restarts happen only once every namespace holds the new certificate: a
+// failed write restarts nothing (an outage for nothing, or namespaces on two
+// CAs). A pod already Terminating is not deleted again or counted.
+func TestSingleCertRestartNeedsEveryWrite(t *testing.T) {
+	s, env, _ := newFake(t)
+	pod := func(ns, name string, deleting bool) {
+		p := kubefake.Obj("v1", "Pod", ns, name)
+		p["spec"] = map[string]any{"volumes": []any{map[string]any{"name": "tls", "secret": map[string]any{"secretName": "bnk-single-cert"}}}}
+		if deleting {
+			p["metadata"].(map[string]any)["deletionTimestamp"] = "2026-10-01T00:00:00Z"
+		}
+		s.Put("", "v1", "pods", p)
+	}
+	pod("f5-bnk", "a", false)
+	pod("f5-utils", "b", false)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk", "f5-utils")
+	runCert(t, s, env, cfg)
+	s.Hook = func(_ *kubefake.Server, r kubefake.Request) *kubefake.Reply {
+		if r.Method == "PATCH" && strings.Contains(r.Path, "/namespaces/f5-utils/secrets/") {
+			rep := kubefake.Status(403, "Forbidden", "no")
+			return &rep
+		}
+		return nil
+	}
+	cfg.ExtraDNS = []string{"bnk.example.com"}
+	res := runCert(t, s, env, cfg)
+	if s.Get("", "v1", "pods", "f5-bnk", "a") == nil || s.Get("", "v1", "pods", "f5-utils", "b") == nil {
+		t.Error("pods were restarted although a namespace still holds the old certificate")
+	}
+	if !strings.Contains(strings.Join(res.Failures(), " "), "not restarting") {
+		t.Errorf("the skipped restart is not reported: %v", res.Failures())
+	}
+	s.Hook = nil
+	pod("f5-bnk", "going", true)
+	cfg.ExtraDNS = []string{"bnk2.example.com"}
+	res = runCert(t, s, env, cfg)
+	if !strings.Contains(strings.Join(passes(res), "\n"), "f5-bnk: restarted 1 pods") {
+		t.Errorf("a Terminating pod was counted, or a is not restarted: %v", passes(res))
+	}
+}
+
+// provided: a new ca.crt with the same tls.crt (the operator's CA bundle
+// changed) is a replacement too: the pods must load the new trust.
+func TestSingleCertRestartsOnANewProvidedCABundle(t *testing.T) {
+	s, env, _ := newFake(t)
+	ca, caKey := testCAKey(t)
+	good := issueFor(t, ca, caKey, SingleCertSANs([]string{"f5-bnk"}, nil))
+	src := func(caPEM []byte) {
+		s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "mine", map[string][]byte{"tls.crt": good.cert, "tls.key": good.key, "ca.crt": caPEM}))
+	}
+	src(good.ca)
+	cfg := certCfg(IssuerProvided, "f5-bnk")
+	cfg.SourceSecret = "roksbnkargoctl-check/mine"
+	runCert(t, s, env, cfg)
+	p := kubefake.Obj("v1", "Pod", "f5-bnk", "a")
+	p["spec"] = map[string]any{"volumes": []any{map[string]any{"name": "tls", "secret": map[string]any{"secretName": "bnk-single-cert"}}}}
+	s.Put("", "v1", "pods", p)
+	other, _ := testCAKey(t)
+	src(append(append([]byte{}, good.ca...), pemCert(other.Raw)...)) // the bundle gains a second root
+	runCert(t, s, env, cfg)
+	if s.Get("", "v1", "pods", "f5-bnk", "a") != nil {
+		t.Error("a new ca.crt bundle did not restart the pods")
+	}
+}

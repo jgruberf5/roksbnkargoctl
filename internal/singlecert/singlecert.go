@@ -5,6 +5,7 @@
 package singlecert
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
@@ -194,7 +195,10 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
 	hasRoot := false
 	for _, c := range cas {
-		if c.CheckSignatureFrom(c) == nil {
+		// Self-signed by name, as OpenSSL decides it: a root is trusted, not
+		// verified, so its own signature algorithm (SHA-1 on older corporate
+		// roots, which Go will not check) does not matter.
+		if bytes.Equal(c.RawSubject, c.RawIssuer) && (len(c.AuthorityKeyId) == 0 || bytes.Equal(c.AuthorityKeyId, c.SubjectKeyId)) {
 			roots.AddCert(c)
 			hasRoot = true
 		} else {

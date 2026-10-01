@@ -109,21 +109,28 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return err
 	}
 
-	ibmc, err := s.IBM()
-	if err != nil {
+	// Before the first change in the cloud (and before the IBM Cloud client,
+	// which makes none), the record is written. A workspace with nothing
+	// installed records the install as pending, which locks nothing: a first
+	// install that fails from here on, leaving a trusted profile, is then not
+	// mistaken for one made before 0.7.0 (a profile and no record). Such a
+	// pre-0.7.0 install, which checkLayout let through with cert-manager, gets
+	// its layout recorded at once: a pending record would erase the only sign
+	// of it if this install failed. The layout itself is recorded once the
+	// Application exists (step 8).
+	switch {
+	case r.InstalledLayout == "" && r.TrustedProfileID != "":
+		r.InstalledLayout = installLayout(c)
+	case !layoutInstalled(r.InstalledLayout):
+		r.InstalledLayout = layoutPending + installLayout(c)
+	}
+	if err := s.save(); err != nil {
 		return err
 	}
 
-	// Before the first change in the cloud, a workspace with nothing installed
-	// records the install as pending: a first install that fails from here on
-	// (and leaves a trusted profile) is not then mistaken for one made before
-	// 0.7.0, whose record is a profile and no layout. Pending locks nothing;
-	// the layout itself is recorded once BNK's objects are applied (step 5).
-	if !layoutInstalled(r.InstalledLayout) {
-		r.InstalledLayout = layoutPending + installLayout(c)
-		if err := s.save(); err != nil {
-			return err
-		}
+	ibmc, err := s.IBM()
+	if err != nil {
+		return err
 	}
 
 	// 2. Transit gateway attachment.
@@ -161,12 +168,6 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		}
 	}
 	p.ok("out-of-band objects applied")
-	if r.InstalledLayout != installLayout(c) {
-		r.InstalledLayout = installLayout(c)
-		if err := s.save(); err != nil {
-			return err
-		}
-	}
 
 	// 6. Register ROKS with Argo CD.
 	p.step("registering %s with Argo CD (%s endpoint %s)", r.ClusterName, c.ArgoCD.ClusterEndpoint, r.ArgoCDClusterServer)
@@ -253,6 +254,15 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return fmt.Errorf("creating the Application: %w", err)
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
+	// From here Argo CD installs BNK (now, or at the next sync): the layout is
+	// what is installed. Before, a failure (registration, Git, the
+	// Application) left nothing of BNK, and the record stays pending.
+	if r.InstalledLayout != installLayout(c) {
+		r.InstalledLayout = installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
+	}
 	gitPos, err := gitSourcePosition(o.Application)
 	if err != nil {
 		return err
@@ -916,10 +926,6 @@ func installLayout(c *config.Config) string {
 	return "namespaces=" + nss + " certificates=" + c.BNK.Certificates.Mode
 }
 
-// checkLayout refuses to install with a different layout than the one BNK is
-// installed with: moving to one namespace would delete the utilities
-// namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
-// and switching certificate modes swaps every component's certificates under it.
 // layoutNone records that uninstall removed BNK; layoutPending prefixes the
 // layout of an install that has not yet applied anything of BNK. An empty
 // record is a workspace never installed by 0.7.0: with a trusted profile, one
@@ -935,9 +941,13 @@ func layoutInstalled(l string) bool {
 	return l != "" && l != layoutNone && !strings.HasPrefix(l, layoutPending)
 }
 
+// checkLayout refuses to install with a different layout than the one BNK is
+// installed with: moving to one namespace would delete the utilities
+// namespace with CWC, RabbitMQ and the License in it (it did, on roksbnkctl),
+// and switching certificate modes swaps every component's certificates under it.
 func checkLayout(r *config.Resolved, c *config.Config) error {
 	// An install made before 0.7.0: a trusted profile and no record at all
-	// (0.7.0 records pending before it creates the profile).
+	// (0.7.0 records pending, or the layout, before it creates the profile).
 	if r.InstalledLayout == "" && r.TrustedProfileID != "" && c.BNK.Certificates.Mode != config.CertModeCertManager {
 		// Installed before 0.7.0 (the trusted profile is install's): with
 		// cert-manager, the only certificates there were; its namespaces are

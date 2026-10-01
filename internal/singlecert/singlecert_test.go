@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -241,5 +242,36 @@ func TestCAWithoutKeyUsageAndSkewWidth(t *testing.T) {
 		if _, _, err := CA(c.certPEM(), c.keyPEM(), now, 30*day); err == nil {
 			t.Error("a CA over five minutes ahead was accepted")
 		}
+	}
+}
+
+// A root signed with SHA-1 (older corporate roots) is still a root: OpenSSL
+// accepts it as an anchor, since a trusted root is not verified, while Go
+// will not check its signature — judging self-signed by that check called it
+// an intermediate and refused "no self-signed root".
+func TestProvidedSHA1Root(t *testing.T) {
+	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rt := &x509.Certificate{SerialNumber: big.NewInt(80), Subject: pkix.Name{CommonName: "old-root"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, SignatureAlgorithm: x509.SHA1WithRSA}
+	der, err := x509.CreateCertificate(rand.Reader, rt, rt, rk.Public(), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _ := x509.ParseCertificate(der)
+	if root.CheckSignatureFrom(root) == nil {
+		t.Fatal("Go checked a SHA-1 signature: the test no longer shows the case")
+	}
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(81), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+	ld, err := x509.CreateCertificate(rand.Reader, lt, root, k.Public(), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(ld)
+	l := issued{leaf, k}
+	if err := Provided(l.certPEM(), l.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("a SHA-1 root with a SHA-256 leaf: %v", err)
 	}
 }

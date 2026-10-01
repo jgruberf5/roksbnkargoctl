@@ -135,8 +135,10 @@ Secret into every BNK namespace. Defaults follow F5's procedure: CN `f5net` (a g
 `f5net-ca`), O `F5 Networks`, OU `PD`, C `US`, ST `Washington`, L `Seattle`, RSA 4096 written
 PKCS#1, 3650 days, reissued 30 days before expiry; SANs are F5's name list for every BNK
 namespace plus `extra_dns_names` and `ip_addresses`. The check ClusterRole gains `create` on
-Secrets in this mode only. F5 notes components may restart when their mounted certificate
-changes, so a reissue can restart them.
+Secrets in this mode only. When a sync replaces a certificate the namespaces already held,
+and only once every namespace holds the new one, `check cert` deletes every pod mounting it,
+at once: components load it at start, and DSSM's Redis does not reload it (live, it then
+failed its own readiness probe against the new CA).
 
 **One namespace** (#31): `bnk.utils_namespace` equal to `bnk.namespace` puts every BNK
 component in one namespace; every per-namespace object is rendered once.

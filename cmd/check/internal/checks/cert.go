@@ -128,21 +128,31 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 		}
 		res.Pass("certificate", "issued %s, valid until %s, %d DNS names (%s)", cfg.CommonName, leafNotAfter(m.cert), len(sans), why)
 	}
-	var replaced []string
+	replaced, failed := false, false
 	for _, ns := range cfg.Namespaces {
+		changed := false
 		if old, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName)); err == nil {
 			if om, err := tlsFromSecret(old, false); err == nil &&
 				(string(om.cert) != string(m.cert) || old.String("data", "ca.crt") != base64.StdEncoding.EncodeToString(m.ca)) {
-				replaced = append(replaced, ns)
+				changed = true
 			}
 		}
 		if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec); err != nil {
 			res.Fail("secret", "%s/%s: %v", ns, cfg.SecretName, err)
+			failed = true
 			continue
 		}
+		replaced = replaced || changed
 		res.Pass("secret", "%s/%s is current", ns, cfg.SecretName)
 	}
-	if len(replaced) > 0 {
+	// Only when every namespace holds the new certificate: restarting pods
+	// onto a Secret that was not written is an outage for nothing, and with a
+	// CA change would leave the namespaces on different CAs. The next sync
+	// writes again and restarts then.
+	switch {
+	case replaced && failed:
+		res.Fail("restart", "not restarting the pods that mount %s: it could not be written into every namespace", cfg.SecretName)
+	case replaced:
 		restartMounting(ctx, env, cfg, res)
 	}
 	return nil

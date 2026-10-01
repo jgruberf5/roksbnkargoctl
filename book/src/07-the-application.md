@@ -521,7 +521,8 @@ FLO does. With roksbnkctl on BNK 2.3, switching to one namespace deleted the uti
 namespace with those components in it. Switching the certificate mode would swap every
 component's certificates under it.
 `install` records `pending: <layout>` before its first change in the cloud, and the layout
-itself once BNK's objects are applied: a first install that fails in between locks
+itself once the Application exists (step 8, after which Argo CD installs BNK): a first
+install that fails in between locks
 nothing, and a retry may choose another layout. `uninstall` records `installed_layout:
 none`, so the next `install` may choose either layout. `init`, by interview, `--refresh` or `--config-file`, keeps the record, and refuses
 to carry it to a config that names another cluster.
@@ -531,7 +532,8 @@ cert-manager, so `install` refuses a switch to `certificates=single` on a worksp
 records a trusted profile but no layout at all (0.7.0 always records one before it creates
 the profile); their namespaces are not known, so a namespace
 change is not caught until the next `install` records them. Run `uninstall` first if you
-are changing `bnk.utils_namespace` on such a workspace.
+are changing `bnk.utils_namespace` on such a workspace. Its first 0.7.0 `install` records the layout at once,
+not as pending, so an install that fails does not erase the only sign of the running one.
 
 ## How the Helm charts are installed
 

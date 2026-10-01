@@ -55,15 +55,8 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 	walk("cmd/check")
 	workflow := read(".github/workflows/check-image.yml")
 	for dir := range seen {
-		// Excluded inside an admitted tree (kubefake is, as test-only).
-		for _, line := range strings.Split(ignore, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") || strings.Contains(line, "*") {
-				continue
-			}
-			if dir+"/" == line || strings.HasPrefix(dir+"/", line) {
-				t.Errorf("the check binary imports %s, which Dockerfile.dockerignore excludes (%s)", dir, line)
-			}
+		if rule := excludedBy(ignore, dir); rule != "" {
+			t.Errorf("the check binary imports %s, which Dockerfile.dockerignore excludes (%s)", dir, rule)
 		}
 		if strings.HasPrefix(dir, "cmd/check") {
 			continue
@@ -74,11 +67,43 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 		if !strings.Contains(dockerfile, "COPY "+dir+"/ ./"+dir+"/") {
 			t.Errorf("the Dockerfile does not copy %s, which the check binary imports", dir)
 		}
-		if !strings.Contains(ignore, "!"+dir+"/") {
-			t.Errorf("Dockerfile.dockerignore keeps %s out of the build context", dir)
-		}
 	}
 	if !seen["internal/singlecert"] {
 		t.Error("the walk did not reach internal/singlecert: the test is not reading imports")
 	}
+}
+
+// excludedBy applies a .dockerignore to a package directory as Docker does:
+// rules in order, the last that matches wins, "!" re-includes, a leading "/"
+// is the context root. File patterns (*_test.go) do not exclude a package;
+// "*" excludes everything. It returns the deciding rule when the directory is
+// excluded, "" when it is in the context.
+func excludedBy(ignore, dir string) string {
+	decided := ""
+	for _, line := range strings.Split(ignore, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		neg := strings.HasPrefix(line, "!")
+		pat := strings.TrimPrefix(strings.TrimPrefix(line, "!"), "/")
+		var match bool
+		switch {
+		case pat == "*" || pat == "**":
+			match = true
+		case strings.Contains(pat, "*") || strings.HasSuffix(pat, ".go"):
+			continue // a file pattern
+		default:
+			pat = strings.TrimSuffix(pat, "/")
+			match = dir == pat || strings.HasPrefix(dir+"/", pat+"/")
+		}
+		if match {
+			if neg {
+				decided = ""
+			} else {
+				decided = line
+			}
+		}
+	}
+	return decided
 }
