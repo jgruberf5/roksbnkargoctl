@@ -2,5 +2,7 @@
 !go.mod
 !go.sum
 !cmd/check/
+!internal/singlecert/
+internal/singlecert/*_test.go
 cmd/check/**/*_test.go
 cmd/check/internal/kube/kubefake/

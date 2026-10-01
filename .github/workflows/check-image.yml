@@ -7,9 +7,9 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    paths: ['cmd/check/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
+    paths: ['cmd/check/**', 'internal/singlecert/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
   pull_request:
-    paths: ['cmd/check/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
+    paths: ['cmd/check/**', 'internal/singlecert/**', 'build/check/**', 'go.mod', '.github/workflows/check-image.yml']
   workflow_dispatch:
 
 permissions:
