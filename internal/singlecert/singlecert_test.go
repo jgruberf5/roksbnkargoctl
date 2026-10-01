@@ -69,7 +69,7 @@ func TestCARefusesWhatCannotSign(t *testing.T) {
 		c    issued
 		want string
 	}{
-		"expired":           {issue(t, nil, "ca", true, now.Add(-year), now.Add(-day)), "within the renewal window"},
+		"expired":           {issue(t, nil, "ca", true, now.Add(-year), now.Add(-day)), "the CA expired"},
 		"within the window": {issue(t, nil, "ca", true, now.Add(-year), now.Add(20*day)), "within the renewal window"},
 		"not yet valid":     {issue(t, nil, "ca", true, now.Add(day), now.Add(year)), "not valid until"},
 		"not a CA":          {issue(t, nil, "leaf", false, now.Add(-day), now.Add(year)), "not a CA"},
@@ -143,5 +143,56 @@ func TestProvided(t *testing.T) {
 	}
 	if err := Provided(chain, withIP.keyPEM(), root.certPEM(), names, now.Add(2*year)); err == nil {
 		t.Error("an expired certificate was accepted")
+	}
+}
+
+// A CA whose key usage lacks keyCertSign signs certificates nothing verifies
+// (and the check would reissue on every sync); a CA minted a moment ahead of
+// this clock is accepted within Skew.
+func TestCAKeyUsageAndSkew(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	mk := func(ku x509.KeyUsage, from time.Time) issued {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(50), Subject: pkix.Name{CommonName: "ca"},
+			NotBefore: from, NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true, KeyUsage: ku}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, k}
+	}
+	noSign := mk(x509.KeyUsageDigitalSignature|x509.KeyUsageCRLSign, now.Add(-day))
+	if _, _, err := CA(noSign.certPEM(), noSign.keyPEM(), now, 30*day); err == nil || !strings.Contains(err.Error(), "keyCertSign") {
+		t.Errorf("a CA without keyCertSign: %v", err)
+	}
+	ahead := mk(x509.KeyUsageCertSign, now.Add(2*time.Minute))
+	if _, _, err := CA(ahead.certPEM(), ahead.keyPEM(), now, 30*day); err != nil {
+		t.Errorf("a CA two minutes ahead: %v", err)
+	}
+	far := mk(x509.KeyUsageCertSign, now.Add(Skew+time.Minute))
+	if _, _, err := CA(far.certPEM(), far.keyPEM(), now, 30*day); err == nil {
+		t.Error("a CA beyond the skew was accepted")
+	}
+}
+
+// provided: one certificate serves both ends of mTLS, so server-auth-only is
+// refused; ca.crt holding an unrelated root next to the issuing intermediate
+// verifies, as it does for the components that read ca.crt.
+func TestProvidedUsageAndAnchors(t *testing.T) {
+	root := issue(t, nil, "root", true, now.Add(-day), now.Add(5*year))
+	inter := issue(t, &root, "intermediate", true, now.Add(-day), now.Add(4*year))
+	leaf := func(eku ...x509.ExtKeyUsage) issued {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(60), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}, ExtKeyUsage: eku}
+		der, _ := x509.CreateCertificate(rand.Reader, tmpl, inter.cert, k.Public(), inter.key)
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, k}
+	}
+	server := leaf(x509.ExtKeyUsageServerAuth)
+	if err := Provided(server.certPEM(), server.keyPEM(), inter.certPEM(), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "client auth") {
+		t.Errorf("server auth only: %v", err)
+	}
+	both := leaf(x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth)
+	unrelated := issue(t, nil, "unrelated", true, now.Add(-day), now.Add(5*year))
+	if err := Provided(both.certPEM(), both.keyPEM(), append(unrelated.certPEM(), inter.certPEM()...), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("an unrelated root beside the issuing intermediate: %v", err)
 	}
 }

@@ -90,9 +90,10 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 		if err != nil {
 			return err
 		}
+		// Refused within the renewal window too, not only once expired: the
+		// certificate is capped at the CA's expiry, so it would be inside the
+		// window as well and reissued on every sync.
 		if signer, signerKey, err = singlecert.CA(m.cert, m.key, cfg.Now(), cfg.RenewBefore); err != nil {
-			// Refused, not used: an expired CA would issue an invalid
-			// certificate and reissue it on every sync.
 			res.Fail("ca", "%s: %v", cfg.SourceSecret, err)
 			return nil
 		}

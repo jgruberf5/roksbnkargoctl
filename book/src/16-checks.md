@@ -355,9 +355,10 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
    annotation.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
-match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time (any
-certificates after the first in `tls.crt`, and any that are not self-signed in `ca.crt`,
-serve as intermediates), or it does not cover every DNS name and `--ip` address BNK uses;
+match `tls.crt`, `tls.crt` does not verify against `ca.crt` at the current time for both
+server and client auth (every certificate in `ca.crt` is a trust anchor, as it is to the
+components that read it; any after the first in `tls.crt` serve as intermediates), or it
+does not cover every DNS name and `--ip` address BNK uses;
 the message lists up to eight missing names and how many more.
 
 | Finding | Meaning |

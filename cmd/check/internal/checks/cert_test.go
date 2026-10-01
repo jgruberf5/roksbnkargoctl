@@ -258,6 +258,9 @@ func TestSingleCertDefaultKeyIsRSA4096PKCS1(t *testing.T) {
 	if b, _ := pem.Decode(m.key); b == nil || b.Type != "RSA PRIVATE KEY" {
 		t.Errorf("key block %v", b)
 	}
+	if leaf.KeyUsage&x509.KeyUsageKeyEncipherment == 0 {
+		t.Error("an RSA certificate without keyEncipherment (RSA key exchange)")
+	}
 }
 
 func passes(r *Result) []string {
@@ -404,7 +407,11 @@ func TestSingleCertReplacesAnEditedSecret(t *testing.T) {
 // refused with a failure and nothing is written: it would issue a certificate
 // already (or soon) invalid, and reissue it on every sync.
 func TestSingleCertRefusesAnExpiringCA(t *testing.T) {
-	for name, notAfter := range map[string]time.Time{"expired": certNow.Add(-24 * time.Hour), "within the window": certNow.Add(20 * 24 * time.Hour)} {
+	for name, tc := range map[string]struct {
+		notAfter time.Time
+		want     string
+	}{"expired": {certNow.Add(-24 * time.Hour), "the CA expired"}, "within the window": {certNow.Add(20 * 24 * time.Hour), "within the renewal window"}} {
+		notAfter := tc.notAfter
 		s, env, _ := newFake(t)
 		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		tmpl := &x509.Certificate{SerialNumber: big.NewInt(3), Subject: pkix.Name{CommonName: "old-ca"},
@@ -415,7 +422,7 @@ func TestSingleCertRefusesAnExpiringCA(t *testing.T) {
 		cfg := certCfg(IssuerCA, "f5-bnk")
 		cfg.SourceSecret = "roksbnkargoctl-check/src"
 		res := runCert(t, s, env, cfg)
-		if !res.Failed() || !strings.Contains(strings.Join(res.Failures(), " "), "renewal window") {
+		if !res.Failed() || !strings.Contains(strings.Join(res.Failures(), " "), tc.want) {
 			t.Errorf("%s: %v", name, res.Failures())
 		}
 		if s.Get("", "v1", "secrets", "f5-bnk", "bnk-single-cert") != nil {
@@ -526,6 +533,14 @@ func TestSingleCertRestoresAnEditedProvidedCopy(t *testing.T) {
 	runCert(t, s, env, cfg)
 	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.cert) != string(good.cert) {
 		t.Error("an edited copy of the provided certificate was kept")
+	}
+	// ca.crt alone edited.
+	edited = s.Get("", "v1", "secrets", "f5-bnk", "bnk-single-cert")
+	edited["data"].(map[string]any)["ca.crt"] = base64.StdEncoding.EncodeToString(other.cert)
+	s.Put("", "v1", "secrets", edited)
+	runCert(t, s, env, cfg)
+	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.ca) != string(good.ca) {
+		t.Error("an edited ca.crt of the provided certificate was kept")
 	}
 }
 

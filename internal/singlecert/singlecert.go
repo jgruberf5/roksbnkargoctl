@@ -141,9 +141,14 @@ func Pair(certPEM, keyPEM []byte) (leaf *x509.Certificate, chain []*x509.Certifi
 	return certs[0], certs[1:], key, nil
 }
 
+// Skew is how far a CA's notBefore may be ahead of this clock (a CA minted a
+// moment ago on a host whose clock runs ahead).
+const Skew = 5 * time.Minute
+
 // CA parses an operator's CA and checks it can sign now and for at least
 // renewBefore: an expired (or about to expire) CA would issue certificates
-// that are invalid at once and be reissued on every sync.
+// that are invalid at once and be reissued on every sync. A CA whose key usage
+// lacks certSign is refused too: certificates it signs do not verify.
 func CA(certPEM, keyPEM []byte, now time.Time, renewBefore time.Duration) (*x509.Certificate, crypto.Signer, error) {
 	ca, _, key, err := Pair(certPEM, keyPEM)
 	if err != nil {
@@ -152,8 +157,14 @@ func CA(certPEM, keyPEM []byte, now time.Time, renewBefore time.Duration) (*x509
 	if !ca.IsCA {
 		return nil, nil, errors.New("the certificate is not a CA (basicConstraints CA:false)")
 	}
-	if now.Before(ca.NotBefore) {
+	if ca.KeyUsage != 0 && ca.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return nil, nil, errors.New("the CA's key usage lacks keyCertSign, so certificates it signs do not verify")
+	}
+	if now.Add(Skew).Before(ca.NotBefore) {
 		return nil, nil, fmt.Errorf("the CA is not valid until %s", ca.NotBefore.Format(time.DateOnly))
+	}
+	if !now.Before(ca.NotAfter) {
+		return nil, nil, fmt.Errorf("the CA expired %s: renew it", ca.NotAfter.Format(time.DateOnly))
 	}
 	if !now.Add(renewBefore).Before(ca.NotAfter) {
 		return nil, nil, fmt.Errorf("the CA expires %s, within the renewal window (%s): renew it first",
@@ -163,8 +174,11 @@ func CA(certPEM, keyPEM []byte, now time.Time, renewBefore time.Duration) (*x509
 }
 
 // Provided checks an operator's own certificate before it is used: key
-// matches, chains to ca.crt (through any intermediates after the leaf in
-// tls.crt or in ca.crt), valid now, and carries every name BNK uses.
+// matches, chains to a certificate in ca.crt (through any intermediates after
+// the leaf in tls.crt), valid now for both server and client auth (one
+// certificate serves both ends of every mTLS connection), and carries every
+// name BNK uses. Every ca.crt certificate is a trust anchor, as it is to the
+// components that read the file.
 func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error {
 	leaf, chain, _, err := Pair(certPEM, keyPEM)
 	if err != nil {
@@ -175,26 +189,18 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 		return fmt.Errorf("ca.crt: %w", err)
 	}
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
-	hasRoot := false
 	for _, c := range cas {
-		if isSelfSigned(c) {
-			roots.AddCert(c)
-			hasRoot = true
-		} else {
-			inter.AddCert(c)
-		}
+		roots.AddCert(c)
 	}
 	for _, c := range chain {
 		inter.AddCert(c)
 	}
-	if !hasRoot {
-		for _, c := range cas {
-			roots.AddCert(c) // an intermediate given as the trust anchor
+	for _, u := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: now,
+			KeyUsages: []x509.ExtKeyUsage{u}}); err != nil {
+			return fmt.Errorf("tls.crt does not verify against ca.crt for %s: %w", map[x509.ExtKeyUsage]string{
+				x509.ExtKeyUsageServerAuth: "server auth", x509.ExtKeyUsageClientAuth: "client auth"}[u], err)
 		}
-	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter, CurrentTime: now,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
-		return fmt.Errorf("tls.crt does not verify against ca.crt: %w", err)
 	}
 	var missing []string
 	for _, n := range sans {
@@ -210,8 +216,4 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 		return fmt.Errorf("tls.crt does not cover names BNK uses: %s", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-func isSelfSigned(c *x509.Certificate) bool {
-	return c.CheckSignatureFrom(c) == nil
 }

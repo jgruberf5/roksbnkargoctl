@@ -15,7 +15,35 @@ import (
 	"time"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
+	"github.com/jgruberf5/roksbnkargoctl/internal/singlecert"
 )
+
+// writeProvided writes a certificate for names (server and client auth), its
+// key and its CA.
+func writeProvided(t *testing.T, names []string) (certFile, keyFile, caFile string) {
+	t.Helper()
+	caK, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caT := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(5 * 365 * 24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	caDER, _ := x509.CreateCertificate(rand.Reader, caT, caT, caK.Public(), caK)
+	ca, _ := x509.ParseCertificate(caDER)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "f5net"}, DNSNames: names,
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(365 * 24 * time.Hour),
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, lt, ca, k.Public(), caK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, _ := x509.MarshalECPrivateKey(k)
+	dir := t.TempDir()
+	certFile, keyFile, caFile = filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt")
+	_ = os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	_ = os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb}), 0o600)
+	_ = os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600)
+	return
+}
 
 // writeCA writes a CA certificate and key valid until notAfter.
 func writeCA(t *testing.T, notAfter time.Time) (certFile, keyFile string) {
@@ -48,9 +76,22 @@ func TestSingleCertSourceIsCheckedBeforePublishing(t *testing.T) {
 	if err != nil || !strings.Contains(cert, "BEGIN CERTIFICATE") || !strings.Contains(key, "PRIVATE KEY") {
 		t.Fatalf("a valid CA: err %v, cert %d bytes, key %d bytes", err, len(cert), len(key))
 	}
+	// Expiring within renew_before_days, or expired: refused (the certificate
+	// is capped at the CA's expiry, so it would be renewed on every sync).
 	s.cfg.BNK.Certificates.CACertFile, s.cfg.BNK.Certificates.CAKeyFile = writeCA(t, time.Now().Add(10*24*time.Hour))
-	if _, _, _, err := s.SingleCertSource(); err == nil || !strings.Contains(err.Error(), "renewal window") {
+	if _, _, _, err := s.SingleCertSource(); err == nil || !strings.Contains(err.Error(), "within the renewal window") {
 		t.Errorf("a CA expiring in 10 days: %v", err)
+	}
+	s.cfg.BNK.Certificates.CACertFile, s.cfg.BNK.Certificates.CAKeyFile = writeCA(t, time.Now().Add(-time.Minute))
+	if _, _, _, err := s.SingleCertSource(); err == nil || !strings.Contains(err.Error(), "the CA expired") {
+		t.Errorf("an expired CA: %v", err)
+	}
+	// Two namespaces: the host checks the names of both, as the hook does.
+	s.cfg.BNK.Certificates.Issuer = "provided"
+	s.cfg.BNK.UtilsNamespace = "f5-utils"
+	s.cfg.BNK.Certificates.CertFile, s.cfg.BNK.Certificates.KeyFile, s.cfg.BNK.Certificates.CAFile = writeProvided(t, singlecert.SANs([]string{s.cfg.BNK.Namespace}, nil))
+	if _, _, _, err := s.SingleCertSource(); err == nil || !strings.Contains(err.Error(), "f5-utils") {
+		t.Errorf("a certificate for f5-bnk alone, with f5-utils in use: %v", err)
 	}
 	s.cfg.BNK.Certificates.Issuer = "provided"
 	s.cfg.BNK.Certificates.CertFile, s.cfg.BNK.Certificates.KeyFile = writeCA(t, time.Now().Add(365*24*time.Hour))

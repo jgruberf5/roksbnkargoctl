@@ -114,6 +114,16 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		return err
 	}
 
+	// The layout is recorded before the first change in the cloud, so a failed
+	// first install is not mistaken for one made before 0.7.0 (whose record is a
+	// trusted profile and no layout), and the next install keeps the layout.
+	if r.InstalledLayout != installLayout(c) {
+		r.InstalledLayout = installLayout(c)
+		if err := s.save(); err != nil {
+			return err
+		}
+	}
+
 	// 2. Transit gateway attachment.
 	if err := ensureClusterOnTGW(ctx, s, ibmc); err != nil {
 		return err
@@ -148,18 +158,7 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 			return err
 		}
 	}
-	for _, obj := range o.Stale {
-		if err := k.Delete(ctx, obj); err != nil {
-			return err
-		}
-	}
 	p.ok("out-of-band objects applied")
-	if r.InstalledLayout != installLayout(c) {
-		r.InstalledLayout = installLayout(c)
-		if err := s.save(); err != nil {
-			return err
-		}
-	}
 
 	// 6. Register ROKS with Argo CD.
 	p.step("registering %s with Argo CD (%s endpoint %s)", r.ClusterName, c.ArgoCD.ClusterEndpoint, r.ArgoCDClusterServer)
@@ -252,6 +251,14 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	}
 	if sha, err = revisionToSync(noPublish, sha, func() (string, error) { return checkGitMatchesRender(ctx, s, ac, gitPos) }); err != nil {
 		return err
+	}
+	// Only now, with the Application on a revision that no longer reads them:
+	// before, a refused --no-publish compare left Argo CD on the old revision,
+	// whose hooks require the Secret just deleted.
+	for _, obj := range o.Stale {
+		if err := k.Delete(ctx, obj); err != nil {
+			return err
+		}
 	}
 	if noSync {
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
@@ -911,7 +918,11 @@ func installLayout(c *config.Config) string {
 const layoutNone = "none"
 
 func checkLayout(r *config.Resolved, c *config.Config) error {
-	if r.InstalledLayout == "" && r.TrustedProfileID != "" && c.BNK.Certificates.Mode != config.CertModeCertManager {
+	// An install made before 0.7.0: a trusted profile and a published commit,
+	// and no layout. A first 0.7.0 install that failed has no published commit
+	// (and since 0.7.0 the layout is recorded before the profile is created).
+	if r.InstalledLayout == "" && r.TrustedProfileID != "" && r.LastPublishedCommitSHA != "" &&
+		c.BNK.Certificates.Mode != config.CertModeCertManager {
 		// Installed before 0.7.0 (the trusted profile is install's): with
 		// cert-manager, the only certificates there were; its namespaces are
 		// not known, so only the certificate switch is refused.

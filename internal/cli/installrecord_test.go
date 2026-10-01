@@ -276,12 +276,26 @@ git: {url: "https://git.example/r.git"}
   installed_layout: "namespaces=f5-bnk,f5-utils certificates=cert-manager"}
 `)
 	out, err := runRoot(t, "init", "-w", "w", "--refresh")
-	if err == nil || !strings.Contains(err.Error(), "records an install on cluster a") {
+	if err == nil || !strings.Contains(err.Error(), "records what install created for cluster a") ||
+		!strings.Contains(err.Error(), "uninstall --detach-tgw") || !strings.Contains(err.Error(), "BNK (namespaces=f5-bnk,f5-utils") {
 		t.Fatalf("moved an install record to another cluster: %v\n%s", err, out)
 	}
 	ws, _ := config.Open("w")
 	if c, _ := ws.LoadFile(); c.Resolved.TGWConnectionCreatedID != "conn-a" || c.Resolved.ClusterID != "cid-a" {
 		t.Errorf("the refused re-resolve changed the record: %+v", c.Resolved)
+	}
+
+	writeWorkspace(t, home, "w", cfgYAML+`resolved: {cluster_id: cid-a, cluster_name: a, trusted_profile_id: Profile-a, installed_layout: none}
+`)
+	if _, err := runRoot(t, "init", "-w", "w", "--refresh"); err == nil || !strings.Contains(err.Error(), "without --keep-trusted-profile") ||
+		strings.Contains(err.Error(), "BNK (") {
+		t.Errorf("uninstalled, profile kept: %v", err)
+	}
+	// A record without a cluster ID (never resolved) is not another cluster's.
+	writeWorkspace(t, home, "w", cfgYAML+`resolved: {trusted_profile_id: Profile-x}
+`)
+	if out, err := runRoot(t, "init", "-w", "w", "--refresh"); err != nil {
+		t.Errorf("a record without a cluster: %v\n%s", err, out)
 	}
 
 	writeWorkspace(t, home, "w", cfgYAML+`resolved: {cluster_id: cid-a, cluster_name: a, last_published_commit: abc}
@@ -315,9 +329,11 @@ git: {url: "https://git.example/r.git"}
 		extra, record string
 		refused       bool
 	}{
-		"other layout":         {"", `, installed_layout: "namespaces=f5-bnk certificates=single"}`, true},
-		"pre-0.7.0 to single":  {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1}`, true},
-		"pre-0.7.0 unchanged":  {"", `, trusted_profile_id: Profile-1}`, false},
+		"other layout":        {"", `, installed_layout: "namespaces=f5-bnk certificates=single"}`, true},
+		"pre-0.7.0 to single": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, last_published_commit: abc}`, true},
+		"pre-0.7.0 unchanged": {"", `, trusted_profile_id: Profile-1, last_published_commit: abc}`, false},
+		// A first 0.7.0 install that failed after creating the profile.
+		"failed first install": {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1}`, false},
 		"uninstalled":          {"bnk: {certificates: {mode: single}}\n", `, trusted_profile_id: Profile-1, installed_layout: none}`, false},
 		"never installed":      {"bnk: {certificates: {mode: single}}\n", `}`, false},
 		"same layout recorded": {"", `, installed_layout: "namespaces=f5-bnk,f5-utils certificates=cert-manager"}`, false},

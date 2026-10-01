@@ -415,16 +415,16 @@ cert-manager's CRDs.
 | `bnk.certificates.issuer` | You supply | What `check cert` does |
 |---|---|---|
 | `self-signed` (default) | nothing | Generates a CA (CN `ca_common_name`, default `f5net-ca`) and keeps it in Secret `roksbnkargoctl-check/<secret_name>-ca`, so later syncs reuse it; replaces it when it is within `renew_before_days` of expiry. Issues the certificate from it |
-| `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`), a key that does not match it, and a CA that is not yet valid or expires within `renew_before_days` (it would issue a certificate already, or soon, invalid). Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
-| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now, and that it covers every DNS name and IP address BNK uses (below); fails, naming up to eight missing names, if not. Then copies it. `tls.crt` may hold the full chain (the certificate, then its intermediates), and `ca.crt` the root alone |
+| `ca` | `ca_cert_file` and `ca_key_file`: your CA certificate and its private key (PEM) | Refuses a certificate that is not a CA (`basicConstraints CA:false`), a CA whose key usage lacks `keyCertSign`, a key that does not match it, and a CA that is not yet valid (5 minutes of clock skew allowed) or expires within `renew_before_days`: the certificate is capped at the CA's expiry, so it would be inside its own renewal window and reissued on every sync. Renew the CA before that. Issues the certificate from your CA; `ca.crt` is your CA certificate. The certificate never outlives the CA |
+| `provided` | `cert_file`, `key_file` and `ca_file`: your `tls.crt`, `tls.key` and `ca.crt` (PEM) | Issues nothing. Checks that the key matches the certificate, that the certificate verifies against `ca.crt` and is valid now for both server and client auth (one certificate serves both ends of every mTLS connection; a server-auth-only certificate is refused), and that it covers every DNS name and IP address BNK uses (below); fails, naming up to eight missing names, if not. Then copies it. `tls.crt` may hold the full chain (the certificate, then its intermediates), and `ca.crt` the root alone |
 
 Keys may be PKCS#1, SEC 1 (including `openssl ecparam -genkey` output) or PKCS#8;
 encrypted keys are refused. For `ca` and `provided`, `render` and `install` read the files
 on your host and make these checks there, before anything is published; the hook makes
 them again in the cluster. `install` writes the files into Secret
 `roksbnkargoctl-check/bnk-single-cert-source`, out of band like the other Secrets, and
-deletes that Secret when the issuer no longer uses it (switching to `self-signed` does not
-leave your CA's key in ROKS). The
+deletes that Secret when the issuer no longer uses it, once the Application is on the new
+revision (switching to `self-signed` does not leave your CA's key in ROKS). The
 private key never goes to Git: the render refuses to publish if it appears in any Git object
 or values file, and `manifests/direct/` holds the Secret redacted. The `check pre-install`
 hook requires that Secret, so a missing one stops the sync at wave −18.
@@ -520,7 +520,8 @@ to carry it to a config that names another cluster.
 
 A workspace installed by a release before 0.7.0 has no record. Those releases had only
 cert-manager, so `install` refuses a switch to `certificates=single` on a workspace that
-records a trusted profile but no layout; their namespaces are not known, so a namespace
+records a trusted profile and a published commit but no layout (an install made with
+`--no-publish` before 0.7.0 has no published commit and is not caught); their namespaces are not known, so a namespace
 change is not caught until the next `install` records them. Run `uninstall` first if you
 are changing `bnk.utils_namespace` on such a workspace.
 

@@ -462,6 +462,16 @@ func checkGitAtInit(ctx context.Context, s *session) error {
 // created, which init cannot look up again. The transit gateway connection
 // install made was dropped before, so after `init --refresh` neither
 // `uninstall --detach-tgw` nor `workspaces delete` knew about it.
+func carriedOver(old *config.Resolved) *config.Resolved {
+	r := &config.Resolved{}
+	if old != nil {
+		r.TrustedProfileID, r.ArgoCDClusterServer, r.LastPublishedCommitSHA = old.TrustedProfileID, old.ArgoCDClusterServer, old.LastPublishedCommitSHA
+		r.TGWConnectionCreatedID = old.TGWConnectionCreatedID
+		r.InstalledLayout = old.InstalledLayout
+	}
+	return r
+}
+
 // sameCluster keeps what install created on the cluster it was created
 // for. When the config now names another cluster, a record of an install
 // refuses the re-resolve (the layout guard would refuse a cluster with nothing
@@ -471,23 +481,23 @@ func sameCluster(old, r *config.Resolved, ws string) error {
 	if old == nil || old.ClusterID == "" || old.ClusterID == r.ClusterID {
 		return nil
 	}
-	if old.TrustedProfileID != "" || old.TGWConnectionCreatedID != "" || (old.InstalledLayout != "" && old.InstalledLayout != layoutNone) {
-		return fmt.Errorf("workspace %s records an install on cluster %s (%s), and the config now names cluster %s: "+
-			"uninstall it first, with the old config, or use another workspace for %s",
-			ws, old.ClusterName, old.ClusterID, r.ClusterName, r.ClusterName)
+	var held []string
+	if old.InstalledLayout != "" && old.InstalledLayout != layoutNone {
+		held = append(held, "BNK ("+old.InstalledLayout+"): `roksbnkargoctl uninstall`")
+	}
+	if old.TrustedProfileID != "" {
+		held = append(held, "trusted profile "+old.TrustedProfileID+": `roksbnkargoctl uninstall` without --keep-trusted-profile")
+	}
+	if old.TGWConnectionCreatedID != "" {
+		held = append(held, "transit gateway connection "+old.TGWConnectionCreatedID+": `roksbnkargoctl uninstall --detach-tgw`")
+	}
+	if len(held) > 0 {
+		return fmt.Errorf("workspace %s records what install created for cluster %s (%s), and the config now names cluster %s. "+
+			"Remove each with the old config first, or use another workspace for %s:\n  %s",
+			ws, old.ClusterName, old.ClusterID, r.ClusterName, r.ClusterName, strings.Join(held, "\n  "))
 	}
 	r.ArgoCDClusterServer, r.LastPublishedCommitSHA = "", ""
 	return nil
-}
-
-func carriedOver(old *config.Resolved) *config.Resolved {
-	r := &config.Resolved{}
-	if old != nil {
-		r.TrustedProfileID, r.ArgoCDClusterServer, r.LastPublishedCommitSHA = old.TrustedProfileID, old.ArgoCDClusterServer, old.LastPublishedCommitSHA
-		r.TGWConnectionCreatedID = old.TGWConnectionCreatedID
-		r.InstalledLayout = old.InstalledLayout
-	}
-	return r
 }
 
 // interviewInstallShape asks for the namespace layout and the certificate

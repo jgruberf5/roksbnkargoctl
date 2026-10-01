@@ -262,7 +262,7 @@ type Resolved struct {
 	// gateway itself, so uninstall --detach-tgw removes only what install added.
 	TGWConnectionCreatedID string `yaml:"tgw_connection_created_id,omitempty"`
 	// InstalledLayout is the namespace layout and certificate mode install
-	// installed BNK with; uninstall clears it. install refuses a different one
+	// installed BNK with; uninstall records "none". install refuses a different one
 	// while it is set (switching either in place destroys a running install).
 	InstalledLayout string `yaml:"installed_layout,omitempty"`
 }
