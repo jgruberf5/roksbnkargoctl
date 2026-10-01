@@ -407,8 +407,8 @@ func canonValue(v asn1.RawValue) string {
 // parent is child's issuer only when child's authority key identifier
 // agrees with it — its keyIdentifier with parent's subject key identifier
 // (when both are present), its authorityCertSerialNumber with parent's
-// serial, and a directoryName in its authorityCertIssuer with parent's
-// issuer.
+// serial, and the first directoryName in its authorityCertIssuer with
+// parent's issuer.
 func keyIDLinks(child, parent *x509.Certificate) bool {
 	if len(child.AuthorityKeyId) > 0 && len(parent.SubjectKeyId) > 0 && !bytes.Equal(child.AuthorityKeyId, parent.SubjectKeyId) {
 		return false
@@ -417,31 +417,36 @@ func keyIDLinks(child, parent *x509.Certificate) bool {
 		if !e.Id.Equal(oidAuthorityKeyID) {
 			continue
 		}
-		var akid asn1.RawValue
-		if _, err := asn1.Unmarshal(e.Value, &akid); err != nil {
+		// Decoded strictly, as OpenSSL does: the fields in order, once each,
+		// none other, the serial a minimal signed INTEGER. Re-encoding must
+		// give the same bytes back (decoding alone takes unknown, repeated
+		// or reordered fields).
+		var akid struct {
+			KeyID  []byte        `asn1:"optional,tag:0"`
+			Issuer asn1.RawValue `asn1:"optional,tag:1"`
+			Serial *big.Int      `asn1:"optional,tag:2"`
+		}
+		rest, err := asn1.Unmarshal(e.Value, &akid)
+		if err != nil {
 			return false
 		}
-		for in := akid.Bytes; len(in) > 0; {
-			var f asn1.RawValue
-			var err error
-			if in, err = asn1.Unmarshal(in, &f); err != nil || f.Class != asn1.ClassContextSpecific {
+		if b, err := asn1.Marshal(akid); err != nil || !bytes.Equal(b, e.Value[:len(e.Value)-len(rest)]) {
+			return false
+		}
+		if akid.Serial != nil && akid.Serial.Cmp(parent.SerialNumber) != 0 {
+			return false
+		}
+		// The first directoryName only, as OpenSSL compares it.
+		for gn := akid.Issuer.Bytes; len(gn) > 0; {
+			var n asn1.RawValue
+			if gn, err = asn1.Unmarshal(gn, &n); err != nil {
 				return false
 			}
-			switch f.Tag {
-			case 1: // authorityCertIssuer: GeneralNames
-				for gn := f.Bytes; len(gn) > 0; {
-					var n asn1.RawValue
-					if gn, err = asn1.Unmarshal(gn, &n); err != nil {
-						return false
-					}
-					if n.Class == asn1.ClassContextSpecific && n.Tag == 4 && !sameName(n.Bytes, parent.RawIssuer) {
-						return false
-					}
-				}
-			case 2: // authorityCertSerialNumber
-				if new(big.Int).SetBytes(f.Bytes).Cmp(parent.SerialNumber) != 0 {
+			if n.Class == asn1.ClassContextSpecific && n.Tag == 4 {
+				if !sameName(n.Bytes, parent.RawIssuer) {
 					return false
 				}
+				break
 			}
 		}
 	}

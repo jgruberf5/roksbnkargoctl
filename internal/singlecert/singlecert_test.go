@@ -709,3 +709,59 @@ func TestProvidedRefusesAMalformedLeafName(t *testing.T) {
 		t.Errorf("a leaf with a malformed subject: %v", err)
 	}
 }
+
+// The AKID decoded as OpenSSL decodes it (verdicts from openssl verify): a
+// signed, minimal serial; only the first directoryName compared; unknown,
+// reordered or repeated fields make the certificate invalid.
+func TestProvidedAKIDDecodedStrictly(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	rt := &x509.Certificate{SerialNumber: big.NewInt(128), Subject: pkix.Name{CommonName: "akid-root"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, _ := x509.CreateCertificate(rand.Reader, rt, rt, k.Public(), k)
+	root, _ := x509.ParseCertificate(der)
+	ctx := func(tag int, compound bool, b []byte) []byte {
+		out, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: compound, Bytes: b})
+		return out
+	}
+	other, _ := asn1.Marshal(pkix.Name{CommonName: "someone-else"}.ToRDNSequence())
+	keyID := ctx(0, false, root.SubjectKeyId)
+	dn := func(name []byte) []byte { return ctx(4, true, name) }
+	seq := func(parts ...[]byte) []byte {
+		out, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: bytes.Join(parts, nil)})
+		return out
+	}
+	for name, tc := range map[string]struct {
+		akid []byte
+		ok   bool
+	}{
+		"control":                {seq(keyID, ctx(1, true, dn(root.RawIssuer)), ctx(2, false, []byte{0x00, 0x80})), true},
+		"negative serial":        {seq(keyID, ctx(2, false, []byte{0x80})), false},
+		"zero-padded serial":     {seq(keyID, ctx(2, false, []byte{0x00, 0x00, 0x80})), false},
+		"second dirName ignored": {seq(keyID, ctx(1, true, append(dn(root.RawIssuer), dn(other)...))), true},
+		"first dirName wrong":    {seq(keyID, ctx(1, true, append(dn(other), dn(root.RawIssuer)...))), false},
+		"unknown field":          {seq(keyID, ctx(5, false, []byte{1})), false},
+		"serial before issuer":   {seq(keyID, ctx(2, false, []byte{0x00, 0x80}), ctx(1, true, dn(root.RawIssuer))), false},
+		"keyIdentifier repeated": {seq(keyID, keyID), false},
+	} {
+		lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(200), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"},
+			ExtraExtensions: []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 35}, Value: tc.akid}}}
+		ld, err := x509.CreateCertificate(rand.Reader, lt, root, lk.Public(), k)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		leaf, err := x509.ParseCertificate(ld)
+		if err != nil {
+			if tc.ok {
+				t.Errorf("%s: Go refused to parse it: %v", name, err)
+			}
+			continue
+		}
+		l := issued{leaf, lk}
+		err = Provided(l.certPEM(), l.keyPEM(), issued{root, k}.certPEM(), []string{"f5-tmm"}, now)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: accepted=%v, OpenSSL: %v (%v)", name, err == nil, tc.ok, err)
+		}
+	}
+}
