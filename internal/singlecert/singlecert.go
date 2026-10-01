@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/hex"
 	"encoding/pem"
@@ -410,13 +411,10 @@ func canonValue(v asn1.RawValue) string {
 // serial, and the first directoryName in its authorityCertIssuer with
 // parent's issuer.
 func keyIDLinks(child, parent *x509.Certificate) bool {
-	if len(child.AuthorityKeyId) > 0 && len(parent.SubjectKeyId) > 0 && !bytes.Equal(child.AuthorityKeyId, parent.SubjectKeyId) {
-		return false
-	}
-	for _, e := range child.Extensions {
-		if !e.Id.Equal(oidAuthorityKeyID) {
-			continue
-		}
+	// Present, not non-empty: OpenSSL compares an empty identifier too.
+	_, parentHasSKID := extension(parent, oidSubjectKeyID)
+	if v, ok := extension(child, oidAuthorityKeyID); ok {
+		e := pkix.Extension{Value: v}
 		// Decoded strictly, as OpenSSL does: the fields in order, once each,
 		// none other, the serial a minimal signed INTEGER. Re-encoding must
 		// give the same bytes back (decoding alone takes unknown, repeated
@@ -431,6 +429,9 @@ func keyIDLinks(child, parent *x509.Certificate) bool {
 			return false
 		}
 		if b, err := asn1.Marshal(akid); err != nil || !bytes.Equal(b, e.Value[:len(e.Value)-len(rest)]) {
+			return false
+		}
+		if akid.KeyID != nil && parentHasSKID && !bytes.Equal(akid.KeyID, parent.SubjectKeyId) {
 			return false
 		}
 		if akid.Serial != nil && akid.Serial.Cmp(parent.SerialNumber) != 0 {
@@ -453,7 +454,19 @@ func keyIDLinks(child, parent *x509.Certificate) bool {
 	return true
 }
 
-var oidAuthorityKeyID = asn1.ObjectIdentifier{2, 5, 29, 35}
+var (
+	oidAuthorityKeyID = asn1.ObjectIdentifier{2, 5, 29, 35}
+	oidSubjectKeyID   = asn1.ObjectIdentifier{2, 5, 29, 14}
+)
+
+func extension(c *x509.Certificate, id asn1.ObjectIdentifier) ([]byte, bool) {
+	for _, e := range c.Extensions {
+		if e.Id.Equal(id) {
+			return e.Value, true
+		}
+	}
+	return nil, false
+}
 
 // keyIDsLink: every certificate of the chain links to the next. The anchor
 // itself is in the pool only if it links to itself (selfSigned).

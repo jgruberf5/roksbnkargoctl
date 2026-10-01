@@ -765,3 +765,57 @@ func TestProvidedAKIDDecodedStrictly(t *testing.T) {
 		}
 	}
 }
+
+// An empty key identifier is still compared, as OpenSSL compares a present
+// one (unable to get local issuer certificate for each case).
+func TestProvidedEmptyKeyIdentifiersCompare(t *testing.T) {
+	ext := func(id asn1.ObjectIdentifier, v []byte) pkix.Extension { return pkix.Extension{Id: id, Value: v} }
+	akidOf := func(keyID []byte) []byte { // SEQUENCE { [0] keyID }
+		kid, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, Bytes: keyID})
+		b, _ := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: kid})
+		return b
+	}
+	skidOf := func(keyID []byte) []byte { b, _ := asn1.Marshal(keyID); return b }
+	oidAKID, oidSKID := asn1.ObjectIdentifier{2, 5, 29, 35}, asn1.ObjectIdentifier{2, 5, 29, 14}
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	root := func(extra ...pkix.Extension) *x509.Certificate {
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(210), Subject: pkix.Name{CommonName: "kid-root"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign, ExtraExtensions: extra}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return c
+	}
+	leaf := func(parent *x509.Certificate, extra ...pkix.Extension) issued {
+		lk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(211), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}, ExtraExtensions: extra}
+		der, err := x509.CreateCertificate(rand.Reader, lt, parent, lk.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, lk}
+	}
+	normal := root()
+	emptySKID := root(ext(oidSKID, skidOf([]byte{})))
+	emptyOwnAKID := root(ext(oidAKID, akidOf([]byte{})))
+	for name, tc := range map[string]struct {
+		r *x509.Certificate
+		l issued
+	}{
+		"leaf AKID empty":       {normal, leaf(normal, ext(oidAKID, akidOf([]byte{})))},
+		"root SKID empty":       {emptySKID, leaf(emptySKID, ext(oidAKID, akidOf([]byte{1, 2, 3, 4})))},
+		"root's own AKID empty": {emptyOwnAKID, leaf(emptyOwnAKID)},
+	} {
+		if err := Provided(tc.l.certPEM(), tc.l.keyPEM(), issued{tc.r, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+			t.Errorf("%s: accepted (OpenSSL: unable to get local issuer certificate)", name)
+		}
+	}
+	if _, _, err := CA(issued{emptyOwnAKID, k}.certPEM(), issued{emptyOwnAKID, k}.keyPEM(), now, 30*day); err == nil {
+		t.Error("a root whose own AKID keyid is empty was accepted as the CA")
+	}
+}
