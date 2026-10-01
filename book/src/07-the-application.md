@@ -472,8 +472,9 @@ With `provided`, renewal is yours: put the new files in place and run `install` 
 provided certificate that has expired fails the hook.
 
 When a sync replaces a certificate the namespaces already held, `check cert` restarts
-every pod that mounts the Secret, at once, so that all of them load the new certificate and
-CA together. BNK's components read the certificate when they start and not all reload it:
+every pod that mounts the Secret, at once and only once every namespace holds the new one,
+so that all of them load the new certificate and CA together; a restart that fails is
+retried by the next sync. BNK's components read the certificate when they start and not all reload it:
 on BNK 2.4.0 GA, after a CA change the DSSM database kept serving its old certificate and
 failed its readiness probe (`certificate verify failed`) against the new `ca.crt`, while
 the restarted sentinels trusted only the new CA, and the `CNEInstance` stayed unavailable.

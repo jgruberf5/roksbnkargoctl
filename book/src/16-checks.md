@@ -357,10 +357,16 @@ It makes sure one `kubernetes.io/tls` Secret (`tls.crt`, `tls.key`, `ca.crt`) na
 5. **Restarts** every pod in those namespaces that mounts the Secret (directly or through
    a projected volume), when a certificate already there was replaced: components load it
    at start, and a component left on the old CA fails mTLS against the others (DSSM's
-   Redis did, live). Nothing restarts on the first issue or an unchanged sync.
+   Redis did, live). Only once every namespace holds the new certificate; otherwise
+   nothing restarts and the next sync writes and restarts. The annotation
+   `roksbnkargoctl.io/single-cert-restarted` records the certificate the pods were
+   restarted onto, written only after the restart: a restart that failed, or a run that
+   stopped before it, is finished by the next sync. Nothing restarts on the first issue or
+   once the restart is recorded.
 
 The `provided` verification fails the check (`[FAIL] provided`) when the key does not
-match `tls.crt`, its extended key usage does not name both `serverAuth` and `clientAuth`,
+match `tls.crt`, its extended key usage (when it has one) does not name both `serverAuth`
+and `clientAuth`,
 `tls.crt` does not chain at the current time to a self-signed root in `ca.crt` (judged as
 OpenSSL judges it: intermediates from `ca.crt` or after the first certificate in `tls.crt`,
 no other anchor), or it does not cover every DNS name and `--ip` address BNK uses;
@@ -375,7 +381,7 @@ the message lists up to eight missing names and how many more.
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
 | `[PASS] restart` | `<ns>: restarted <n> pods that mount the replaced certificate` |
-| `[FAIL] restart` | a pod could not be listed or deleted; restart it by hand |
+| `[FAIL] restart` | a pod could not be listed or deleted, or the Secret could not be written into every namespace (`not restarting …`). Run the sync again: the restart is retried until it is recorded. Do not restart pods by hand while a namespace still holds the old certificate |
 
 `<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `<ns>/<name>: <parse
 error>`, `it expires <date>, within the renewal window`, `<ns>/<name> is not signed by the

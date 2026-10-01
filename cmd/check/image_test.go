@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/moby/patternmatcher"
+	"github.com/moby/patternmatcher/ignorefile"
 )
 
 const module = "github.com/jgruberf5/roksbnkargoctl/"
@@ -55,8 +58,8 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 	walk("cmd/check")
 	workflow := read(".github/workflows/check-image.yml")
 	for dir := range seen {
-		if rule := excludedBy(ignore, dir); rule != "" {
-			t.Errorf("the check binary imports %s, which Dockerfile.dockerignore excludes (%s)", dir, rule)
+		if f := excluded(t, root, ignore, dir); f != "" {
+			t.Errorf("the check binary imports %s, but Dockerfile.dockerignore keeps %s out of the build context", dir, f)
 		}
 		if strings.HasPrefix(dir, "cmd/check") {
 			continue
@@ -73,37 +76,33 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 	}
 }
 
-// excludedBy applies a .dockerignore to a package directory as Docker does:
-// rules in order, the last that matches wins, "!" re-includes, a leading "/"
-// is the context root. File patterns (*_test.go) do not exclude a package;
-// "*" excludes everything. It returns the deciding rule when the directory is
-// excluded, "" when it is in the context.
-func excludedBy(ignore, dir string) string {
-	decided := ""
-	for _, line := range strings.Split(ignore, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+// excluded returns the first of a package's non-test source files the
+// dockerignore keeps out of the build context, judged by Docker's own matcher
+// (moby/patternmatcher, as BuildKit reads .dockerignore); "" when all are in.
+func excluded(t *testing.T, root, ignore, dir string) string {
+	t.Helper()
+	patterns, err := ignorefile.ReadAll(strings.NewReader(ignore))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm, err := patternmatcher.New(patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		neg := strings.HasPrefix(line, "!")
-		pat := strings.TrimPrefix(strings.TrimPrefix(line, "!"), "/")
-		var match bool
-		switch {
-		case pat == "*" || pat == "**":
-			match = true
-		case strings.Contains(pat, "*") || strings.HasSuffix(pat, ".go"):
-			continue // a file pattern
-		default:
-			pat = strings.TrimSuffix(pat, "/")
-			match = dir == pat || strings.HasPrefix(dir+"/", pat+"/")
-		}
-		if match {
-			if neg {
-				decided = ""
-			} else {
-				decided = line
-			}
+		f := dir + "/" + e.Name()
+		if m, err := pm.MatchesOrParentMatches(f); err != nil {
+			t.Fatal(err)
+		} else if m {
+			return f
 		}
 	}
-	return decided
+	return ""
 }

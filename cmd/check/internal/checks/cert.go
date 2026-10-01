@@ -37,6 +37,10 @@ const (
 	// annoSingleCertSpec is the digest of the settings the Secret was issued
 	// for: a settings change reissues it.
 	annoSingleCertSpec = "roksbnkargoctl.io/single-cert-spec"
+	// annoSingleCertRestarted names the certificate the namespace's pods were
+	// restarted onto (certDigest). Written only once they were, so a restart
+	// that failed, or a run that died before it, is finished by the next sync.
+	annoSingleCertRestarted = "roksbnkargoctl.io/single-cert-restarted"
 )
 
 // SingleCertSANs is F5's name list for every namespace plus extra names.
@@ -128,21 +132,23 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 		}
 		res.Pass("certificate", "issued %s, valid until %s, %d DNS names (%s)", cfg.CommonName, leafNotAfter(m.cert), len(sans), why)
 	}
-	replaced, failed := false, false
+	// A namespace's pods need a restart when its Secret existed and the pods
+	// have not been restarted onto this certificate: it was replaced now, or
+	// an earlier restart failed or never ran. On the first issue there is
+	// nothing to restart (FLO starts the components on it).
+	digest := certDigest(m)
+	pending, failed := false, false
 	for _, ns := range cfg.Namespaces {
-		changed := false
-		if old, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName)); err == nil {
-			if om, err := tlsFromSecret(old, false); err == nil &&
-				(string(om.cert) != string(m.cert) || old.String("data", "ca.crt") != base64.StdEncoding.EncodeToString(m.ca)) {
-				changed = true
-			}
+		restarted := digest
+		if old, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName)); err == nil && old.Annotations()[annoSingleCertRestarted] != digest {
+			restarted = ""
 		}
-		if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec); err != nil {
+		if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec, restarted); err != nil {
 			res.Fail("secret", "%s/%s: %v", ns, cfg.SecretName, err)
 			failed = true
 			continue
 		}
-		replaced = replaced || changed
+		pending = pending || restarted == ""
 		res.Pass("secret", "%s/%s is current", ns, cfg.SecretName)
 	}
 	// Only when every namespace holds the new certificate: restarting pods
@@ -150,12 +156,27 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 	// CA change would leave the namespaces on different CAs. The next sync
 	// writes again and restarts then.
 	switch {
-	case replaced && failed:
+	case pending && failed:
 		res.Fail("restart", "not restarting the pods that mount %s: it could not be written into every namespace", cfg.SecretName)
-	case replaced:
-		restartMounting(ctx, env, cfg, res)
+	case pending:
+		if restartMounting(ctx, env, cfg, res) {
+			for _, ns := range cfg.Namespaces {
+				if err := writeTLS(ctx, env, ns, cfg.SecretName, m, spec, digest); err != nil {
+					res.Fail("restart", "%s/%s: recording the restart: %v", ns, cfg.SecretName, err)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+// certDigest identifies the certificate and trust a Secret serves.
+func certDigest(m *tlsMaterial) string {
+	h := sha256.New()
+	h.Write(m.cert)
+	h.Write([]byte{0})
+	h.Write(m.ca)
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // restartMounting deletes every pod in the BNK namespaces that mounts the
@@ -165,12 +186,14 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 // failed its own readiness probe ("certificate verify failed") against the
 // new ca.crt, while the sentinels, restarted, trusted only the new CA. Every
 // pod is restarted at once so they all hold the same CA; their controllers
-// re-create them.
-func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result) {
+// re-create them. It reports whether every pod was restarted.
+func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result) bool {
+	ok := true
 	for _, ns := range cfg.Namespaces {
 		pods, err := env.Kube.List(ctx, GVRPod.Path(ns, ""), kube.ListOptions{})
 		if err != nil {
 			res.Fail("restart", "%s: listing pods: %v", ns, err)
+			ok = false
 			continue
 		}
 		n := 0
@@ -180,6 +203,7 @@ func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *R
 			}
 			if _, err := env.Kube.DeleteIfExists(ctx, GVRPod.Path(ns, p.Name()), ""); err != nil {
 				res.Fail("restart", "%s/%s: %v", ns, p.Name(), err)
+				ok = false
 				continue
 			}
 			n++
@@ -188,6 +212,7 @@ func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *R
 			res.Pass("restart", "%s: restarted %d pods that mount the replaced certificate", ns, n)
 		}
 	}
+	return ok
 }
 
 // mountsSecret reports whether a pod mounts the Secret as a volume, directly
@@ -304,7 +329,7 @@ func selfSignedCA(ctx context.Context, env *Env, cfg SingleCertConfig, res *Resu
 	}
 	ca, _ := x509.ParseCertificate(der)
 	m := &tlsMaterial{cert: pemCert(der), key: pemKey(key)}
-	if err := writeTLS(ctx, env, cfg.StateNS, cfg.SecretName+"-ca", m, ""); err != nil {
+	if err := writeTLS(ctx, env, cfg.StateNS, cfg.SecretName+"-ca", m, "", ""); err != nil {
 		return nil, nil, fmt.Errorf("keeping the CA in %s: %w", ref, err)
 	}
 	res.Pass("ca", "self-signed CA %s generated (%s), valid until %s", subj.CommonName, ref, ca.NotAfter.Format(time.DateOnly))
@@ -389,7 +414,7 @@ func tlsFromSecret(s kube.Object, needCA bool) (*tlsMaterial, error) {
 	return m, nil
 }
 
-func writeTLS(ctx context.Context, env *Env, ns, name string, m *tlsMaterial, spec string) error {
+func writeTLS(ctx context.Context, env *Env, ns, name string, m *tlsMaterial, spec, restarted string) error {
 	data := map[string]any{
 		"tls.crt": base64.StdEncoding.EncodeToString(m.cert),
 		"tls.key": base64.StdEncoding.EncodeToString(m.key),
@@ -399,8 +424,15 @@ func writeTLS(ctx context.Context, env *Env, ns, name string, m *tlsMaterial, sp
 	}
 	md := map[string]any{"name": name, "namespace": ns,
 		"labels": map[string]any{"app.kubernetes.io/managed-by": "roksbnkargoctl"}}
+	anno := map[string]any{}
 	if spec != "" {
-		md["annotations"] = map[string]any{annoSingleCertSpec: spec}
+		anno[annoSingleCertSpec] = spec
+	}
+	if restarted != "" {
+		anno[annoSingleCertRestarted] = restarted
+	}
+	if len(anno) > 0 {
+		md["annotations"] = anno
 	}
 	obj := map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/tls", "metadata": md, "data": data}
 	_, err := env.Kube.Apply(ctx, GVRSecret.Path(ns, name), obj, FieldManager, true)

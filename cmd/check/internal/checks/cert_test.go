@@ -673,3 +673,36 @@ func TestSingleCertRestartsOnANewProvidedCABundle(t *testing.T) {
 		t.Error("a new ca.crt bundle did not restart the pods")
 	}
 }
+
+// A restart that failed (or a run that died before it) is finished by the next
+// sync, although the certificate is then kept: the restart is recorded on the
+// Secret only once it happened. Once done, it is not repeated.
+func TestSingleCertRetriesAFailedRestart(t *testing.T) {
+	s, env, _ := newFake(t)
+	p := kubefake.Obj("v1", "Pod", "f5-bnk", "a")
+	p["spec"] = map[string]any{"volumes": []any{map[string]any{"name": "tls", "secret": map[string]any{"secretName": "bnk-single-cert"}}}}
+	s.Put("", "v1", "pods", p)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk")
+	runCert(t, s, env, cfg)
+	s.Hook = func(_ *kubefake.Server, r kubefake.Request) *kubefake.Reply {
+		if r.Method == "DELETE" && strings.Contains(r.Path, "/pods/") {
+			rep := kubefake.Status(403, "Forbidden", "no")
+			return &rep
+		}
+		return nil
+	}
+	cfg.ExtraDNS = []string{"bnk.example.com"}
+	if res := runCert(t, s, env, cfg); !res.Failed() || s.Get("", "v1", "pods", "f5-bnk", "a") == nil {
+		t.Fatal("the refused restart was not reported, or the pod is gone")
+	}
+	s.Hook = nil
+	res := runCert(t, s, env, cfg) // same settings: the certificate is kept
+	if s.Get("", "v1", "pods", "f5-bnk", "a") != nil {
+		t.Fatalf("the failed restart was not retried: %v", passes(res))
+	}
+	s.Put("", "v1", "pods", p)
+	runCert(t, s, env, cfg)
+	if s.Get("", "v1", "pods", "f5-bnk", "a") == nil {
+		t.Error("a finished restart was repeated")
+	}
+}

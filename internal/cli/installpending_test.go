@@ -75,9 +75,10 @@ resolved: {cluster_id: cid, cluster_name: c, vpc_id: v, vpc_crn: crn:vpc, transi
 }
 
 // A workspace installed before 0.7.0 (a trusted profile, no record) whose first
-// 0.7.0 install fails must stay guarded: the install records its layout at
-// once rather than pending, which would erase the only sign of the running
-// install and let the next one switch certificates under it.
+// 0.7.0 install fails must stay guarded: pending would erase the only sign of
+// the running install and let the next one switch certificates under it, and
+// recording the config's layout would guess its namespaces — a failed install
+// asking for one namespace then refused the two actually running.
 func TestAFailedInstallKeepsAPre070InstallGuarded(t *testing.T) {
 	home := isolate(t)
 	repo := t.TempDir()
@@ -109,14 +110,24 @@ resolved: {cluster_id: cid, cluster_name: c, vpc_id: v, vpc_crn: crn:vpc, transi
 	}
 	ws, _ := config.Open("w")
 	c, _ := ws.LoadFile()
-	if c.Resolved.InstalledLayout != "namespaces=f5-bnk,f5-utils certificates=cert-manager" {
-		t.Fatalf("record after the failed install: %q", c.Resolved.InstalledLayout)
-	}
 	c.BNK.Certificates.Mode = config.CertModeSingle
 	if err := ws.Save(c); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runRoot(t, "install", "-w", "w"); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("a switch to single under the pre-0.7.0 install, after a failed install: %v", err)
+	}
+	// A failed install asking for one namespace does not then refuse the two
+	// that are running.
+	c, _ = ws.LoadFile()
+	c.BNK.Certificates.Mode = config.CertModeCertManager
+	c.BNK.UtilsNamespace = c.BNK.Namespace
+	_ = ws.Save(c)
+	_, _ = runRoot(t, "install", "-w", "w")
+	c, _ = ws.LoadFile()
+	c.BNK.UtilsNamespace = "f5-utils"
+	_ = ws.Save(c)
+	if _, err := runRoot(t, "install", "-w", "w"); err == nil || strings.Contains(err.Error(), "not supported") {
+		t.Errorf("the running layout refused after a failed install asked for another: %v", err)
 	}
 }

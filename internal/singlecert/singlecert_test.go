@@ -275,3 +275,70 @@ func TestProvidedSHA1Root(t *testing.T) {
 		t.Errorf("a SHA-1 root with a SHA-256 leaf: %v", err)
 	}
 }
+
+// A root is judged by its signature, as OpenSSL judges it, not by its names:
+// a root whose issuer differs from its subject only in case (OpenSSL compares
+// canonical names) is a root; a certificate naming itself as issuer but signed
+// by another key is not ("unable to get issuer certificate" in OpenSSL 3.5.5).
+func TestProvidedRootIsJudgedBySignature(t *testing.T) {
+	leafFrom := func(parent *x509.Certificate, parentKey crypto.Signer) issued {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		lt := &x509.Certificate{SerialNumber: big.NewInt(91), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+		der, err := x509.CreateCertificate(rand.Reader, lt, parent, k.Public(), parentKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		return issued{c, k}
+	}
+	rootTmpl := func(cn string) *x509.Certificate {
+		return &x509.Certificate{SerialNumber: big.NewInt(90), Subject: pkix.Name{CommonName: cn},
+			NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign}
+	}
+	// Issuer "CORP ROOT", subject "Corp Root", signed by its own key.
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.CreateCertificate(rand.Reader, rootTmpl("Corp Root"), rootTmpl("CORP ROOT"), k.Public(), k)
+	caseRoot, _ := x509.ParseCertificate(der)
+	l := leafFrom(caseRoot, k)
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{caseRoot, k}.certPEM(), []string{"f5-tmm"}, now); err != nil {
+		t.Errorf("a root whose issuer differs only in case: %v", err)
+	}
+	// Subject = issuer "Fake Root", but signed by another key.
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ = x509.CreateCertificate(rand.Reader, rootTmpl("Fake Root"), rootTmpl("Fake Root"), k.Public(), other)
+	fake, _ := x509.ParseCertificate(der)
+	l = leafFrom(fake, k)
+	if err := Provided(l.certPEM(), l.keyPEM(), issued{fake, k}.certPEM(), []string{"f5-tmm"}, now); err == nil {
+		t.Error("a certificate naming itself as issuer but signed by another key was taken for a root")
+	}
+}
+
+// The SHA-1 allowance is for roots only: a SHA-1-signed intermediate (issuer
+// another name) alone in ca.crt is no anchor, as OpenSSL holds.
+func TestProvidedSHA1IntermediateIsNoRoot(t *testing.T) {
+	rk, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rt := &x509.Certificate{SerialNumber: big.NewInt(100), Subject: pkix.Name{CommonName: "root"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(5 * year), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	rd, _ := x509.CreateCertificate(rand.Reader, rt, rt, rk.Public(), rk)
+	root, _ := x509.ParseCertificate(rd)
+	ik, _ := rsa.GenerateKey(rand.Reader, 2048)
+	it := &x509.Certificate{SerialNumber: big.NewInt(101), Subject: pkix.Name{CommonName: "intermediate"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(4 * year), IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign, SignatureAlgorithm: x509.SHA1WithRSA}
+	id, err := x509.CreateCertificate(rand.Reader, it, root, ik.Public(), rk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inter, _ := x509.ParseCertificate(id)
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	lt := &x509.Certificate{SerialNumber: big.NewInt(102), Subject: pkix.Name{CommonName: "f5net"},
+		NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"}}
+	ld, _ := x509.CreateCertificate(rand.Reader, lt, inter, k.Public(), ik)
+	leaf, _ := x509.ParseCertificate(ld)
+	l := issued{leaf, k}
+	if err := Provided(l.certPEM(), l.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id}), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "no self-signed root") {
+		t.Errorf("a SHA-1 intermediate alone in ca.crt: %v", err)
+	}
+}

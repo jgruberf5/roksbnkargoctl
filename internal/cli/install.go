@@ -114,18 +114,15 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	// installed records the install as pending, which locks nothing: a first
 	// install that fails from here on, leaving a trusted profile, is then not
 	// mistaken for one made before 0.7.0 (a profile and no record). Such a
-	// pre-0.7.0 install, which checkLayout let through with cert-manager, gets
-	// its layout recorded at once: a pending record would erase the only sign
-	// of it if this install failed. The layout itself is recorded once the
-	// Application exists (step 8).
-	switch {
-	case r.InstalledLayout == "" && r.TrustedProfileID != "":
-		r.InstalledLayout = installLayout(c)
-	case !layoutInstalled(r.InstalledLayout):
+	// pre-0.7.0 record is left as it is: pending would erase the only sign of
+	// the running install if this one failed, and recording the config's
+	// layout would guess its namespaces, which are not known. The layout itself
+	// is recorded once the Application exists (step 8).
+	if !layoutInstalled(r.InstalledLayout) && !(r.InstalledLayout == "" && r.TrustedProfileID != "") {
 		r.InstalledLayout = layoutPending + installLayout(c)
-	}
-	if err := s.save(); err != nil {
-		return err
+		if err := s.save(); err != nil {
+			return err
+		}
 	}
 
 	ibmc, err := s.IBM()

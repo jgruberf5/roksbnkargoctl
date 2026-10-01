@@ -195,10 +195,12 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
 	hasRoot := false
 	for _, c := range cas {
-		// Self-signed by name, as OpenSSL decides it: a root is trusted, not
-		// verified, so its own signature algorithm (SHA-1 on older corporate
-		// roots, which Go will not check) does not matter.
-		if bytes.Equal(c.RawSubject, c.RawIssuer) && (len(c.AuthorityKeyId) == 0 || bytes.Equal(c.AuthorityKeyId, c.SubjectKeyId)) {
+		// A root signs itself. Its signature is checked, as OpenSSL checks it
+		// (a certificate naming itself as issuer but signed by another key is
+		// "unable to get issuer certificate" there), except for an algorithm
+		// Go refuses to check and OpenSSL accepts: SHA-1, on older corporate
+		// roots, judged self-signed by its names.
+		if selfSigned(c) {
 			roots.AddCert(c)
 			hasRoot = true
 		} else {
@@ -237,4 +239,10 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 		return fmt.Errorf("tls.crt does not cover names BNK uses: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func selfSigned(c *x509.Certificate) bool {
+	err := c.CheckSignatureFrom(c)
+	var insecure x509.InsecureAlgorithmError
+	return err == nil || (errors.As(err, &insecure) && bytes.Equal(c.RawSubject, c.RawIssuer))
 }
