@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -202,5 +203,49 @@ func TestInstallRefusesAnotherLayoutUnderAnInstall(t *testing.T) {
 	}
 	if carriedOver(&config.Resolved{InstalledLayout: installed}).InstalledLayout != installed {
 		t.Error("init --refresh dropped the installed layout")
+	}
+}
+
+// init --config-file on an installed workspace keeps what install recorded
+// (the trusted profile, the TGW connection, the installed layout): it used to
+// drop the workspace's record before the re-resolve, so uninstall, workspaces
+// delete and the layout guard forgot them. A resolved section in the file
+// itself is still ignored.
+func TestInitFromAFileKeepsTheWorkspaceRecord(t *testing.T) {
+	home := isolate(t)
+	cfgYAML := `
+ibmcloud: {region: us-south}
+cluster: c
+transit_gateway: t
+cos: {instance: ci, bucket: b}
+argocd: {server: "https://a.example"}
+git: {url: "https://git.example/r.git"}
+`
+	writeWorkspace(t, home, "w", cfgYAML+`resolved: {cluster_id: cid, cluster_name: c, transit_gateway_id: tid, transit_gateway_name: t,
+  trusted_profile_id: Profile-1, tgw_connection_created_id: conn-9, installed_layout: "namespaces=f5-bnk certificates=single"}
+`)
+	src := filepath.Join(t.TempDir(), "in.yaml")
+	if err := os.WriteFile(src, []byte(cfgYAML+"resolved: {trusted_profile_id: Profile-FROM-FILE}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolveWorkspace = func(_ context.Context, s *session) error {
+		r := carriedOver(s.cfg.Resolved) // what resolve does with the old record
+		r.ClusterID, r.ClusterName, r.TransitGatewayID, r.TransitGatewayName = "cid", "c", "tid", "t"
+		s.cfg.Resolved = r
+		return nil
+	}
+	initRemoteChecks = func(context.Context, *session) error { return nil }
+	t.Cleanup(func() { resolveWorkspace, initRemoteChecks = resolve, defaultInitRemoteChecks })
+	if out, err := runRoot(t, "init", "-w", "w", "-f", src); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	ws, _ := config.Open("w")
+	c, err := ws.LoadFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := c.Resolved
+	if r.TrustedProfileID != "Profile-1" || r.TGWConnectionCreatedID != "conn-9" || r.InstalledLayout != "namespaces=f5-bnk certificates=single" {
+		t.Errorf("init -f lost the install record: %+v", r)
 	}
 }

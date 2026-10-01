@@ -25,7 +25,13 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   (`resolved.installed_layout`) and refuses a different layout until `uninstall`:
   switching in place deleted the utilities namespace, with CWC, RabbitMQ and the License,
   under roksbnkctl on BNK 2.3. `init --refresh` keeps the record.
-- Verified live: TODO
+- Verified live on OpenShift 4.21.31 with Argo CD 3.5.1 (connected, images from an
+  Artifactory mirror), one namespace with a self-signed single certificate: install 6m11s,
+  Synced and Healthy with nothing OutOfSync; only `f5-bnk` created, no cert-manager; 27 pods
+  Running and 26 of them mounting the Secret; the License Active; the certificate chains to
+  its CA (`CN=f5net` from `CN=f5net-ca`, valid ten years). A second install kept the same
+  certificate; a layout change under the install was refused; uninstall left the cluster
+  clean.
 
 ## [0.6.3] - 2026-09-30
 

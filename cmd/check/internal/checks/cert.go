@@ -155,7 +155,7 @@ func SingleCert(ctx context.Context, env *Env, cfg SingleCertConfig, res *Result
 	}
 
 	spec := certSpec(cfg, sans, signer, provided)
-	cur, why := currentSecret(ctx, env, cfg, spec, signer)
+	cur, why := currentSecret(ctx, env, cfg, spec)
 	var m *tlsMaterial
 	switch {
 	case cur != nil:
@@ -199,7 +199,7 @@ func certSpec(cfg SingleCertConfig, sans []string, signer *x509.Certificate, pro
 // currentSecret returns the Secret's material when every namespace already
 // holds the same, valid, unexpired certificate issued for spec; otherwise nil
 // and why it must be (re)written.
-func currentSecret(ctx context.Context, env *Env, cfg SingleCertConfig, spec string, signer *x509.Certificate) (*tlsMaterial, string) {
+func currentSecret(ctx context.Context, env *Env, cfg SingleCertConfig, spec string) (*tlsMaterial, string) {
 	var first *tlsMaterial
 	for _, ns := range cfg.Namespaces {
 		s, err := env.Kube.Get(ctx, GVRSecret.Path(ns, cfg.SecretName))
@@ -213,10 +213,10 @@ func currentSecret(ctx context.Context, env *Env, cfg SingleCertConfig, spec str
 		if err != nil {
 			return nil, fmt.Sprintf("%s/%s: %v", ns, cfg.SecretName, err)
 		}
+		// The first namespace's copy is kept; the caller writes it into every
+		// namespace, so namespaces holding different copies are made equal.
 		if first == nil {
 			first = m
-		} else if string(m.cert) != string(first.cert) || string(m.key) != string(first.key) || string(m.ca) != string(first.ca) {
-			return nil, "the namespaces hold different certificates"
 		}
 	}
 	leaf, _, err := parsePair(first.cert, first.key)
@@ -226,11 +226,8 @@ func currentSecret(ctx context.Context, env *Env, cfg SingleCertConfig, spec str
 	if cfg.Now().Add(cfg.RenewBefore).After(leaf.NotAfter) {
 		return nil, fmt.Sprintf("it expires %s, within the renewal window", leaf.NotAfter.Format(time.DateOnly))
 	}
-	if signer != nil {
-		if err := leaf.CheckSignatureFrom(signer); err != nil {
-			return nil, "it is not signed by the current CA"
-		}
-	}
+	// A new CA (regenerated, or another ca file) changes the spec digest,
+	// which includes the signer, so a certificate from an old CA never gets here.
 	return first, ""
 }
 

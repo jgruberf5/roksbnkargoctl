@@ -77,7 +77,16 @@ func runInit(cmd *cobra.Command, configFile string, refresh bool) error {
 		if c, err = config.Parse(data); err != nil {
 			return err
 		}
+		// A resolved section in the given file is not trusted; the
+		// workspace's own record is kept, so what install created (the
+		// trusted profile, the TGW connection, the installed layout) is
+		// carried through the re-resolve as it is with --refresh.
 		c.Resolved = nil
+		if ws.Exists() {
+			if old, err := ws.LoadFile(); err == nil {
+				c.Resolved = old.Resolved
+			}
+		}
 		c.Defaults(name)
 	case ws.Exists():
 		if c, err = ws.Load(); err != nil {

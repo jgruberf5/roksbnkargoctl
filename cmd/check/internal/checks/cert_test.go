@@ -324,3 +324,49 @@ func issueFor(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, sans 
 	}
 	return m
 }
+
+// The renewal window alone reissues the certificate: a long-lived CA (yours)
+// stays, the short-lived certificate is renewed once within renew-before.
+func TestSingleCertRenewsWithinTheWindow(t *testing.T) {
+	s, env, _ := newFake(t)
+	caPEM, keyPEM := operatorCA(t, true) // valid five years
+	s.Put("", "v1", "secrets", secretObj("roksbnkargoctl-check", "src", map[string][]byte{"tls.crt": caPEM, "tls.key": keyPEM}))
+	cfg := certCfg(IssuerCA, "f5-bnk")
+	cfg.SourceSecret, cfg.Validity = "roksbnkargoctl-check/src", 40*24*time.Hour
+	runCert(t, s, env, cfg)
+	_, first, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+
+	early := certNow.Add(5 * 24 * time.Hour) // 35 days left, outside the 30-day window
+	cfg.Now = func() time.Time { return early }
+	runCert(t, s, env, cfg)
+	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.cert) != string(first.cert) {
+		t.Fatal("reissued outside the renewal window")
+	}
+	late := certNow.Add(15 * 24 * time.Hour) // 25 days left, inside it
+	cfg.Now = func() time.Time { return late }
+	runCert(t, s, env, cfg)
+	if _, m, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert"); string(m.cert) == string(first.cert) {
+		t.Fatal("not renewed inside the renewal window")
+	}
+}
+
+// Two namespaces holding different certificates for the same settings are
+// made identical again (every component must present and trust the same one).
+func TestSingleCertEqualisesTheNamespaces(t *testing.T) {
+	s, env, _ := newFake(t)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk", "f5-utils")
+	runCert(t, s, env, cfg)
+	// Replace f5-utils' certificate with another valid one, same annotation.
+	other := s.Get("", "v1", "secrets", "f5-utils", "bnk-single-cert")
+	ca, caKey := testCAKey(t)
+	m := issueFor(t, ca, caKey, SingleCertSANs(cfg.Namespaces, nil))
+	other["data"].(map[string]any)["tls.crt"] = base64.StdEncoding.EncodeToString(m.cert)
+	other["data"].(map[string]any)["tls.key"] = base64.StdEncoding.EncodeToString(m.key)
+	s.Put("", "v1", "secrets", other)
+	runCert(t, s, env, cfg)
+	_, a, _ := secretTLS(t, s, "f5-bnk", "bnk-single-cert")
+	_, b, _ := secretTLS(t, s, "f5-utils", "bnk-single-cert")
+	if string(a.cert) != string(b.cert) || string(a.key) != string(b.key) {
+		t.Fatal("the namespaces were left holding different certificates")
+	}
+}
