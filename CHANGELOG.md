@@ -18,7 +18,8 @@ Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
   chain, validity and every BNK name); your key goes into the cluster, never to Git.
   Defaults are F5's procedure (CN `f5net`, RSA 4096, 3650 days). A sync keeps the Secret
   while it is current and reissues it when it is missing, the settings change, or it is
-  within 30 days of expiry, then restarts the pods that mount it: on BNK 2.4.0 GA,
+  within 30 days of expiry, then restarts the pods that mount it, once every namespace
+  holds it, retrying on later syncs until the restart is recorded: on BNK 2.4.0 GA,
   DSSM's Redis kept the old certificate after a CA change and failed its readiness
   probe until restarted. The check gets `create` on Secrets in this mode only.
 - One namespace for every BNK component: set `bnk.utils_namespace` to `bnk.namespace`

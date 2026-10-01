@@ -56,6 +56,16 @@ func TestImageContextHoldsEveryImportedPackage(t *testing.T) {
 		}
 	}
 	walk("cmd/check")
+	// The module files the build needs, beside the packages.
+	if pm, err := patternmatcher.New(mustPatterns(t, ignore)); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, f := range []string{"go.mod", "go.sum"} {
+			if m, _ := pm.MatchesOrParentMatches(f); m {
+				t.Errorf("Dockerfile.dockerignore keeps %s out of the build context", f)
+			}
+		}
+	}
 	workflow := read(".github/workflows/check-image.yml")
 	for dir := range seen {
 		if f := excluded(t, root, ignore, dir); f != "" {
@@ -105,4 +115,13 @@ func excluded(t *testing.T, root, ignore, dir string) string {
 		}
 	}
 	return ""
+}
+
+func mustPatterns(t *testing.T, ignore string) []string {
+	t.Helper()
+	p, err := ignorefile.ReadAll(strings.NewReader(ignore))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

@@ -276,10 +276,11 @@ func TestProvidedSHA1Root(t *testing.T) {
 	}
 }
 
-// A root is judged by its signature, as OpenSSL judges it, not by its names:
-// a root whose issuer differs from its subject only in case (OpenSSL compares
-// canonical names) is a root; a certificate naming itself as issuer but signed
-// by another key is not ("unable to get issuer certificate" in OpenSSL 3.5.5).
+// A root is judged by its signature, not by its names: a root whose issuer
+// differs from its subject only in case (OpenSSL compares canonical names, and
+// accepts it) is a root; a certificate naming itself as issuer but signed by
+// another key is not — stricter than OpenSSL, which accepts it unless
+// -check_ss_sig.
 func TestProvidedRootIsJudgedBySignature(t *testing.T) {
 	leafFrom := func(parent *x509.Certificate, parentKey crypto.Signer) issued {
 		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -340,5 +341,36 @@ func TestProvidedSHA1IntermediateIsNoRoot(t *testing.T) {
 	l := issued{leaf, k}
 	if err := Provided(l.certPEM(), l.keyPEM(), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: id}), []string{"f5-tmm"}, now); err == nil || !strings.Contains(err.Error(), "no self-signed root") {
 		t.Errorf("a SHA-1 intermediate alone in ca.crt: %v", err)
+	}
+}
+
+// A self-signed certificate given as its own ca.crt is its own anchor, for
+// OpenSSL (verify OK) and Go's Verify alike, whatever its CA constraints:
+// judging "self-signed" with CheckSignatureFrom refused it, since that also
+// demands the parent be a CA.
+func TestProvidedSelfSignedLeafAsItsOwnCA(t *testing.T) {
+	for name, tc := range map[string]struct {
+		bc   bool
+		ku   x509.KeyUsage
+		isCA bool
+	}{
+		"CA:false":           {true, x509.KeyUsageDigitalSignature, false},
+		"no basicConstraint": {false, x509.KeyUsageDigitalSignature, false},
+		"no key usage":       {false, 0, false},
+	} {
+		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{SerialNumber: big.NewInt(110), Subject: pkix.Name{CommonName: "f5net"},
+			NotBefore: now.Add(-day), NotAfter: now.Add(year), DNSNames: []string{"f5-tmm"},
+			BasicConstraintsValid: tc.bc, IsCA: tc.isCA, KeyUsage: tc.ku,
+			ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, _ := x509.ParseCertificate(der)
+		l := issued{c, k}
+		if err := Provided(l.certPEM(), l.keyPEM(), l.certPEM(), []string{"f5-tmm"}, now); err != nil {
+			t.Errorf("%s: a self-signed certificate as its own ca.crt: %v", name, err)
+		}
 	}
 }

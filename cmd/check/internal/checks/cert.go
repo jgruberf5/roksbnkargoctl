@@ -209,7 +209,7 @@ func restartMounting(ctx context.Context, env *Env, cfg SingleCertConfig, res *R
 			n++
 		}
 		if n > 0 {
-			res.Pass("restart", "%s: restarted %d pods that mount the replaced certificate", ns, n)
+			res.Pass("restart", "%s: restarted %d pods onto the current certificate", ns, n)
 		}
 	}
 	return ok

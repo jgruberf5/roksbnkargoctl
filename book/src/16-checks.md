@@ -380,7 +380,7 @@ the message lists up to eight missing names and how many more.
 | `[FAIL] ca` | issuer `ca`: the source is not a CA, lacks `keyCertSign`, its key does not match, or it is not valid now and for longer than `--renew-before` |
 | `[FAIL] secret` | the Secret could not be written into that namespace |
 | `[FAIL] provided` | the provided certificate failed verification |
-| `[PASS] restart` | `<ns>: restarted <n> pods that mount the replaced certificate` |
+| `[PASS] restart` | `<ns>: restarted <n> pods onto the current certificate` |
 | `[FAIL] restart` | a pod could not be listed or deleted, or the Secret could not be written into every namespace (`not restarting …`). Run the sync again: the restart is retried until it is recorded. Do not restart pods by hand while a namespace still holds the old certificate |
 
 `<why>` is one of: `<ns>/<name> missing`, `the settings changed`, `<ns>/<name>: <parse

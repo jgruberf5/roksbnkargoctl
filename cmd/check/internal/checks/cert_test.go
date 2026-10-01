@@ -706,3 +706,28 @@ func TestSingleCertRetriesAFailedRestart(t *testing.T) {
 		t.Error("a finished restart was repeated")
 	}
 }
+
+// A pod list that fails leaves the restart unrecorded, so the next sync
+// restarts.
+func TestSingleCertRetriesAfterAFailedPodList(t *testing.T) {
+	s, env, _ := newFake(t)
+	p := kubefake.Obj("v1", "Pod", "f5-bnk", "a")
+	p["spec"] = map[string]any{"volumes": []any{map[string]any{"name": "tls", "secret": map[string]any{"secretName": "bnk-single-cert"}}}}
+	s.Put("", "v1", "pods", p)
+	cfg := certCfg(IssuerSelfSigned, "f5-bnk")
+	runCert(t, s, env, cfg)
+	s.Hook = func(_ *kubefake.Server, r kubefake.Request) *kubefake.Reply {
+		if r.Method == "GET" && strings.HasSuffix(r.Path, "/pods") {
+			rep := kubefake.Status(403, "Forbidden", "no")
+			return &rep
+		}
+		return nil
+	}
+	cfg.ExtraDNS = []string{"bnk.example.com"}
+	runCert(t, s, env, cfg)
+	s.Hook = nil
+	runCert(t, s, env, cfg)
+	if s.Get("", "v1", "pods", "f5-bnk", "a") != nil {
+		t.Error("a restart whose pod list failed was not retried")
+	}
+}

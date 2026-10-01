@@ -195,11 +195,13 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 	roots, inter := x509.NewCertPool(), x509.NewCertPool()
 	hasRoot := false
 	for _, c := range cas {
-		// A root signs itself. Its signature is checked, as OpenSSL checks it
-		// (a certificate naming itself as issuer but signed by another key is
-		// "unable to get issuer certificate" there), except for an algorithm
-		// Go refuses to check and OpenSSL accepts: SHA-1, on older corporate
-		// roots, judged self-signed by its names.
+		// An anchor signs itself: a root, or a self-signed certificate given
+		// as its own ca.crt. Its own signature is checked — stricter than
+		// OpenSSL, which takes a certificate naming itself as issuer but signed
+		// by another key unless -check_ss_sig — except for an algorithm Go
+		// refuses to check and OpenSSL accepts: SHA-1, on older corporate
+		// roots, judged self-signed by its names. Whether it may sign is
+		// judged by Verify below, not here.
 		if selfSigned(c) {
 			roots.AddCert(c)
 			hasRoot = true
@@ -242,7 +244,10 @@ func Provided(certPEM, keyPEM, caPEM []byte, sans []string, now time.Time) error
 }
 
 func selfSigned(c *x509.Certificate) bool {
-	err := c.CheckSignatureFrom(c)
+	// CheckSignature, not CheckSignatureFrom: the latter also refuses a
+	// parent that is not a CA, which would make a self-signed leaf used as
+	// its own ca.crt "no self-signed root" (OpenSSL and Go's Verify accept it).
+	err := c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature)
 	var insecure x509.InsecureAlgorithmError
 	return err == nil || (errors.As(err, &insecure) && bytes.Equal(c.RawSubject, c.RawIssuer))
 }
