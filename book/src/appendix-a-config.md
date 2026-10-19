@@ -138,6 +138,7 @@ pulls from FAR.
 | `instance` | string | `bnk-supply-chain` (unless `local_far_auth_file` is set) | `ROKSBNKARGOCTL_COS_INSTANCE` | COS service instance: its name, GUID or CRN |
 | `bucket` | string | required unless `local_far_auth_file` is set | `ROKSBNKARGOCTL_COS_BUCKET` | bucket holding the two files: its name, or a bucket CRN (which also names the instance) |
 | `region` | string | `us-south` | `ROKSBNKARGOCTL_COS_REGION` | the region a new bucket is created in (`cos publish --create-bucket`) and buckets are listed from. An existing bucket's own region is found from its location, so this need not match it |
+| `endpoint` | string | `public` | `ROKSBNKARGOCTL_COS_ENDPOINT` | how COS is reached: `public` (`s3.<region>.cloud-object-storage.appdomain.cloud`), `private` (`s3.private.<region>…`) or `direct` (`s3.direct.<region>…`, what a VPC's VPE for COS resolves), or an `https://` URL used as is for every region. Private and direct answer only from inside IBM Cloud. See [Reaching COS privately](./14-cos.md#reaching-cos-privately) |
 | `far_auth_object` | string | `f5-far-auth-key.tgz` | `ROKSBNKARGOCTL_COS_FAR_AUTH_OBJECT` | object name of the FAR auth tarball |
 | `jwt_object` | string | `subscription.jwt` | `ROKSBNKARGOCTL_COS_JWT_OBJECT` | object name of the subscription JWT |
 | `local_far_auth_file` | string | `""` | `ROKSBNKARGOCTL_COS_LOCAL_FAR_AUTH_FILE` | read the FAR auth tarball from this local file instead of COS |

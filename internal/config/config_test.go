@@ -47,3 +47,23 @@ func TestValidateSingleCertificate(t *testing.T) {
 		t.Errorf("valid single-certificate config refused: %v", err)
 	}
 }
+
+func TestCOSEndpoint(t *testing.T) {
+	c := &Config{}
+	c.Defaults("w")
+	if c.COS.Endpoint != "public" {
+		t.Errorf("default cos.endpoint = %q, want public", c.COS.Endpoint)
+	}
+	for _, v := range []string{"public", "private", "direct", "https://cos-vpe.example.internal"} {
+		c.COS.Endpoint = v
+		if err := c.Validate(); err != nil && strings.Contains(err.Error(), "cos.endpoint") {
+			t.Errorf("cos.endpoint %q refused: %v", v, err)
+		}
+	}
+	for _, v := range []string{"dirct", "http://cos.example", "https://"} {
+		c.COS.Endpoint = v
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "cos.endpoint") {
+			t.Errorf("cos.endpoint %q accepted: %v", v, err)
+		}
+	}
+}

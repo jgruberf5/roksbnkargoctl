@@ -61,11 +61,11 @@ settings are the defaults and the config flags override them.
 | Command | Flags | Purpose |
 |---|---|---|
 | `cos instances` | — | List the account's COS service instances: name, GUID, resource group, state, CRN |
-| `cos buckets` | `--instance` | List an instance's buckets with their regions, locations and creation times |
-| `cos list` | `--instance`, `--bucket`, `--far-auth-object`, `--jwt-object` | List the objects in a bucket; the two F5 objects are marked `far-auth` and `jwt` |
-| `cos publish` | `--far-auth <file>` — the FAR auth tarball (`.tgz` from MyF5); `--jwt <file>` — the subscription JWT; `--create-bucket` — create the bucket if the instance has none of that name; `--region` — where a new bucket is created (`cos.region`); `--instance`, `--bucket`, `--far-auth-object`, `--jwt-object` | Upload the FAR auth tarball and/or the JWT (at least one is required). An existing bucket is used in its own region |
-| `cos delete` | `--object <key>` — object to delete (repeatable; default the FAR auth and JWT objects); `--instance`, `--bucket`, `--far-auth-object`, `--jwt-object` | Delete objects from a bucket, keeping the bucket. An absent object counts as deleted. Asks for confirmation |
-| `cos verify` | `--instance`, `--bucket`, `--far-auth-object`, `--jwt-object` | Check the JWT is well-formed and the FAR key can read the BNK 2.4.0 manifest from FAR |
+| `cos buckets` | `--instance`, `--endpoint` | List an instance's buckets with their regions, locations and creation times |
+| `cos list` | `--instance`, `--bucket`, `--endpoint`, `--far-auth-object`, `--jwt-object` | List the objects in a bucket; the two F5 objects are marked `far-auth` and `jwt` |
+| `cos publish` | `--far-auth <file>` — the FAR auth tarball (`.tgz` from MyF5); `--jwt <file>` — the subscription JWT; `--create-bucket` — create the bucket if the instance has none of that name; `--region` — where a new bucket is created (`cos.region`); `--instance`, `--bucket`, `--endpoint`, `--far-auth-object`, `--jwt-object` | Upload the FAR auth tarball and/or the JWT (at least one is required). An existing bucket is used in its own region |
+| `cos delete` | `--object <key>` — object to delete (repeatable; default the FAR auth and JWT objects); `--instance`, `--bucket`, `--endpoint`, `--far-auth-object`, `--jwt-object` | Delete objects from a bucket, keeping the bucket. An absent object counts as deleted. Asks for confirmation |
+| `cos verify` | `--instance`, `--bucket`, `--endpoint`, `--far-auth-object`, `--jwt-object` | Check the JWT is well-formed and the FAR key can read the BNK 2.4.0 manifest from FAR |
 
 `--instance` takes a name, GUID or CRN (`cos.instance`); `--bucket` a name or a bucket CRN
 (`cos.bucket`). A bucket's region is found from its location.
@@ -79,7 +79,7 @@ settings are the defaults and the config flags override them.
 | `registry verify` | the BOM and mirror flags | Report artifacts missing from the mirror |
 
 BOM flags: `--far-host` (`registry.far_host`), `--far-auth-file` (`cos.local_far_auth_file`),
-`--cos-instance`, `--cos-bucket`, `--cos-region`, `--far-auth-object` (`cos.*`),
+`--cos-instance`, `--cos-bucket`, `--cos-region`, `--cos-endpoint`, `--far-auth-object` (`cos.*`),
 `--api-key-env` (`ibmcloud.api_key_env`), `--cert-manager-install`,
 `--cert-manager-version` (`bnk.cert_manager.*`), `--check-image` (`check.image`).
 Mirror flags: `--mirror-host`, `--mirror-prefix`, `--mirror-username`,
@@ -90,7 +90,7 @@ itself is never a flag: it is read from the variable `--mirror-password-env` nam
 
 | Command | Flags | Purpose |
 |---|---|---|
-| `flp up` | `--name`, `--state`, `--ca-out <file>` — also write the CA certificate here (default without a workspace `./<name>-flp-ca.pem`); `--region`, `--resource-group`, `--transit-gateway`; `--zone`, `--vpc`, `--cidr`, `--profile`, `--allowed-cidrs`, `--ssh-key`, `--floating-ip` (`flp.vsi.*`); `--far-auth-file`, `--jwt-file`, `--cos-instance`, `--cos-bucket`, `--cos-region`, `--far-auth-object`, `--jwt-object` | Build the F5 License Proxy VSI (own VPC, public gateway for egress to F5, attached to the transit gateway, serving `:8443`) and a CA BNK will trust. With a CA file written, print the `flp.external` settings for an install |
+| `flp up` | `--name`, `--state`, `--ca-out <file>` — also write the CA certificate here (default without a workspace `./<name>-flp-ca.pem`); `--region`, `--resource-group`, `--transit-gateway`; `--zone`, `--vpc`, `--cidr`, `--profile`, `--allowed-cidrs`, `--ssh-key`, `--floating-ip` (`flp.vsi.*`); `--far-auth-file`, `--jwt-file`, `--cos-instance`, `--cos-bucket`, `--cos-region`, `--cos-endpoint`, `--far-auth-object`, `--jwt-object` | Build the F5 License Proxy VSI (own VPC, public gateway for egress to F5, attached to the transit gateway, serving `:8443`) and a CA BNK will trust. With a CA file written, print the `flp.external` settings for an install |
 | `flp status` | `--name`, `--state` | Show the license proxy VSI |
 | `flp down` | `--name`, `--state`, `--region`, `--resource-group`, `--transit-gateway`, `--zone`, `--vpc` | Delete what `flp up` built, from its state; with the state lost, find the resources by their exact names. Asks for confirmation |
 

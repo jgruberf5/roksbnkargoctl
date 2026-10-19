@@ -37,6 +37,7 @@ func bindBOMFlags(c *cobra.Command) {
 	bindConfigFlag(c, "cos-instance", "cos.instance")
 	bindConfigFlag(c, "cos-bucket", "cos.bucket")
 	bindConfigFlag(c, "cos-region", "cos.region")
+	bindConfigFlag(c, "cos-endpoint", "cos.endpoint")
 	bindConfigFlag(c, "far-auth-object", "cos.far_auth_object")
 	bindConfigFlag(c, "api-key-env", "ibmcloud.api_key_env")
 	bindConfigFlag(c, "cert-manager-install", "bnk.cert_manager.install")

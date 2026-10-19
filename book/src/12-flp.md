@@ -39,7 +39,7 @@ run; none is saved.
 | `--ssh-key` | `flp.vsi.ssh_key` | yes | | |
 | `--floating-ip` | `flp.vsi.floating_ip` | yes | | |
 | `--far-auth-file`, `--jwt-file` | `cos.local_far_auth_file`, `cos.local_jwt_file` | yes | | |
-| `--cos-instance`, `--cos-bucket`, `--cos-region` | `cos.instance`, `cos.bucket`, `cos.region` | yes | | |
+| `--cos-instance`, `--cos-bucket`, `--cos-region`, `--cos-endpoint` | `cos.instance`, `cos.bucket`, `cos.region`, `cos.endpoint` | yes | | |
 | `--far-auth-object`, `--jwt-object` | `cos.far_auth_object`, `cos.jwt_object` | yes | | |
 
 `flp status` reads the region from the state file, so it needs only `--name` or `--state`.

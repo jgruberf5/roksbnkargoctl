@@ -278,3 +278,25 @@ func TestInterviewInstallShape(t *testing.T) {
 		t.Errorf("back to two namespaces and cert-manager: %q %+v", c.BNK.UtilsNamespace, c.BNK.Certificates)
 	}
 }
+
+// The interview asks how COS is reached, after the bucket region, and keeps
+// the workspace's value on Enter.
+func TestInterviewCOSEndpoint(t *testing.T) {
+	answer := func(lines string, c *config.Config) {
+		t.Helper()
+		pr, pw := io.Pipe()
+		go func() { _, _ = io.WriteString(pw, lines); pw.Close() }()
+		withPrompt(t, pr, context.Background())
+		interviewCOS(c)
+	}
+	c := &config.Config{}
+	c.Defaults("w")
+	answer("bnk-supply-chain\nbnk-artifacts\neu-fr2\ndirect\n\n\n", c)
+	if o := c.COS; o.Region != "eu-fr2" || o.Endpoint != "direct" || o.FARAuthObject != "f5-far-auth-key.tgz" {
+		t.Errorf("answers: %+v", o)
+	}
+	answer("\n\n\n\n\n\n", c)
+	if c.COS.Endpoint != "direct" {
+		t.Errorf("Enter replaced cos.endpoint direct with %q", c.COS.Endpoint)
+	}
+}

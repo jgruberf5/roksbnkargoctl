@@ -333,7 +333,7 @@ func TestRegistryFARKeyFromCOS(t *testing.T) {
 		{Name: "supply-cos", GUID: "g-supply", CRN: testCOSCRN("g-supply"), ResourceGroupID: "rg-1", State: "active"},
 	}}
 	newIBMLookup = func(*session) (ibmLookup, error) { return fl, nil }
-	newCOSClient = func(ctx context.Context, key, crn, region string) (*cos.Client, error) {
+	newCOSClient = func(ctx context.Context, key, crn, region, _ string) (*cos.Client, error) {
 		if key != "not-a-real-key" {
 			t.Errorf("COS opened with API key %q", key)
 		}
@@ -342,7 +342,7 @@ func TestRegistryFARKeyFromCOS(t *testing.T) {
 		}
 		return cos.NewWith(ctx, key, crn, region, cos.Options{EndpointFor: s3.Endpoint, TokenURL: s3.TokenURL()})
 	}
-	t.Cleanup(func() { newIBMLookup, newCOSClient = defaultIBMLookup, cos.New })
+	t.Cleanup(func() { newIBMLookup, newCOSClient = defaultIBMLookup, defaultCOSClient })
 	out, err := runRoot(t, "registry", "bom", "--no-workspace", "--far-host", e.far, "--check-image", e.check, "--cert-manager-install=false",
 		"--cos-instance", "supply-cos", "--cos-bucket", "supply", "--cos-region", "us-south", "--far-auth-object", "keys/far.tgz")
 	if err != nil || !strings.Contains(out, "4 artifacts") {
@@ -373,11 +373,11 @@ func TestRegistryFARKeyFromCOS(t *testing.T) {
 // and a wrong key is refused by FAR rather than silently replaced.
 func TestRegistryFARKeyFromAFile(t *testing.T) {
 	e := newRegistryEnv(t)
-	newCOSClient = func(context.Context, string, string, string) (*cos.Client, error) {
+	newCOSClient = func(context.Context, string, string, string, string) (*cos.Client, error) {
 		t.Error("COS was opened although --far-auth-file was given")
 		return nil, errors.New("no COS")
 	}
-	t.Cleanup(func() { newCOSClient = cos.New })
+	t.Cleanup(func() { newCOSClient = defaultCOSClient })
 	if out, err := runRoot(t, args([]string{"registry", "bom", "--no-workspace"}, e.bomArgs())...); err != nil || !strings.Contains(out, "4 artifacts") {
 		t.Fatalf("bom: %v\n%s", err, out)
 	}

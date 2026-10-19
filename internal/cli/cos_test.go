@@ -45,7 +45,7 @@ func newCOSEnv(t *testing.T) *cosEnv {
 		},
 		groups: []ibm.ResourceGroup{{ID: "rg-1", Name: "default"}, {ID: "rg-2", Name: "work"}},
 	}
-	newCOSClient = func(ctx context.Context, key, crn, region string) (*cos.Client, error) {
+	newCOSClient = func(ctx context.Context, key, crn, region, _ string) (*cos.Client, error) {
 		if key != "test-key" {
 			t.Errorf("COS client built with API key %q", key)
 		}
@@ -53,7 +53,7 @@ func newCOSEnv(t *testing.T) *cosEnv {
 	}
 	newIBMLookup = func(*session) (ibmLookup, error) { return e.rc, nil }
 	t.Cleanup(func() {
-		newCOSClient = cos.New
+		newCOSClient = defaultCOSClient
 		newIBMLookup = defaultIBMLookup
 	})
 	return e

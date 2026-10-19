@@ -171,7 +171,7 @@ an install uses it with.`,
 	bindFLPPlacementFlags(up)
 	for name, path := range map[string]string{
 		"far-auth-file": "cos.local_far_auth_file", "jwt-file": "cos.local_jwt_file",
-		"cos-instance": "cos.instance", "cos-bucket": "cos.bucket", "cos-region": "cos.region",
+		"cos-instance": "cos.instance", "cos-bucket": "cos.bucket", "cos-region": "cos.region", "cos-endpoint": "cos.endpoint",
 		"far-auth-object": "cos.far_auth_object", "jwt-object": "cos.jwt_object",
 	} {
 		bindConfigFlag(up, name, path)
