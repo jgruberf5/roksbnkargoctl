@@ -72,8 +72,17 @@ type ibmLookup interface {
 // cosService is the CRN service segment of a COS instance.
 const cosService = "cloud-object-storage"
 
-// newCOSClient builds COS clients; tests point it at a fake.
-var newCOSClient = cos.New
+// newCOSClient builds COS clients reaching COS through the cos.endpoint
+// endpoint; tests point it at a fake.
+var newCOSClient = defaultCOSClient
+
+func defaultCOSClient(ctx context.Context, key, crn, region, endpoint string) (*cos.Client, error) {
+	ep, err := cos.EndpointFunc(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return cos.NewWith(ctx, key, crn, region, cos.Options{EndpointFor: ep})
+}
 
 // newIBMLookup is the lookup a session uses when none is set: the IBM Cloud
 // client. Tests that drive a command through the root substitute a fake.
@@ -483,7 +492,7 @@ func (s *session) COS(ctx context.Context) (*cos.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newCOSClient(ctx, key, crn, s.cfg.COS.Region)
+	return newCOSClient(ctx, key, crn, s.cfg.COS.Region, s.cfg.COS.Endpoint)
 }
 
 // FARServiceAccount returns the FAR password (the service-account key inside

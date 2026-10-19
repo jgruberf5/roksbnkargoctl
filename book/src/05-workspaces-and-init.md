@@ -224,7 +224,9 @@ transit gateways. Press Enter to accept the value in brackets. In order:
 5. the install's shape ([below](#namespaces-and-certificates)): one namespace or two, and
    how BNK's components get their certificates;
 6. TMM replicas and the StorageClass;
-7. the COS instance, bucket, bucket region and the two object names;
+7. the COS instance, bucket, bucket region, the S3 endpoint (`public`, `private`, `direct`
+   or an `https://` URL: [Reaching COS privately](./14-cos.md#reaching-cos-privately))
+   and the two object names;
 8. Argo CD, starting with `Use an existing Argo CD instance (3.3 or later)?` (below),
    then, in either case, the endpoint Argo CD uses to reach ROKS (`private` or `public`);
 9. the Git repository, branch and path; then a username for an `https://` URL, or an SSH

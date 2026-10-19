@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -144,6 +145,7 @@ type COS struct {
 	Instance         string `yaml:"instance,omitempty" help:"COS instance: name, GUID or CRN"`
 	Bucket           string `yaml:"bucket,omitempty" help:"COS bucket: name or CRN"`
 	Region           string `yaml:"region,omitempty" help:"COS region: where a new bucket is created and buckets are listed from (an existing bucket's own region is found from its location)"`
+	Endpoint         string `yaml:"endpoint,omitempty" help:"COS S3 endpoint: public, private, direct (e.g. through a VPE), or an https:// URL used for every region"`
 	FARAuthObject    string `yaml:"far_auth_object,omitempty" help:"object key of the FAR auth tarball"`
 	JWTObject        string `yaml:"jwt_object,omitempty" help:"object key of the subscription JWT"`
 	LocalFARAuthFile string `yaml:"local_far_auth_file,omitempty" help:"local FAR auth tarball, instead of COS"`
@@ -345,6 +347,9 @@ func (c *Config) Defaults(workspace string) {
 	if o.Region == "" {
 		o.Region = "us-south"
 	}
+	if o.Endpoint == "" {
+		o.Endpoint = "public"
+	}
 	if o.FARAuthObject == "" {
 		o.FARAuthObject = "f5-far-auth-key.tgz"
 	}
@@ -463,6 +468,9 @@ func (c *Config) Validate() error {
 	}
 	if c.COS.LocalFARAuthFile == "" && (c.COS.Instance == "" || c.COS.Bucket == "") {
 		add("cos.instance and cos.bucket are required unless cos.local_far_auth_file is set")
+	}
+	if !ValidCOSEndpoint(c.COS.Endpoint) {
+		add("cos.endpoint %q: must be public, private, direct or an https:// URL", c.COS.Endpoint)
 	}
 	if ct := c.BNK.Certificates; ct.Mode != "" && ct.Mode != CertModeCertManager && ct.Mode != CertModeSingle {
 		add("bnk.certificates.mode %q: must be %q or %q", ct.Mode, CertModeCertManager, CertModeSingle)
@@ -727,4 +735,17 @@ func (c *Config) PullSecretName() string {
 		return "mirror-secret"
 	}
 	return "far-secret"
+}
+
+// ValidCOSEndpoint reports whether v is a cos.endpoint the COS client accepts:
+// empty (public), public, private, direct, or an https:// URL with a host.
+// internal/cos.EndpointFunc maps it; a test in internal/cli holds the two to
+// the same set.
+func ValidCOSEndpoint(v string) bool {
+	switch v {
+	case "", "public", "private", "direct":
+		return true
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Scheme == "https" && u.Host != ""
 }

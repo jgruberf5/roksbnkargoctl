@@ -172,7 +172,7 @@ Argo CD's repository server pulls the two Helm charts over HTTPS:
 | Destination | Used by |
 |---|---|
 | `iam.cloud.ibm.com`, `containers.cloud.ibm.com`, `transit.cloud.ibm.com`, `resource-controller.cloud.ibm.com`, `<region>.iaas.cloud.ibm.com` | `init`, `install`, `uninstall`, `status` |
-| `s3.<region>.cloud-object-storage.appdomain.cloud`, for the bucket's region (and `cos.region`) | reading the FAR tarball and JWT from COS |
+| `s3.<region>.cloud-object-storage.appdomain.cloud`, for the bucket's region (and `cos.region`); `s3.private.<region>…` or `s3.direct.<region>…` with `cos.endpoint: private` or `direct` | reading the FAR tarball and JWT from COS |
 | The ROKS default (normally public) service endpoint (or private, with `ROKSBNKARGOCTL_PRIVATE_ENDPOINT=1`) | `render`, `install`, `uninstall`, `status`, `diagnose` |
 | FAR (`repo.f5.com`) or the mirror; `quay.io` for the cert-manager chart when pulling from FAR | `render` (manifest and charts) |
 | `ghcr.io` | `render` resolves the check image's digest (in mirror mode it falls back to the mirror's copy, with a warning, if `ghcr.io` is unreachable) |

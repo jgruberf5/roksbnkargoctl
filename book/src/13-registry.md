@@ -113,7 +113,7 @@ that run and is not saved.
 |---|---|---|---|
 | `--far-host` | `registry.far_host` | yes | yes |
 | `--far-auth-file` | `cos.local_far_auth_file` | yes | yes |
-| `--cos-instance`, `--cos-bucket`, `--cos-region` | `cos.instance`, `cos.bucket`, `cos.region` | yes | yes |
+| `--cos-instance`, `--cos-bucket`, `--cos-region`, `--cos-endpoint` | `cos.instance`, `cos.bucket`, `cos.region`, `cos.endpoint` | yes | yes |
 | `--far-auth-object` | `cos.far_auth_object` | yes | yes |
 | `--api-key-env` | `ibmcloud.api_key_env` (for reading the FAR key from COS) | yes | yes |
 | `--cert-manager-install` | `bnk.cert_manager.install` (`--cert-manager-install=false` leaves the five cert-manager artifacts out) | yes | yes |

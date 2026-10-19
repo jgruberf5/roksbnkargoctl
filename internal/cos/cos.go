@@ -4,8 +4,8 @@
 //
 // It wraps github.com/IBM/ibm-cos-sdk-go (S3-compatible, in-process, no
 // shell-outs) with IAM API-key authentication against one COS service
-// instance, over the regional public endpoint
-// https://s3.<region>.cloud-object-storage.appdomain.cloud.
+// instance, over one of its regional endpoints (public by default; private,
+// direct or a custom URL with cos.endpoint): see EndpointFunc.
 //
 // Buckets are addressed in the client's region only; a bucket that lives in
 // another region is reached with a client made for that region (InRegion).
@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/IBM/ibm-cos-sdk-go/aws"
 	"github.com/IBM/ibm-cos-sdk-go/aws/awserr"
 	"github.com/IBM/ibm-cos-sdk-go/aws/credentials/ibmiam"
+	"github.com/IBM/ibm-cos-sdk-go/aws/request"
 	"github.com/IBM/ibm-cos-sdk-go/aws/session"
 	"github.com/IBM/ibm-cos-sdk-go/service/s3"
 )
@@ -72,6 +74,33 @@ func Endpoint(region string) string {
 	return fmt.Sprintf("https://s3.%s.cloud-object-storage.appdomain.cloud", region)
 }
 
+// Endpoint kinds: IBM COS serves every region at three regional S3 endpoints.
+// Private and direct answer only from inside IBM Cloud (direct is the one a
+// VPC's VPE for COS resolves), so public stays the default.
+const (
+	EndpointPublic  = "public"
+	EndpointPrivate = "private"
+	EndpointDirect  = "direct"
+)
+
+// EndpointFunc returns the S3 endpoint for each region under kind: "" or
+// public, private, direct, or an https:// URL used as is for every region (a
+// custom host or VPE alias, for a bucket in that URL's region).
+func EndpointFunc(kind string) (func(region string) string, error) {
+	switch kind {
+	case "", EndpointPublic:
+		return Endpoint, nil
+	case EndpointPrivate, EndpointDirect:
+		return func(region string) string {
+			return fmt.Sprintf("https://s3.%s.%s.cloud-object-storage.appdomain.cloud", kind, region)
+		}, nil
+	}
+	if u, err := url.Parse(kind); err == nil && u.Scheme == "https" && u.Host != "" {
+		return func(string) string { return kind }, nil
+	}
+	return nil, fmt.Errorf("COS endpoint %q: want public, private, direct or an https:// URL", kind)
+}
+
 // New constructs a client for the COS instance instanceCRN (its CRN, or GUID)
 // in region. No network call is made until the first operation.
 func New(ctx context.Context, apiKey, instanceCRN, region string) (*Client, error) {
@@ -101,6 +130,17 @@ func NewWith(_ context.Context, apiKey, instanceCRN, region string, o Options) (
 		WithS3ForcePathStyle(true)
 	return &Client{region: region, instanceCRN: instanceCRN, apiKey: apiKey, opts: o, s3: s3.New(sess, conf)}, nil
 }
+
+// IsUnreachable reports whether err is a request that never reached COS (DNS,
+// connect or TLS failure) rather than an answer from it: the sign the
+// endpoint is not one this network resolves or routes to.
+func IsUnreachable(err error) bool {
+	var ae awserr.Error
+	return errors.As(err, &ae) && ae.Code() == request.ErrCodeRequestError
+}
+
+// Endpoint is the S3 endpoint the client sends requests to.
+func (c *Client) Endpoint() string { return c.s3.Endpoint }
 
 // Region is the client's region.
 func (c *Client) Region() string { return c.region }

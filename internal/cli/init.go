@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/config"
+	"github.com/jgruberf5/roksbnkargoctl/internal/cos"
 	"github.com/jgruberf5/roksbnkargoctl/internal/gitpub"
 )
 
@@ -233,11 +234,7 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 	c.BNK.StorageClass = ask("StorageClass for BNK volumes (empty = cluster default; any class works for any TMM replica count)", c.BNK.StorageClass)
 
 	// Supply chain.
-	c.COS.Instance = ask("COS instance holding the FAR key and JWT", c.COS.Instance)
-	c.COS.Bucket = ask("  bucket", c.COS.Bucket)
-	c.COS.Region = ask("  bucket region", c.COS.Region)
-	c.COS.FARAuthObject = ask("  FAR auth tarball object", c.COS.FARAuthObject)
-	c.COS.JWTObject = ask("  subscription JWT object", c.COS.JWTObject)
+	interviewCOS(c)
 
 	// Argo CD and Git.
 	if askYesNo("Use an existing Argo CD instance (3.3 or later)?", !usesTestHub(c)) {
@@ -266,6 +263,17 @@ func interview(ctx context.Context, c *config.Config, ws string) error {
 	}
 	_ = ws
 	return nil
+}
+
+// interviewCOS asks where the FAR key and the JWT are kept, and how COS is
+// reached.
+func interviewCOS(c *config.Config) {
+	c.COS.Instance = ask("COS instance holding the FAR key and JWT", c.COS.Instance)
+	c.COS.Bucket = ask("  bucket", c.COS.Bucket)
+	c.COS.Region = ask("  bucket region", c.COS.Region)
+	c.COS.Endpoint = ask("  S3 endpoint (public; private or direct from inside IBM Cloud, e.g. through a VPE; or an https:// URL)", c.COS.Endpoint)
+	c.COS.FARAuthObject = ask("  FAR auth tarball object", c.COS.FARAuthObject)
+	c.COS.JWTObject = ask("  subscription JWT object", c.COS.JWTObject)
 }
 
 func firstOf(vals ...string) string {
@@ -350,34 +358,48 @@ func resolve(ctx context.Context, s *session) error {
 	}
 
 	if c.COS.LocalFARAuthFile == "" {
-		p.step("resolving COS instance %s", c.COS.Instance)
-		si, err := s.resolveCOSInstance(ctx)
-		if err != nil {
+		if err := resolveCOS(ctx, s, r); err != nil {
 			return err
 		}
-		r.COSInstanceCRN = si.CRN
-		c.Resolved = r
-		s.cosCRN = ""
-		cc, bucket, err := s.cosBucket(ctx, false)
-		if err != nil {
-			return err
-		}
-		objs, err := cc.ListObjects(ctx, bucket, "")
-		if err != nil {
-			return fmt.Errorf("COS bucket %s: %w", c.COS.Bucket, err)
-		}
-		have := map[string]bool{}
-		for _, o := range objs {
-			have[o.Key] = true
-		}
-		for _, k := range []string{c.COS.FARAuthObject, c.COS.JWTObject} {
-			if !have[k] {
-				return fmt.Errorf("COS bucket %s has no object %q (publish it with `roksbnkargoctl cos publish`)", c.COS.Bucket, k)
-			}
-		}
-		p.ok("COS %s/%s has %s and %s", c.COS.Instance, c.COS.Bucket, c.COS.FARAuthObject, c.COS.JWTObject)
 	}
 	c.Resolved = r
+	return nil
+}
+
+// resolveCOS records the COS instance CRN in r and checks the bucket holds the
+// FAR auth tarball and the JWT, through cos.endpoint.
+func resolveCOS(ctx context.Context, s *session, r *config.Resolved) error {
+	c, p := s.cfg, s.p
+	p.step("resolving COS instance %s", c.COS.Instance)
+	si, err := s.resolveCOSInstance(ctx)
+	if err != nil {
+		return err
+	}
+	r.COSInstanceCRN = si.CRN
+	c.Resolved = r
+	s.cosCRN = ""
+	cc, bucket, err := s.cosBucket(ctx, false)
+	if err != nil {
+		return err
+	}
+	objs, err := cc.ListObjects(ctx, bucket, "")
+	if err != nil {
+		if cos.IsUnreachable(err) {
+			return fmt.Errorf("COS bucket %s: %w\n  this host cannot reach COS through cos.endpoint %q: from inside IBM Cloud (a VPE, or no internet), set it to private or direct, or to the https:// URL your network resolves",
+				c.COS.Bucket, err, c.COS.Endpoint)
+		}
+		return fmt.Errorf("COS bucket %s: %w", c.COS.Bucket, err)
+	}
+	have := map[string]bool{}
+	for _, o := range objs {
+		have[o.Key] = true
+	}
+	for _, k := range []string{c.COS.FARAuthObject, c.COS.JWTObject} {
+		if !have[k] {
+			return fmt.Errorf("COS bucket %s has no object %q (publish it with `roksbnkargoctl cos publish`)", c.COS.Bucket, k)
+		}
+	}
+	p.ok("COS %s/%s has %s and %s", c.COS.Instance, c.COS.Bucket, c.COS.FARAuthObject, c.COS.JWTObject)
 	return nil
 }
 

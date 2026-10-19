@@ -99,6 +99,42 @@ the bucket there. You name a region only to create a bucket.
 | `cos publish` | The same error, unless `--create-bucket` creates the bucket in `--region` |
 | `cos verify`, and every read of the two files (`init`, `render`, `install`, `flp up`, `registry`) | Falls back to `cos.region`. A key allowed to read the two objects may not be allowed to list the instance's buckets, and those reads worked before discovery existed. `--verbose` prints why the bucket could not be located |
 
+### Reaching COS privately
+
+COS serves each region at three endpoints. `cos.endpoint` (`--endpoint` on the `cos`
+commands, `--cos-endpoint` on `registry` and `flp up`, `ROKSBNKARGOCTL_COS_ENDPOINT`)
+picks which one every request goes to:
+
+| `cos.endpoint` | Endpoint | Reachable from |
+|---|---|---|
+| `public` (default) | `s3.<region>.cloud-object-storage.appdomain.cloud` | anywhere with internet access |
+| `private` | `s3.private.<region>.cloud-object-storage.appdomain.cloud` | IBM Cloud's private network |
+| `direct` | `s3.direct.<region>.cloud-object-storage.appdomain.cloud` | a VPC, typically through a VPE for COS |
+| `https://…` | that URL, as is, for every region | wherever it resolves |
+
+It applies to both regions in play: listing the instance's buckets goes to `cos.region`,
+and reading the bucket goes to the bucket's own region. With `private` or `direct`, set
+`cos.region` to the bucket's region when your network reaches only that region's
+endpoint, for example a VPE in one region:
+
+```yaml
+cos:
+  instance: bnk-supply-chain
+  bucket: bnk-artifacts
+  region: eu-fr2
+  endpoint: direct
+```
+
+When a request never reaches COS (the name does not resolve, or nothing answers), `init`
+says so and names `cos.endpoint`:
+
+```text
+roksbnkargoctl: COS bucket bnk-artifacts: listing objects in "bnk-artifacts": RequestError: send request failed caused by: Get https://s3.eu-fr2.cloud-object-storage.appdomain.cloud/bnk-artifacts?list-type=2: dial tcp: lookup s3.eu-fr2.cloud-object-storage.appdomain.cloud on 10.0.0.2:53: no such host
+  this host cannot reach COS through cos.endpoint "public": from inside IBM Cloud (a VPE, or no internet), set it to private or direct, or to the https:// URL your network resolves
+```
+
+The IAM token still comes from `iam.cloud.ibm.com`.
+
 ## cos instances
 
 ```sh

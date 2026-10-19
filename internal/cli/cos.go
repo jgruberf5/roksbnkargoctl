@@ -49,10 +49,11 @@ also names the instance). A bucket's region is found from its location.
 	return cmd
 }
 
-// bindCOSTarget registers --instance and --bucket.
+// bindCOSTarget registers --instance, --bucket and --endpoint.
 func bindCOSTarget(cmd *cobra.Command) {
 	bindConfigFlag(cmd, "instance", "cos.instance")
 	bindConfigFlag(cmd, "bucket", "cos.bucket")
+	bindConfigFlag(cmd, "endpoint", "cos.endpoint")
 }
 
 // bindCOSObjects registers --far-auth-object and --jwt-object.
@@ -144,6 +145,7 @@ func newCOSBucketsCmd() *cobra.Command {
 		},
 	}
 	bindConfigFlag(cmd, "instance", "cos.instance")
+	bindConfigFlag(cmd, "endpoint", "cos.endpoint")
 	return cmd
 }
 

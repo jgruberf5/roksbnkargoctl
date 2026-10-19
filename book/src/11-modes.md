@@ -73,7 +73,7 @@ reach any target.
 | The ROKS API (public endpoint, or private with `ROKSBNKARGOCTL_PRIVATE_ENDPOINT=1`) | `install`, `uninstall`, `status`, `diagnose`, `render` without `--no-cluster` |
 | The Argo CD server | `install`, `uninstall`, `status`, `diagnose` |
 | The Git server | `install`, `uninstall --purge-git` |
-| COS (`s3.<region>.cloud-object-storage.appdomain.cloud`) | Unless both `cos.local_far_auth_file` and `cos.local_jwt_file` are set |
+| COS (`s3.<region>.cloud-object-storage.appdomain.cloud`, or the private or direct endpoint with `cos.endpoint`) | Unless both `cos.local_far_auth_file` and `cos.local_jwt_file` are set |
 | FAR | `render`/`install` in `far` mode; `registry bom`, `replicate`, `verify`, `cos verify` and `flp up` in any mode |
 | `quay.io` | `render`/`install` in `far` mode with cert-manager installed; `registry replicate` |
 | The mirror | `render`/`install` in `mirror` mode; `registry replicate` and `verify` |
