@@ -4,6 +4,24 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.7.1] - 2026-10-19
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Added
+- `cos.endpoint` chooses how COS is reached: `public` (the default, as before), `private`,
+  `direct`, or an `https://` URL used for every region. A network that reaches COS only
+  through a VPE on the direct endpoint could not use the tool before: every request went
+  to the public name, which does not resolve there, so `init` failed with "no such host".
+  It is also `--endpoint` on `cos`, `--cos-endpoint` on `registry` and `flp up`,
+  `ROKSBNKARGOCTL_COS_ENDPOINT`, and an `init` interview question. When `init` cannot
+  reach COS at all, the error names `cos.endpoint` (#33).
+
+### Security
+- `golang.org/x/net` v0.60.0 and a `go 1.26.9` floor clear GO-2026-6617, -6613, -6612,
+  -6611, -6610, -6608, -6607, -6605 and -6603. The three read in full are HTTP server
+  bugs, and the tool runs no HTTP server; the rest are fixed by the same bump (#35).
+
 ## [0.7.0] - 2026-10-01
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
