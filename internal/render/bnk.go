@@ -132,6 +132,7 @@ type CNEInstanceParams struct {
 	StorageClass     string
 	Version          string
 	CertManager      bool // spec.certificate names the cert-manager issuer; absent in single-certificate mode
+	ExternalBIGIP    config.ExternalBIGIP
 }
 
 // CNEInstanceName is the CNEInstance's name in namespace ns. The check binary
@@ -181,7 +182,7 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 				"CLOUD_ENV", "true",
 				"CLOUD_PROVIDER", "ibm",
 				"CLOUD_REGION", p.Region,
-				"GSLB_DATACENTER_NAME", "",
+				config.GSLBDatacenterEnv, p.ExternalBIGIP.GSLBDatacenter,
 				"CLOUD_VPC", p.VPCName,
 				"CLOUD_TRUSTED_PROFILE", p.TrustedProfileID,
 				"USE_GATEWAY_SETTINGS", "true",
@@ -221,6 +222,19 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 	}
 	if p.StorageClass != "" {
 		spec["storageClassName"] = p.StorageClass
+	}
+	if e := p.ExternalBIGIP; e.Enabled {
+		// Two places in F5's schema: spec.externalBigip accepts only enabled,
+		// and a controller env there fails the sync (#38).
+		spec["externalBigip"] = map[string]any{"enabled": true}
+		if len(e.Env) > 0 {
+			var pairs []string
+			for _, v := range e.Env {
+				name, value, _ := strings.Cut(v, "=")
+				pairs = append(pairs, name, value)
+			}
+			spec["advanced"].(map[string]any)["externalBigip"] = map[string]any{"env": env(pairs...)}
+		}
 	}
 	if p.CertManager {
 		// Single-certificate mode leaves it out: FLO ignores it there (F5).

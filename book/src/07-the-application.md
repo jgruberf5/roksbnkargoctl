@@ -583,6 +583,37 @@ needs only kind, namespace and name; keep it in the workspace until you have uni
 
 *The network view: the Application's pods, among them FLO and the check pods. The Sync hooks' pods show `completed`, the node probes and the Gateway API sweep `running`.*
 
+## External BIG-IP (CIS)
+
+F5's external BIG-IP controller (CIS, used for GTM) is off by default. Turn it on in
+`config.yaml`, then run `install`:
+
+```yaml
+bnk:
+  external_bigip:
+    enabled: true
+    gslb_datacenter: dc1
+    env:
+      - ENABLE_EXT_BIGIP_DATASERVER_MONITOR=true
+      - ENABLE_EXT_BIGIP_POOL_MONITOR=true
+      - EXTERNAL_BIGIP_LOGIN_SECRET=f5-bigip-ctlr-login
+      - CLUSTER_IDENTIFIER=cluster-lab2
+```
+
+| Setting | Where it lands in the CNEInstance |
+|---|---|
+| `enabled` | `spec.externalBigip.enabled` |
+| `gslb_datacenter` | `GSLB_DATACENTER_NAME` in `spec.advanced.cneController.env` |
+| `env` | `spec.advanced.externalBigip.env` |
+
+Set these here rather than editing the CNEInstance in Git: `install` replaces `git.path`
+each time it publishes, so a hand edit is lost at the next one.
+
+The values are committed to Git, so `env` refuses a variable named like a password, token,
+credential or key, and a variable with `SECRET` in its name must hold a Kubernetes object name:
+the Secret's name, not its value. roksbnkargoctl does not create the BIG-IP login Secret: create it yourself as F5's CIS
+documentation describes, and name it in `EXTERNAL_BIGIP_LOGIN_SECRET`.
+
 ## Without letting roksbnkargoctl push to Git
 
 Some teams do not let tools push to the repository Argo CD syncs from: every change goes

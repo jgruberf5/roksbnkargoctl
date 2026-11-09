@@ -48,6 +48,57 @@ func TestValidateSingleCertificate(t *testing.T) {
 	}
 }
 
+func TestExternalBIGIPValidate(t *testing.T) {
+	bad := func(e ExternalBIGIP, want string) {
+		t.Helper()
+		c := &Config{}
+		c.Defaults("w")
+		c.BNK.ExternalBIGIP = e
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%+v: %v, want %q", e, err, want)
+		}
+	}
+	bad(ExternalBIGIP{GSLBDatacenter: "dc1"}, "need enabled")
+	bad(ExternalBIGIP{Env: []string{"A=b"}}, "need enabled")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"NOVALUE"}}, "entry 1: must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"=b"}}, "must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"A=b", "1A=b"}}, "entry 2: must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"A=1", "A=2"}}, "A is set twice")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"GSLB_DATACENTER_NAME=dc1"}}, "set GSLB_DATACENTER_NAME with bnk.external_bigip.gslb_datacenter")
+	for _, v := range []string{"EXTERNAL_BIGIP_LOGIN_SECRET=Sup3r!Pass", "client_secret=abc/DEF+123=", "SECRET_NAME=", "X_SECRET=-a", "X_SECRET=a-", "X_SECRET=Abc", "X_SECRET=" + strings.Repeat("a", 254)} {
+		bad(ExternalBIGIP{Enabled: true, Env: []string{v}}, "must hold the name of a Secret")
+	}
+	for _, n := range []string{"BIGIP_PASSWORD", "bigip_passwd", "AUTH_TOKEN", "API_KEY", "PRIVATEKEY", "BIGIP_PASS", "PASS", "bigip_pwd", "PWD_FILE", "BIGIP_PASSPHRASE", "BIGIP_CREDENTIALS"} {
+		bad(ExternalBIGIP{Enabled: true, Env: []string{n + "=hunter2"}}, n+" would put a credential in Git")
+	}
+
+	// The customer's own variables, including the one that names a Secret.
+	c := &Config{}
+	c.Defaults("w")
+	c.BNK.ExternalBIGIP = ExternalBIGIP{Enabled: true, GSLBDatacenter: "dc1", Env: []string{
+		"ENABLE_EXT_BIGIP_DATASERVER_MONITOR=true", "ENABLE_EXT_BIGIP_POOL_MONITOR=true",
+		"EXTERNAL_BIGIP_LOGIN_SECRET=f5-bigip-ctlr-login", "CLUSTER_IDENTIFIER=cluster-lab2", "EMPTY=",
+		"EXT_BIGIP_REGISTRY_CR=external-bigip-registry", "COMPASS_MODE=on", "BYPASS_CACHE=1", "SECRET_NAME=a.b-c", "ONE_SECRET=a", "LONG_SECRET=" + strings.Repeat("a", 253),
+	}}
+	if err := c.Validate(); err != nil && strings.Contains(err.Error(), "external_bigip") {
+		t.Errorf("valid settings refused: %v", err)
+	}
+	// A value never reaches the error: it may be the credential.
+	c.BNK.ExternalBIGIP.Env = []string{"BIGIP_PASSWORD=hunter2"}
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error holds the value: %v", err)
+	}
+	c.BNK.ExternalBIGIP.Env = []string{"LOGIN_SECRET=hunter2!"}
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error holds a Secret variable's value: %v", err)
+	}
+	c.BNK.ExternalBIGIP.Env = []string{"hunter2"}
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error holds a malformed entry: %v", err)
+	}
+}
+
 func TestCOSEndpoint(t *testing.T) {
 	c := &Config{}
 	c.Defaults("w")

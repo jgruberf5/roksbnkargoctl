@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"slices"
@@ -398,6 +399,66 @@ func TestCNEInstanceRendersNoDefaultFalseOrEmpty(t *testing.T) {
 		}
 	}
 	walk("spec", find(out.Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"])
+}
+
+// CIS off, the CNEInstance is the one every existing install has: changing it
+// would read as OutOfSync on upgrade.
+func TestCNEInstanceExternalBIGIPOffChangesNothing(t *testing.T) {
+	spec := find(doRender(t, baseConfig(config.ModeConnected, config.SourceFAR), nil).Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"].(map[string]any)
+	if eb, ok := spec["externalBigip"].(map[string]any); !ok || len(eb) != 0 {
+		t.Errorf("spec.externalBigip = %v, want {}", spec["externalBigip"])
+	}
+	advanced := spec["advanced"].(map[string]any)
+	if v, ok := advanced["externalBigip"]; ok {
+		t.Errorf("spec.advanced.externalBigip = %v, want absent", v)
+	}
+	if e := cneControllerEnv(t, spec)["GSLB_DATACENTER_NAME"]; e == nil || e["value"] != nil {
+		t.Errorf("GSLB_DATACENTER_NAME = %v, want a name with no value", e)
+	}
+}
+
+// The customer's GTM settings (#38): env lands under spec.advanced, the only
+// place F5's schema declares it, in the order given.
+func TestCNEInstanceExternalBIGIP(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.ExternalBIGIP = config.ExternalBIGIP{Enabled: true, GSLBDatacenter: "dc1", Env: []string{
+		"ENABLE_EXT_BIGIP_POOL_MONITOR=true", "EXTERNAL_BIGIP_LOGIN_SECRET=f5-bigip-ctlr-login", "WITH_EQUALS=a=b", "EMPTY=",
+	}}
+	spec := find(doRender(t, c, nil).Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"].(map[string]any)
+	if eb := spec["externalBigip"].(map[string]any); len(eb) != 1 || eb["enabled"] != true {
+		t.Errorf("spec.externalBigip = %v, want only enabled: true", eb)
+	}
+	got, err := json.Marshal(spec["advanced"].(map[string]any)["externalBigip"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"env":[{"name":"ENABLE_EXT_BIGIP_POOL_MONITOR","value":"true"},{"name":"EXTERNAL_BIGIP_LOGIN_SECRET","value":"f5-bigip-ctlr-login"},{"name":"WITH_EQUALS","value":"a=b"},{"name":"EMPTY"}]}`
+	if string(got) != want {
+		t.Errorf("spec.advanced.externalBigip = %s\nwant %s", got, want)
+	}
+	if e := cneControllerEnv(t, spec)["GSLB_DATACENTER_NAME"]; e == nil || e["value"] != "dc1" {
+		t.Errorf("GSLB_DATACENTER_NAME = %v, want dc1", e)
+	}
+}
+
+// Enabled with no env: no empty env list for Argo CD to read as a diff.
+func TestCNEInstanceExternalBIGIPWithoutEnv(t *testing.T) {
+	c := baseConfig(config.ModeConnected, config.SourceFAR)
+	c.BNK.ExternalBIGIP.Enabled = true
+	spec := find(doRender(t, c, nil).Git, "CNEInstance", CNEInstanceName("f5-bnk"))["spec"].(map[string]any)
+	if v, ok := spec["advanced"].(map[string]any)["externalBigip"]; ok {
+		t.Errorf("spec.advanced.externalBigip = %v, want absent", v)
+	}
+}
+
+func cneControllerEnv(t *testing.T, spec map[string]any) map[string]map[string]any {
+	t.Helper()
+	out := map[string]map[string]any{}
+	for _, e := range spec["advanced"].(map[string]any)["cneController"].(map[string]any)["env"].([]any) {
+		m := e.(map[string]any)
+		out[m["name"].(string)] = m
+	}
+	return out
 }
 
 // OpenShift adds <sa>-dockercfg-<suffix> to every ServiceAccount's
