@@ -48,6 +48,48 @@ func TestValidateSingleCertificate(t *testing.T) {
 	}
 }
 
+func TestExternalBIGIPValidate(t *testing.T) {
+	bad := func(e ExternalBIGIP, want string) {
+		t.Helper()
+		c := &Config{}
+		c.Defaults("w")
+		c.BNK.ExternalBIGIP = e
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%+v: %v, want %q", e, err, want)
+		}
+	}
+	bad(ExternalBIGIP{GSLBDatacenter: "dc1"}, "need enabled")
+	bad(ExternalBIGIP{Env: []string{"A=b"}}, "need enabled")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"NOVALUE"}}, "entry 1: must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"=b"}}, "must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"A=b", "1A=b"}}, "entry 2: must be NAME=value")
+	bad(ExternalBIGIP{Enabled: true, Env: []string{"A=1", "A=2"}}, "A is set twice")
+	for _, n := range []string{"BIGIP_PASSWORD", "bigip_passwd", "AUTH_TOKEN", "API_KEY", "PRIVATEKEY"} {
+		bad(ExternalBIGIP{Enabled: true, Env: []string{n + "=hunter2"}}, n+" would put a credential in Git")
+	}
+
+	// The customer's own variables, including the one that names a Secret.
+	c := &Config{}
+	c.Defaults("w")
+	c.BNK.ExternalBIGIP = ExternalBIGIP{Enabled: true, GSLBDatacenter: "dc1", Env: []string{
+		"ENABLE_EXT_BIGIP_DATASERVER_MONITOR=true", "ENABLE_EXT_BIGIP_POOL_MONITOR=true",
+		"EXTERNAL_BIGIP_LOGIN_SECRET=f5-bigip-ctlr-login", "CLUSTER_IDENTIFIER=cluster-lab2", "EMPTY=",
+	}}
+	if err := c.Validate(); err != nil && strings.Contains(err.Error(), "external_bigip") {
+		t.Errorf("valid settings refused: %v", err)
+	}
+	// A value never reaches the error: it may be the credential.
+	c.BNK.ExternalBIGIP.Env = []string{"BIGIP_PASSWORD=hunter2"}
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error holds the value: %v", err)
+	}
+	c.BNK.ExternalBIGIP.Env = []string{"hunter2"}
+	if err := c.Validate(); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error holds a malformed entry: %v", err)
+	}
+}
+
 func TestCOSEndpoint(t *testing.T) {
 	c := &Config{}
 	c.Defaults("w")

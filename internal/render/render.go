@@ -242,7 +242,7 @@ func Render(in Inputs) (*Output, error) {
 		Namespace: bnkNS, ImageHost: c.ImageHost(), PullSecret: pullSecret,
 		Region: c.IBMCloud.Region, VPCName: c.Resolved.VPCName, TrustedProfileID: c.Resolved.TrustedProfileID,
 		TMMReplicas: c.BNK.TMMReplicas, StorageClass: c.BNK.StorageClass, Version: c.BNK.Version,
-		CertManager: c.UsesCertManager(),
+		CertManager: c.UsesCertManager(), ExternalBIGIP: c.BNK.ExternalBIGIP,
 	}, WaveCNEInstance))
 
 	// License + lifecycle checks.

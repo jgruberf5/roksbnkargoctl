@@ -20,6 +20,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// secretEnvRE names a variable that holds a credential. Not SECRET: F5's
+	// EXTERNAL_BIGIP_LOGIN_SECRET holds a Secret's name, which belongs in Git.
+	secretEnvRE = regexp.MustCompile(`(?i)PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY`)
+)
+
 // BNKVersion is the only BNK line this tool installs (DESIGN.md C10). FAR tags
 // 2.4.0 and 2.4.0-3.3175.0-0.0.380 are the same artifact.
 const BNKVersion = "2.4.0"
@@ -79,6 +86,38 @@ type BNK struct {
 	NADAddress string `yaml:"nad_address,omitempty" help:"static address on the ens3 ipvlan attachment"`
 	// StorageClass for BNK components that request one; empty uses the default class.
 	StorageClass string `yaml:"storage_class,omitempty" help:"StorageClass for BNK volumes; empty uses the default class"`
+	// ExternalBIGIP: F5's external BIG-IP controller (CIS), for GTM.
+	ExternalBIGIP ExternalBIGIP `yaml:"external_bigip,omitempty"`
+}
+
+// ExternalBIGIP is F5's external BIG-IP controller (CIS). Off, the CNEInstance
+// is exactly what it was before this setting existed.
+type ExternalBIGIP struct {
+	Enabled        bool     `yaml:"enabled,omitempty" help:"deploy F5's external BIG-IP controller (CIS)"`
+	GSLBDatacenter string   `yaml:"gslb_datacenter,omitempty" help:"the controller's GSLB datacenter (GSLB_DATACENTER_NAME)"`
+	Env            []string `yaml:"env,omitempty" help:"the controller's environment, as NAME=value; written to Git, so name a Secret rather than holding a password"`
+}
+
+// validate reports what the CNEInstance could not carry. A setting without
+// enabled is refused: rendering nothing for it would look like it had worked.
+func (e ExternalBIGIP) validate(add func(string, ...any)) {
+	if !e.Enabled && (e.GSLBDatacenter != "" || len(e.Env) > 0) {
+		add("bnk.external_bigip: gslb_datacenter and env need enabled: true")
+	}
+	seen := map[string]bool{}
+	for i, v := range e.Env {
+		name, _, ok := strings.Cut(v, "=")
+		switch {
+		case !ok || !envNameRE.MatchString(name):
+			// By position: without an "=", the entry may be a pasted credential.
+			add("bnk.external_bigip.env entry %d: must be NAME=value", i+1)
+		case seen[name]:
+			add("bnk.external_bigip.env: %s is set twice", name)
+		case secretEnvRE.MatchString(name):
+			add("bnk.external_bigip.env: %s would put a credential in Git; hold it in a Secret and name the Secret", name)
+		}
+		seen[name] = true
+	}
 }
 
 // CertManager controls the cert-manager dependency.
@@ -454,6 +493,7 @@ func (c *Config) Validate() error {
 	if c.BNK.TMMReplicas < 1 {
 		add("bnk.tmm_replicas must be >= 1")
 	}
+	c.BNK.ExternalBIGIP.validate(add)
 	switch c.Registry.Source {
 	case SourceFAR:
 	case SourceMirror:

@@ -114,6 +114,9 @@ only. See [Workspaces and init](./05-workspaces-and-init.md#running-without-a-wo
 | `certificates.renew_before_days` | int | `30` | `ROKSBNKARGOCTL_BNK_CERTIFICATES_RENEW_BEFORE_DAYS` | single: each sync reissues the certificate this close to expiry |
 | `nad_address` | string | `10.10.1.1/24` | `ROKSBNKARGOCTL_BNK_NAD_ADDRESS` | static address on the `ens3` ipvlan NetworkAttachmentDefinition `ens3-ipvlan-l2` |
 | `storage_class` | string | `""` | `ROKSBNKARGOCTL_BNK_STORAGE_CLASS` | StorageClass for BNK components that request one; empty uses the cluster default. Set on the CNEInstance as `storageClassName` |
+| `external_bigip.enabled` | bool | `false` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_ENABLED` | deploy F5's external BIG-IP controller (CIS); see [External BIG-IP](./07-the-application.md#external-big-ip-cis) |
+| `external_bigip.gslb_datacenter` | string | `""` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_GSLB_DATACENTER` | the controller's GSLB datacenter (`GSLB_DATACENTER_NAME`). Needs `enabled` |
+| `external_bigip.env` | []string | `[]` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_ENV` | the controller's environment, as `NAME=value`. Needs `enabled`. Written to Git: a variable named like a password, token or key is refused |
 
 ## registry
 
@@ -295,6 +298,11 @@ bnk:
   # namespace: f5-bnk
   # utils_namespace: f5-utils
   # storage_class: ""              # empty = the cluster's default StorageClass
+  # external_bigip:                # F5's external BIG-IP controller (CIS), for GTM
+  #   enabled: true
+  #   gslb_datacenter: dc1
+  #   env:
+  #     - EXTERNAL_BIGIP_LOGIN_SECRET=f5-bigip-ctlr-login
   cert_manager:
     install: true                  # install the pinned cert-manager
     version: v1.17.3
