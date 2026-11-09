@@ -4,6 +4,26 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.7.2] - 2026-11-09
+
+Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
+
+### Added
+- `bnk.external_bigip` configures CIS on the CNEInstance: `enabled`, `gslb_datacenter`
+  (written to the CNE controller as `GSLB_DATACENTER_NAME`) and `env` (`NAME=value` entries
+  for the external BIG-IP controller). A hand edit in Git could not do this: `env` belongs
+  under `spec.advanced.externalBigip`, Argo CD rejects it directly under
+  `spec.externalBigip`, and `install` replaces the Git path on publish anyway. Off, the
+  rendered CNEInstance is byte-identical to 0.7.1. Validation refuses settings without
+  `enabled`, malformed or duplicate entries and credentials in `env`; a `*_SECRET` variable
+  must name a Secret object, so no secret value reaches Git. Not yet run against a live
+  BIG-IP or GTM (#38).
+
+### Security
+- `github.com/klauspost/compress` v1.20.2 clears GO-2026-6865, a panic on a crafted zstd
+  frame, reachable when pulling an artifact from FAR or a mirror. A `go 1.26.10` floor
+  clears GO-2026-6809, in `crypto/x509` (#40).
+
 ## [0.7.1] - 2026-10-19
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
