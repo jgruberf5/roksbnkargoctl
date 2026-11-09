@@ -609,8 +609,9 @@ bnk:
 Set these here rather than editing the CNEInstance in Git: `install` replaces `git.path`
 each time it publishes, so a hand edit is lost at the next one.
 
-The values are committed to Git, so `env` refuses a variable named like a password, token or
-key. roksbnkargoctl does not create the BIG-IP login Secret: create it yourself as F5's CIS
+The values are committed to Git, so `env` refuses a variable named like a password, token,
+credential or key, and a variable with `SECRET` in its name must hold a Kubernetes object name:
+the Secret's name, not its value. roksbnkargoctl does not create the BIG-IP login Secret: create it yourself as F5's CIS
 documentation describes, and name it in `EXTERNAL_BIGIP_LOGIN_SECRET`.
 
 ## Without letting roksbnkargoctl push to Git

@@ -182,7 +182,7 @@ func cneInstance(p CNEInstanceParams, wave int) Object {
 				"CLOUD_ENV", "true",
 				"CLOUD_PROVIDER", "ibm",
 				"CLOUD_REGION", p.Region,
-				"GSLB_DATACENTER_NAME", p.ExternalBIGIP.GSLBDatacenter,
+				config.GSLBDatacenterEnv, p.ExternalBIGIP.GSLBDatacenter,
 				"CLOUD_VPC", p.VPCName,
 				"CLOUD_TRUSTED_PROFILE", p.TrustedProfileID,
 				"USE_GATEWAY_SETTINGS", "true",

@@ -20,11 +20,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// GSLBDatacenterEnv is the CNE controller's variable for
+// bnk.external_bigip.gslb_datacenter.
+const GSLBDatacenterEnv = "GSLB_DATACENTER_NAME"
+
 var (
 	envNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	// secretEnvRE names a variable that holds a credential. Not SECRET: F5's
-	// EXTERNAL_BIGIP_LOGIN_SECRET holds a Secret's name, which belongs in Git.
-	secretEnvRE = regexp.MustCompile(`(?i)PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY`)
+	// credentialEnvRE names a variable that holds a credential. PASS and PWD
+	// only as whole words: COMPASS_MODE is not a password. Not SECRET: F5's
+	// EXTERNAL_BIGIP_LOGIN_SECRET holds a Secret's name, which belongs in Git
+	// (secretNameRE holds such a variable to that).
+	credentialEnvRE = regexp.MustCompile(`(?i)PASSWORD|PASSWD|PASSPHRASE|TOKEN|CREDENTIAL|API_?KEY|PRIVATE_?KEY|(^|_)(PASS|PWD)(_|$)`)
+	secretEnvRE     = regexp.MustCompile(`(?i)SECRET`)
+	// secretNameRE is a Kubernetes object name.
+	secretNameRE = regexp.MustCompile(`^[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 )
 
 // BNKVersion is the only BNK line this tool installs (DESIGN.md C10). FAR tags
@@ -106,15 +115,21 @@ func (e ExternalBIGIP) validate(add func(string, ...any)) {
 	}
 	seen := map[string]bool{}
 	for i, v := range e.Env {
-		name, _, ok := strings.Cut(v, "=")
+		name, value, ok := strings.Cut(v, "=")
 		switch {
 		case !ok || !envNameRE.MatchString(name):
 			// By position: without an "=", the entry may be a pasted credential.
 			add("bnk.external_bigip.env entry %d: must be NAME=value", i+1)
 		case seen[name]:
 			add("bnk.external_bigip.env: %s is set twice", name)
-		case secretEnvRE.MatchString(name):
+		case name == GSLBDatacenterEnv:
+			// The controller's env is the wrong container: it would render,
+			// and GSLB would still have no datacenter.
+			add("bnk.external_bigip.env: set %s with bnk.external_bigip.gslb_datacenter", name)
+		case credentialEnvRE.MatchString(name):
 			add("bnk.external_bigip.env: %s would put a credential in Git; hold it in a Secret and name the Secret", name)
+		case secretEnvRE.MatchString(name) && !secretNameRE.MatchString(value):
+			add("bnk.external_bigip.env: %s must hold the name of a Secret, not its value", name)
 		}
 		seen[name] = true
 	}

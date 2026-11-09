@@ -116,7 +116,7 @@ only. See [Workspaces and init](./05-workspaces-and-init.md#running-without-a-wo
 | `storage_class` | string | `""` | `ROKSBNKARGOCTL_BNK_STORAGE_CLASS` | StorageClass for BNK components that request one; empty uses the cluster default. Set on the CNEInstance as `storageClassName` |
 | `external_bigip.enabled` | bool | `false` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_ENABLED` | deploy F5's external BIG-IP controller (CIS); see [External BIG-IP](./07-the-application.md#external-big-ip-cis) |
 | `external_bigip.gslb_datacenter` | string | `""` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_GSLB_DATACENTER` | the controller's GSLB datacenter (`GSLB_DATACENTER_NAME`). Needs `enabled` |
-| `external_bigip.env` | []string | `[]` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_ENV` | the controller's environment, as `NAME=value`. Needs `enabled`. Written to Git: a variable named like a password, token or key is refused |
+| `external_bigip.env` | []string | `[]` | `ROKSBNKARGOCTL_BNK_EXTERNAL_BIGIP_ENV` | the controller's environment, as `NAME=value`. Needs `enabled`. Written to Git: a variable named like a password, token, credential or key is refused, and one with `SECRET` in its name must hold a Secret's name. Set `GSLB_DATACENTER_NAME` with `gslb_datacenter`, not here |
 
 ## registry
 
