@@ -166,6 +166,8 @@ func TestCRDKind(t *testing.T) {
 		{gatewayAPIGroup, "experimental", false, "Gateway API (experimental)"},
 		{gatewayAPIGroup, "standard", false, ""},
 		{gatewayAPIGroup, "", false, ""},
+		{gatewayAPIXGroup, "experimental", false, "Gateway API (experimental)"},
+		{gatewayAPIXGroup, "", false, ""},
 		{"cert-manager.io", "", true, "cert-manager"},
 		{"acme.cert-manager.io", "", true, "cert-manager"},
 		{"cert-manager.io", "", false, ""},

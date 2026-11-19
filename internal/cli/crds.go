@@ -41,6 +41,13 @@ var (
 // standard channel; only experimental-channel CRDs are BNK's.
 const gatewayAPIGroup = "gateway.networking.k8s.io"
 
+// gatewayAPIXGroup holds Gateway API's experimental-only kinds (XListenerSet,
+// XBackendTrafficPolicy, XMesh). BNK's crd-installer creates them with the
+// rest of the v1.4.1 experimental bundle (run 96: "minimumGatewayVersion"="1.4.1
+// experimental"); OpenShift does not manage this group, so its policy does not
+// cover them and the ingress operator does not report them, but they are BNK's.
+const gatewayAPIXGroup = "gateway.networking.x-k8s.io"
+
 // openshiftGatewayAPIPolicy is the ValidatingAdmissionPolicy (and binding) with
 // which OpenShift's ingress operator refuses any change to Gateway API CRDs,
 // deletion included: "Gateway API Custom Resource Definitions are managed by the
@@ -60,7 +67,7 @@ func crdKind(group, channel string, certManagerOurs bool) string {
 	switch {
 	case group == "f5.com" || group == "f5net.com" || strings.HasSuffix(group, ".f5.com") || strings.HasSuffix(group, ".f5net.com"):
 		return "F5"
-	case group == gatewayAPIGroup && channel == "experimental":
+	case (group == gatewayAPIGroup || group == gatewayAPIXGroup) && channel == "experimental":
 		return "Gateway API (experimental)"
 	case certManagerOurs && (group == "cert-manager.io" || group == "acme.cert-manager.io"):
 		return "cert-manager"
