@@ -150,7 +150,9 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 	}
 	u, err := url.Parse(c.server + path)
 	if err != nil {
-		return fmt.Errorf("argocd: %s: bad URL: %w", op, err)
+		// %v, not %w: url.Parse returns a *url.Error, which IsTransient would
+		// take for a network failure worth retrying. A bad server URL never heals.
+		return fmt.Errorf("argocd: %s: bad URL: %v", op, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rdr)
 	if err != nil {

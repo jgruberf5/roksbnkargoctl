@@ -2,7 +2,10 @@ package argocd
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -91,5 +94,38 @@ func TestWaitTimeoutNamesTheLastFailure(t *testing.T) {
 	_, err := c.WaitOperation(context.Background(), "bnk-demo", 300*time.Millisecond, nil)
 	if err == nil || !strings.Contains(err.Error(), "timed out") || !strings.Contains(err.Error(), "hub overloaded") {
 		t.Errorf("got %v", err)
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	_, parseErr := url.Parse("https://hub:bad-port")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"no answer: url.Error", &url.Error{Op: "Get", URL: "https://hub", Err: errors.New("i/o timeout")}, true},
+		{"cut-off response", io.ErrUnexpectedEOF, true},
+		{"503", &APIError{StatusCode: http.StatusServiceUnavailable}, true},
+		{"429", &APIError{StatusCode: http.StatusTooManyRequests}, true},
+		{"403", &APIError{StatusCode: http.StatusForbidden}, false},
+		{"401", &APIError{StatusCode: http.StatusUnauthorized}, false},
+		{"404", &APIError{StatusCode: http.StatusNotFound}, false},
+		{"anything else", errors.New("encode request: unsupported type"), false},
+	} {
+		if got := IsTransient(tc.err); got != tc.want {
+			t.Errorf("%s: IsTransient = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// A malformed server URL never heals: the client must not report it as a
+	// network failure (url.Parse's error is a *url.Error too).
+	if parseErr == nil {
+		t.Fatal("expected a parse error")
+	}
+	c := New("https://hub:bad-port", "tok", true, nil)
+	_, err := c.GetApplication(context.Background(), "x", "")
+	if err == nil || IsTransient(err) {
+		t.Errorf("bad server URL: err %v, transient %v; want a permanent error", err, IsTransient(err))
 	}
 }
