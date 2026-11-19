@@ -348,7 +348,9 @@ export you forgot to refresh.
 | Nothing changed | Publishes nothing, then syncs the same commit again |
 | You changed `config.yaml` | Re-renders, commits the difference, syncs it |
 
-Re-running `install` does not upgrade BNK. BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation. A change of mode is covered in
+Re-running `install` never changes the BNK release: with a build for another release it
+refuses, and points at `roksbnkargoctl upgrade` ([chapter 10a](./10a-upgrade.md)) when the
+running one is older. A change of mode is covered in
 [Changing modes](./11-modes.md#changing-modes).
 
 ## See also

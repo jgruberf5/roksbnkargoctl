@@ -61,7 +61,7 @@ it fails.`,
 			if err != nil {
 				return err
 			}
-			return runInstall(cmd.Context(), s, noSync, noPublish, timeout)
+			return runInstall(cmd.Context(), s, installOpts{noSync: noSync, noPublish: noPublish, timeout: timeout})
 		},
 	}
 	cmd.Flags().BoolVar(&noSync, "no-sync", false, "create the Application but do not sync it (sync from the Argo CD UI)")
@@ -70,7 +70,15 @@ it fails.`,
 	return cmd
 }
 
-func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout time.Duration) error {
+// installOpts are install's flags; upgrade is the upgrade command, which runs
+// the same steps with a prune sync and a wait for FLO's roll.
+type installOpts struct {
+	noSync, noPublish, upgrade bool
+	timeout                    time.Duration
+}
+
+func runInstall(ctx context.Context, s *session, opt installOpts) error {
+	noSync, noPublish, timeout := opt.noSync, opt.noPublish, opt.timeout
 	c, p := s.cfg, s.p
 	if err := c.Validate(); err != nil {
 		return err
@@ -123,6 +131,26 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		if err := s.save(); err != nil {
 			return err
 		}
+	}
+
+	// The release running in the cluster, before the first change in the cloud:
+	// install re-syncing a different build over it would upgrade or downgrade
+	// BNK without being asked to (run 93 did exactly that, unguarded). After the
+	// pending record above, which is local and locks nothing, so a first install
+	// that cannot reach the cluster still leaves it.
+	kr, err := s.Kube(ctx)
+	if err != nil {
+		return err
+	}
+	running, err := runningRelease(ctx, kr, c)
+	if err != nil {
+		return err
+	}
+	if err := checkRelease(running, c.BNK.Version, opt.upgrade); err != nil {
+		return err
+	}
+	if opt.upgrade {
+		p.ok("BNK %s is running; upgrading to %s", running, c.BNK.Version)
 	}
 
 	ibmc, err := s.IBM()
@@ -189,6 +217,9 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		p.step("publishing manifests/git to %s (%s:%s)", c.Git.URL, c.Git.Branch, c.Git.Path)
 		pubOpts := gitOpts
 		pubOpts.Message = fmt.Sprintf("roksbnkargoctl: BNK %s on %s (%s mode, %s registry)", c.BNK.Version, r.ClusterName, c.BNK.Mode, c.Registry.Source)
+		if opt.upgrade {
+			pubOpts.Message = fmt.Sprintf("roksbnkargoctl: upgrade BNK %s to %s on %s", running, c.BNK.Version, r.ClusterName)
+		}
 		pubOpts.SrcDir = s.ws.ManifestsDir() + "/git"
 		var changed bool
 		sha, changed, err = gitpub.Publish(ctx, pubOpts)
@@ -279,7 +310,13 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
 		return nil
 	}
-	return syncAndWait(ctx, s, ac, sha, gitPos, timeout)
+	if err := syncAndWait(ctx, s, ac, sha, gitPos, opt.upgrade, timeout); err != nil {
+		return err
+	}
+	if opt.upgrade {
+		return waitUpgraded(ctx, s, k, c.BNK.Version, timeout)
+	}
+	return nil
 }
 
 // chartRepoAPI is the part of the Argo CD client the chart registration uses.
@@ -422,10 +459,12 @@ func gitSourcePosition(app render.Object) (int, error) {
 
 // syncAndWait syncs the Application with its Git source (position gitPos) at
 // revision, the commit published or compared; the charts at their versions.
-func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, gitPos int, timeout time.Duration) error {
+// prune removes what the render no longer has: an upgrade's old CNEManifest
+// (bnk-<old release>), which a sync without prune leaves, Application OutOfSync.
+func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, gitPos int, prune bool, timeout time.Duration) error {
 	c, p := s.cfg, s.p
 	p.step("syncing %s (pre-install check → cert-manager → FLO → CNEInstance → license)", c.ArgoCD.Application)
-	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision, SourcePosition: gitPos}); err != nil {
+	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision, SourcePosition: gitPos, Prune: prune}); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
 	last := ""

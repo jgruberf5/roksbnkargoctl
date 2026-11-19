@@ -107,11 +107,9 @@ the cluster registration.
   above. Change things only as the persona allows.
 - Never print or copy secret values: the IBM API key, `ARGOCD_AUTH_TOKEN`, the Git
   token, the FAR key, the JWT. `manifests/direct/` is already redacted — keep it so.
-- `install`, `uninstall`, `flp up/down`, `argocd up/down` and `registry replicate`
+- `install`, `upgrade`, `uninstall`, `flp up/down`, `argocd up/down` and `registry replicate`
   change real infrastructure. Journal the operator's consent before running them.
-- roksbnkargoctl installs and uninstalls BNK; it does not upgrade it. BNK supports
-  in-place upgrades by changing the manifest version in its custom resources, as F5's
-  BNK documentation describes. That is done outside this tool, following F5's
-  procedure. Never attempt one through roksbnkargoctl, and never recommend uninstall +
-  install as an "upgrade". `roksbnkargoctl self update` updates this tool, not BNK.
+- BNK moves to a newer 2.4 release only through `roksbnkargoctl upgrade`, run with that
+  release's build. Never recommend uninstall + install as an "upgrade", and never move
+  between BNK lines or downgrade. `roksbnkargoctl self update` updates this tool, not BNK.
 - Report faithfully: quote the check's own verdict line; say what you did not check.

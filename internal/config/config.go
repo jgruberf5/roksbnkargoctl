@@ -494,7 +494,7 @@ func (c *Config) Validate() error {
 		add("transit_gateway (name or id of the existing transit gateway) is required")
 	}
 	if c.BNK.Version != BNKVersion {
-		add("bnk.version %q is not supported: this tool installs BNK %s GA only", c.BNK.Version, BNKVersion)
+		add("bnk.version %q is not supported: this build installs BNK %s; to move a running install to it, run `roksbnkargoctl upgrade`", c.BNK.Version, BNKVersion)
 	}
 	switch c.BNK.Mode {
 	case ModeConnected:

@@ -139,10 +139,9 @@ overwritten, so the old one is moved aside and restored if the replacement fails
 - On Windows, if the replacement failed **and** the rollback failed, it exits with code
   125 and prints the `.old` file and the `Move-Item` command that restores it.
 
-**This updates roksbnkargoctl, not BNK.** roksbnkargoctl installs and uninstalls BNK; it
-does not upgrade it. BNK supports an in-place upgrade by changing the manifest version in
-its custom resources, as F5's BNK documentation describes, and that is beyond the scope
-of this tool.
+**This updates roksbnkargoctl, not BNK,** and only to builds for the same BNK release. To
+move a running install to a newer 2.4 release, download that release's build and run
+`roksbnkargoctl upgrade` ([chapter 10a](./10a-upgrade.md)).
 
 ## Run with Docker
 

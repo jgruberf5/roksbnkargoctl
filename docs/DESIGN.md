@@ -17,8 +17,8 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | C6 | Connected (no FLP) and disconnected (FLP) modes | `bnk.mode: connected \| disconnected` |
 | C7 | FAR or a replicated private registry | `registry.source: far \| mirror` |
 | C8 | Prereq checks are containers in ROKS, deployed by YAML | The `check` image, run by Argo CD hooks in ROKS |
-| C9 | Day-0 install and uninstall only | No testing, gateway or upgrade phases |
-| C10 | BNK 2.4 GA only | Manifest `2.4.3` (FAR tag `2.4.3` == `TBD-BUILD-TAG`, same digest). One 2.4 release per build: moving a running install between 2.4 releases is an upgrade (C9), so `self update` never crosses them |
+| C9 | Day-0 install, in-place 2.4 upgrade, uninstall | No testing or gateway phases. `upgrade` moves a running install to a newer 2.4 release; FLO rolls it (see *Upgrade within 2.4*) |
+| C10 | BNK 2.4 GA only | Manifest `2.4.3` (FAR tag `2.4.3` == `TBD-BUILD-TAG`, same digest). One 2.4 release per build, and `self update` never crosses them: a running install moves to a newer one only through `upgrade`, run with that release's build |
 
 ## Components
 
@@ -31,6 +31,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | `argocd` | `up`/`down`/`status`: a **test** Argo CD hub (k3s + Argo CD on a VSI), like roksbnkctl's demo hub | IBM VPC, TGW |
 | `render` | Writes every manifest the Application syncs into `<workspace>/manifests/` | FAR (chart pulls) |
 | `install` | Out-of-band secrets + trusted profile, cluster registration, Git publish, Application create + sync | IBM, ROKS, Git, Argo CD |
+| `upgrade` | Refuses unless an older 2.4 release is running; sets `bnk.version`, re-renders, publishes, syncs **with prune**, waits for FLO to report every component Available and the License Active | IBM, ROKS, Git, Argo CD |
 | `uninstall` | Runs `check pre-uninstall`, deletes the Application, runs `check post-uninstall`, verifies the BNK namespaces are gone, then removes the out-of-band objects | Argo CD, ROKS, IBM |
 | `status` | Application sync/health, check results, BNK CR state | Argo CD, ROKS |
 | `agent` | Scaffolds `AGENTS.md` + troubleshooting personas into the workspace | local |
@@ -282,10 +283,51 @@ like a release (`Version` is the tag, so it runs the check image of the same tag
   `/etc/ssl/certs/` (Go reads every file there). Building behind one takes the optional
   `extra_ca` build secret, used by `go mod download` only.
 
+**Deleting from the Argo CD UI** (what a customer did, 2026-11): the hooks are the only
+uninstall checks then. Measured on bnkargo with one namespace (run 92): Argo CD raised a run of
+transient `DeletionError … not found` conditions while it pruned (`check-license`,
+`check-pre-install`, the CNEManifest, `selfsigned-cluster-issuer`, the FLO SCC
+ClusterRoleBinding) — objects something else had already deleted; each clears on the next
+pass and the delete carries on. The same messages appear during a clean `uninstall`. The
+PostDelete hook ran that time and deleted `f5-bnk` and `cert-manager`; when it does not
+(#29100), they stay. Either way the out-of-band objects stay, because they are not the
+Application's: the check namespace and RBAC, `roksbnkargoctl-argocd-manager` and the trusted
+profile. `roksbnkargoctl uninstall` afterwards finds the Application gone, runs `check
+post-uninstall` if a BNK namespace remains, and removes them (5s in run 92).
+
+## Upgrade within 2.4
+
+`upgrade`, run with the newer release's build, reads the running release from the cluster
+(the CNEInstance's `spec.manifestVersion`, not the workspace: a workspace can be edited, and an
+install made before this command has no record), then does what `install` does with
+`bnk.version` set to the build's release, syncing with prune, and waits for FLO.
+
+| Running | `install` | `upgrade` |
+|---|---|---|
+| none | installs | refuses: use `install` |
+| this build's release | re-syncs | refuses: nothing to do |
+| older, same line | **refuses: use `upgrade`** | upgrades |
+| newer | refuses: no downgrades | refuses |
+| another line | refuses | refuses |
+
+The check runs before the first change in the cloud or Git, after the pending install record
+(local, locks nothing). Before it existed, `install` with a newer build over a running
+install upgraded it without being asked, and an older build downgraded it.
+
+Measured, 2.4.1 → 2.4.2 in one namespace (run 93, bnkargo, OpenShift 4.21.40): the change to
+the CNEManifest and `manifestVersion` is all FLO needs. It rolled crd-installer, fluentd, the
+TMM pod manager, f5ingress, coremond and qkview, then TMM one pod at a time; the CNEInstance's
+`Available` was False during the roll, and every `*Available` condition True 3m38s after the
+sync started (3m53s to the end of the sync). The License stayed Active throughout. Without
+prune the old CNEManifest `bnk-2.4.1` stayed and the Application was OutOfSync: hence the prune
+sync. `upgrade` waits on the CNEInstance and the License, not the sync alone. 2.4.1 and 2.4.2
+ship the same FLO chart, so a FLO chart upgrade was not exercised there.
+
+In mirror mode, replicate the new release into the mirror first (`registry replicate` with the
+new build): render pulls the new manifest from the mirror.
+
 ## Not in scope
 
 Cluster or gateway creation, the gateway (Infra/GatewaySettings/Gateway) phase, traffic
-tests, BNK 2.3, and **BNK upgrades**. This tool is day-0 install and uninstall only. BNK
-supports in-place upgrades by changing the manifest version in its custom resources, as
-F5's BNK documentation describes; that is done outside this tool, following F5's
-procedure. (`roksbnkargoctl self update` updates the tool itself, not BNK.)
+tests, BNK 2.3, upgrades across BNK lines (2.4 → 2.5) and downgrades. Within 2.4, see
+*Upgrade within 2.4*. (`roksbnkargoctl self update` updates the tool itself, not BNK.)

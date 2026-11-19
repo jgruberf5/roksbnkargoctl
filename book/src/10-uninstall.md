@@ -171,6 +171,28 @@ log captured for this pod)`. The CLI prints
 `uninstall check logs (N pods) saved to <dir>`. Read verdicts as described in
 [status and diagnose](./09-status-and-diagnose.md#reading-a-check-verdict).
 
+## Deleting the Application from the Argo CD UI
+
+Deleting the Application in Argo CD, instead of running `uninstall`, leaves the uninstall
+checks to Argo CD's PreDelete and PostDelete hooks, which Argo CD 3.5.1 sometimes skips
+(argoproj/argo-cd#29100). While it prunes, Argo CD shows a run of `DeletionError … not found`
+conditions, for example:
+
+```
+clusterrolebindings.rbac.authorization.k8s.io "system:openshift:scc:privileged:f5-bnk:flo-f5-lifecycle-operator" not found
+clusterissuers.cert-manager.io "selfsigned-cluster-issuer" not found
+jobs.batch "check-pre-install" not found
+```
+
+They are harmless: each names an object that something else had already deleted, and the
+delete carries on. They appear during a clean `uninstall` too.
+
+What a UI delete never removes is what `install` wrote outside the Application: the check
+namespace and its RBAC, `roksbnkargoctl-argocd-manager`, and the IAM trusted profile. If the
+PostDelete hook was skipped, the BNK namespaces stay as well. Either way, run
+`roksbnkargoctl uninstall` afterwards. It finds the Application gone, runs `check
+post-uninstall` if a BNK namespace remains, and removes the rest.
+
 ## What is intentionally left
 
 | Left behind | Why |
