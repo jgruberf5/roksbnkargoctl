@@ -766,7 +766,7 @@ func ensureTrustedProfile(ctx context.Context, s *session, ibmc profileAPI) erro
 
 func newUninstallCmd() *cobra.Command {
 	var timeout time.Duration
-	var purgeGit, keepProfile, detachTGW, removeRepo, force bool
+	var purgeGit, keepProfile, detachTGW, removeRepo, force, keepCRDs bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Delete the Application; the uninstall checks drain BNK in ROKS",
@@ -779,7 +779,11 @@ Argo CD can skip its own PreDelete/PostDelete hooks (argoproj/argo-cd#29100).
 Then uninstall removes what install wrote out of band: the Secrets, the check namespace and RBAC, the
 Argo CD cluster registration and its ServiceAccount, and the trusted profile.
 
-F5 CRDs stay (deleting a CRD deletes every CR and can hang namespaces).
+Last, the CRDs BNK brought: F5's, the experimental-channel Gateway API CRDs (left
+behind, they keep OpenShift's ingress operator Degraded and its updates stuck),
+and cert-manager's when this workspace installed cert-manager. Nothing is removed
+while an F5 Lifecycle Operator or a CNEInstance exists anywhere on the cluster, and
+a CRD only when no object of its kind is left. --keep-crds keeps them all.
 The Git history stays unless --purge-git. SSH host keys added to Argo CD from
 git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -790,7 +794,7 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 			if !confirm(cmd, fmt.Sprintf("Uninstall BNK from %s (Application %s)?", s.cfg.Cluster, s.cfg.ArgoCD.Application)) {
 				return errors.New("not confirmed (pass --yes to skip the prompt)")
 			}
-			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo, force})
+			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo, force, keepCRDs})
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 45*time.Minute, "how long to wait for Argo CD to finish deleting")
@@ -799,12 +803,14 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 	cmd.Flags().BoolVar(&detachTGW, "detach-tgw", false, "detach the cluster VPC from the transit gateway if install attached it")
 	cmd.Flags().BoolVar(&removeRepo, "remove-repo", false, "remove the Git repo credential and the chart registries' entries from Argo CD (other Applications may use them)")
 	cmd.Flags().BoolVar(&force, "force", false, "delete the Application even when the pre-uninstall check fails or cannot run")
+	cmd.Flags().BoolVar(&keepCRDs, "keep-crds", false, "keep the CRDs BNK brought (F5's, experimental Gateway API, cert-manager's); by default those with no objects left are removed")
 	return cmd
 }
 
 type uninstallOpts struct {
 	timeout                                             time.Duration
 	purgeGit, keepProfile, detachTGW, removeRepo, force bool
+	keepCRDs                                            bool
 }
 
 func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
@@ -904,6 +910,29 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		}
 		errs = append(errs, removeChartRepos(ctx, ac, chartRepoURLs(s))...)
 	}
+	// The CRDs, once BNK is confirmed gone (steps.run fails while a BNK
+	// namespace remains): see crds.go.
+	if o.keepCRDs {
+		p.info("--keep-crds: the CRDs BNK brought stay")
+	} else {
+		p.step("removing the CRDs BNK brought, where no objects of their kind are left")
+		res, err := removeCRDs(ctx, k.Dynamic, c.CertManagerInstall(), 2*time.Minute)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("removing CRDs: %w", err))
+		case res.Skipped != "":
+			p.warn("no CRDs removed: %s", res.Skipped)
+		default:
+			p.ok("removed %d CRD(s)", len(res.Removed))
+			for _, n := range res.Removed {
+				p.info("  removed %s", n)
+			}
+			for _, n := range res.Kept {
+				p.warn("kept %s", n)
+			}
+		}
+	}
+
 	ibmc, err := s.IBM()
 	if err != nil {
 		return err

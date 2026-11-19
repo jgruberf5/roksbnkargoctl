@@ -122,7 +122,7 @@ It only ever runs in ROKS.
 | `license` | Sync 10 | Builds `License` from Secret `bnk-license-jwt` (+ FLP URLs/CA path in disconnected mode); waits `Active` (15 min) then `CNEInstance Available` (15 min) |
 | `post-install` | PostSync | `CNEInstance.spec.deploymentSize` is `Tiny` (catches a hand edit in Git); FLO Ready; `CNEInstance` Available; `License` Active; TMM replicas Ready and spread across zones; no `ImagePullBackOff`; reports |
 | `pre-uninstall` | PreDelete | Sweeps `f5validate-*` webhooks; drains `gateway.k8s.f5.com` and `fic.f5.com` (not FLO-managed `k8s.f5.com` components, which FLO re-creates while the CNEInstance lives, nor `k8s.f5net.com` product defaults the webhook refuses — roksbnkctl #266); waits for IPAM to be gone; deletes `License`, then `CNEInstance`, **while FLO still runs** (roksbnkctl #217). A failed drain leaves the CNEInstance and fails the hook |
-| `post-uninstall` | PostDelete | Deletes the 34 CWC license secrets; strips `f5.com`/`f5net.com` finalizers from anything stuck in a Terminating namespace; reports leftover F5 CRDs and cluster objects (CRDs are kept by design) |
+| `post-uninstall` | PostDelete | Deletes the 34 CWC license secrets; strips `f5.com`/`f5net.com` finalizers from anything stuck in a Terminating namespace; reports leftover F5 CRDs and cluster objects (the CLI's `uninstall` then removes the CRDs with no objects left; see *Uninstall order*) |
 
 ## Single certificate and one namespace
 
@@ -226,9 +226,26 @@ a failure stops here and the Application is NOT deleted, unless `--force`) → d
 Application with foreground cascading; Argo CD prunes in reverse wave order → runs
 `check post-uninstall` as a Job while any BNK namespace remains → fails unless `f5-bnk`,
 `f5-utils` and (when installed) `cert-manager` are gone → removes the JWT/pull Secrets, the
-check namespace, the trusted profile, the cluster registration and the repository entry.
-Git history is left alone. Re-running `uninstall` with the Application already gone runs
-`check post-uninstall` again, so an interrupted uninstall finishes.
+check namespace, the trusted profile, the cluster registration and the repository entry →
+removes the CRDs BNK brought (unless `--keep-crds`). Git history is left alone. Re-running
+`uninstall` with the Application already gone runs `check post-uninstall` again, so an
+interrupted uninstall finishes.
+
+**CRDs.** They used to stay: cluster-scoped, shared by any BNK on the cluster, and deleting a
+CRD deletes every object of its kind. The cost (#44): on bnkargo the experimental Gateway API
+CRDs BNK installs (`backendtlspolicies`, `tcproutes`, `tlsroutes`, `udproutes`, v1.4.1; OpenShift
+owns the standard channel and its admission policy against others is what
+`check-gateway-api-sweep` removes) left `clusteroperator/ingress` Degraded ("Unmanaged Gateway
+API CRDs found"), so `clusterversion/version` sat at 4.21.35 `Partial` from 2026-11-02 with
+`Upgradeable=False` — no OpenShift update could start, long after BNK was uninstalled. And 101
+F5 and cert-manager CRDs had accumulated. `uninstall` now removes F5's CRDs (groups `f5.com`,
+`f5net.com` and their subdomains), experimental-channel Gateway API CRDs, and cert-manager's
+when the workspace installed it — never OpenShift's standard Gateway API CRDs or anything else.
+The hazards are the guards: nothing at all while a FLO Deployment or a CNEInstance exists
+anywhere on the cluster, and a CRD only when no object of its kind is left anywhere, so
+deleting it destroys nothing and cannot hang on a finalizer. Each kept CRD is reported with
+why. `--keep-crds` keeps them all. While BNK is installed the experimental CRDs exist and the
+ingress operator is Degraded; that conflict is BNK's (F5's) to resolve, not the uninstall's.
 
 **Why the CLI runs the checks and not only Argo CD.** Argo CD 3.5.1 can declare a
 PreDelete/PostDelete hook complete the moment it creates it (argoproj/argo-cd#29100, open):

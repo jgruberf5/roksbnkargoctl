@@ -25,7 +25,8 @@ type PostUninstallConfig struct {
 	Poll           time.Duration // 3s
 }
 
-// Cluster-scoped leftovers reported (not deleted: shared, and CRDs are kept by design).
+// Cluster-scoped leftovers reported, not deleted here: the CLI's uninstall removes the CRDs
+// with no objects left once BNK is gone (a hook cannot tell that FLO is gone everywhere).
 var reportClusterIssuers = []string{"sample-issuer", "selfsigned-cluster-issuer"}
 
 // PostUninstall removes what the prune leaves behind and makes sure the BNK
@@ -220,7 +221,7 @@ func reportLeftovers(ctx context.Context, env *Env, res *Result) {
 		sort.Strings(f5)
 		res.Set("f5CRDs", f5)
 		if len(f5) > 0 {
-			res.Info("crds", "%d F5 CRD(s) kept by design (cluster-scoped, shared by any BNK on the cluster): %s", len(f5), joinMax(f5, 8))
+			res.Info("crds", "%d F5 CRD(s) present; `roksbnkargoctl uninstall` removes those with no objects left (unless --keep-crds): %s", len(f5), joinMax(f5, 8))
 		}
 	}
 	gvrs, _ := env.Kube.DiscoverGroups(ctx, F5Groups)
