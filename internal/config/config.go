@@ -37,8 +37,8 @@ var (
 )
 
 // BNKVersion is the only BNK line this tool installs (DESIGN.md C10). FAR tags
-// 2.4.0 and 2.4.0-3.3175.0-0.0.380 are the same artifact.
-const BNKVersion = "2.4.0"
+// 2.4.3 and its build-numbered tag are the same artifact.
+const BNKVersion = "2.4.3"
 
 // Modes and registry sources.
 const (

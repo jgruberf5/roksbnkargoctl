@@ -27,6 +27,28 @@ func TestReleaseNamesTheBNKVersion(t *testing.T) {
 	}
 }
 
+// install.sh and install.ps1 fetch the archive for their default BNK version.
+// A default left behind on the previous release would install an older
+// binary than this repository ships, while the release itself is fine.
+func TestInstallScriptsDefaultToTheBNKVersion(t *testing.T) {
+	for file, re := range map[string]string{
+		"../../install.sh":  `BNK_VERSION:-([0-9.]+)\}`,
+		"../../install.ps1": `else \{ '([0-9.]+)' \}`,
+	} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := regexp.MustCompile(re).FindSubmatch(b)
+		if m == nil {
+			t.Fatalf("%s: no default BNK version found", file)
+		}
+		if string(m[1]) != BNKVersion {
+			t.Errorf("%s defaults to BNK %s, but this build installs BNK %s", file, m[1], BNKVersion)
+		}
+	}
+}
+
 // v0.5.0 was published with empty release notes: changelog.disable skips the
 // pipe that loads --release-notes, which the workflow relies on.
 func TestReleaseNotesAreNotDisabled(t *testing.T) {

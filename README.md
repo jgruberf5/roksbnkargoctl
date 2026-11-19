@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/insta
 irm https://raw.githubusercontent.com/jgruberf5/roksbnkargoctl/main/install.ps1 | iex
 ```
 
-Both install the latest release for BNK 2.4.0, verify its SHA256, and put it on `PATH`
+Both install the latest release for BNK 2.4.3, verify its SHA256, and put it on `PATH`
 with `roksbnkargoctl self install`. `ROKSBNKARGOCTL_VERSION` pins a release,
 `ROKSBNKARGOCTL_BNK_VERSION` picks another BNK release and `ROKSBNKARGOCTL_INSTALL_DIR`
 the directory (see the book's install chapter). Later, `roksbnkargoctl self update`
@@ -59,7 +59,7 @@ Windows uses `.zip`, each for amd64 and arm64. Check it against `…_checksums.t
 `roksbnkargoctl` on your `PATH`, and confirm with:
 
 ```sh
-roksbnkargoctl version    # roksbnkargoctl v0.5.0 for BNK 2.4.0 (…)
+roksbnkargoctl version    # roksbnkargoctl v0.5.0 for BNK 2.4.3 (…)
 ```
 
 ## What you need

@@ -18,7 +18,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | C7 | FAR or a replicated private registry | `registry.source: far \| mirror` |
 | C8 | Prereq checks are containers in ROKS, deployed by YAML | The `check` image, run by Argo CD hooks in ROKS |
 | C9 | Day-0 install and uninstall only | No testing, gateway or upgrade phases |
-| C10 | BNK 2.4 GA only | Manifest `2.4.0` (FAR tag `2.4.0` == `2.4.0-3.3175.0-0.0.380`, same digest) |
+| C10 | BNK 2.4 GA only | Manifest `2.4.3` (FAR tag `2.4.3` == `TBD-BUILD-TAG`, same digest). One 2.4 release per build: moving a running install between 2.4 releases is an upgrade (C9), so `self update` never crosses them |
 
 ## Components
 
@@ -258,7 +258,7 @@ A binary installs one BNK release (`config.BNKVersion`), and its release archive
   the exit code is 125. The `.old` is removed at the next start.
 - Everything is in-process Go (net/http, archive/tar, archive/zip, crypto/sha256).
 - `install.sh`/`install.ps1` resolve GitHub's latest release (or `VERSION`), download the
-  `BNK_VERSION` archive (default 2.4.0) and fail, naming the BNK versions present, when that
+  `BNK_VERSION` archive (default 2.4.3) and fail, naming the BNK versions present, when that
   release lacks it. They verify the checksum (mandatory) and hand off to
   `self install --force`.
 
