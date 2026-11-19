@@ -41,6 +41,20 @@ var (
 // standard channel; only experimental-channel CRDs are BNK's.
 const gatewayAPIGroup = "gateway.networking.k8s.io"
 
+// openshiftGatewayAPIPolicy is the ValidatingAdmissionPolicy (and binding) with
+// which OpenShift's ingress operator refuses any change to Gateway API CRDs,
+// deletion included: "Gateway API Custom Resource Definitions are managed by the
+// Ingress Operator and may not be modified". check-gateway-api-sweep removes it
+// so BNK can install its CRDs; the operator restores it within seconds. Live
+// (run 95) every experimental CRD delete was refused by it, so the ingress
+// operator stayed Degraded although uninstall had removed 102 other CRDs.
+const openshiftGatewayAPIPolicy = "openshift-ingress-operator-gatewayapi-crd-admission"
+
+var (
+	gvrVAP        = schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicies"}
+	gvrVAPBinding = schema.GroupVersionResource{Group: "admissionregistration.k8s.io", Version: "v1", Resource: "validatingadmissionpolicybindings"}
+)
+
 // crdKind is why a CRD is uninstall's to remove ("" when it is not).
 func crdKind(group, channel string, certManagerOurs bool) string {
 	switch {
@@ -112,7 +126,11 @@ func removeCRDs(ctx context.Context, dyn dynamic.Interface, certManagerOurs bool
 			res.Kept = append(res.Kept, fmt.Sprintf("%s: %s objects remain (%s)", c.GetName(), kind, where))
 			continue
 		}
-		if err := dyn.Resource(gvrCRD).Delete(ctx, c.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		del := deleteCRD
+		if group == gatewayAPIGroup {
+			del = deleteGatewayAPICRD
+		}
+		if err := del(ctx, dyn, c.GetName()); err != nil && !apierrors.IsNotFound(err) {
 			res.Kept = append(res.Kept, c.GetName()+": delete failed: "+err.Error())
 			continue
 		}
@@ -148,6 +166,40 @@ func removeCRDs(ctx context.Context, dyn dynamic.Interface, certManagerOurs bool
 	sort.Strings(res.Kept)
 	return res, nil
 }
+
+func deleteCRD(ctx context.Context, dyn dynamic.Interface, name string) error {
+	return dyn.Resource(gvrCRD).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// deleteGatewayAPICRD lifts OpenShift's Gateway API admission policy and deletes
+// the CRD, again while the ingress operator keeps restoring the policy in
+// between (it does within seconds), for up to gatewayAPIDeleteAttempts tries.
+func deleteGatewayAPICRD(ctx context.Context, dyn dynamic.Interface, name string) error {
+	var err error
+	for i := 0; i < gatewayAPIDeleteAttempts; i++ {
+		for _, gvr := range []schema.GroupVersionResource{gvrVAPBinding, gvrVAP} {
+			if derr := dyn.Resource(gvr).Delete(ctx, openshiftGatewayAPIPolicy, metav1.DeleteOptions{}); derr != nil && !apierrors.IsNotFound(derr) {
+				return fmt.Errorf("lifting OpenShift's Gateway API admission policy: %w", derr)
+			}
+		}
+		err = deleteCRD(ctx, dyn, name)
+		if err == nil || apierrors.IsNotFound(err) || !apierrors.IsForbidden(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(gatewayAPIRetryWait):
+		}
+	}
+	return err
+}
+
+// Tests shorten the wait.
+var (
+	gatewayAPIDeleteAttempts = 30
+	gatewayAPIRetryWait      = 2 * time.Second
+)
 
 // servedGVR is the CRD's storage version (else its first served one) as a
 // resource to list.

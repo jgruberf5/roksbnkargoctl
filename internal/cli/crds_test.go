@@ -2,16 +2,19 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func crd(group, plural, channel string) *unstructured.Unstructured {
@@ -204,5 +207,73 @@ func TestUninstallRemovesCRDsOnlyAfterBNKIsGone(t *testing.T) {
 		t.Error("runUninstall removes CRDs before the uninstall steps confirm BNK is gone")
 	case !(guard < call):
 		t.Error("removeCRDs is not under the --keep-crds guard")
+	}
+}
+
+// openshiftPolicy makes the fake behave like OpenShift's ingress operator, as
+// run 95 met it: while its admission policy exists, deleting a Gateway API CRD
+// is Forbidden; and after the first time the policy is deleted, the operator
+// restores it once before the CRD delete lands.
+func openshiftPolicy(dyn *dynamicfake.FakeDynamicClient) (policyDeletes *int) {
+	present, restoreOnce := true, true
+	n := 0
+	dyn.PrependReactor("delete", "validatingadmissionpolicies", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		n++
+		present = false
+		return true, nil, nil
+	})
+	dyn.PrependReactor("delete", "validatingadmissionpolicybindings", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, nil
+	})
+	dyn.PrependReactor("delete", "customresourcedefinitions", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		name := a.(k8stesting.DeleteAction).GetName()
+		if !strings.HasSuffix(name, "."+gatewayAPIGroup) {
+			return false, nil, nil
+		}
+		if restoreOnce && !present {
+			restoreOnce, present = false, true // the operator wins the race once
+		}
+		if present {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"}, name,
+				errors.New("ValidatingAdmissionPolicy '"+openshiftGatewayAPIPolicy+"' denied request: Gateway API Custom Resource Definitions are managed by the Ingress Operator and may not be modified"))
+		}
+		return false, nil, nil
+	})
+	return &n
+}
+
+// Uninstall lifts the policy, and again when the operator restores it, until
+// the experimental CRD is gone (run 95 kept all four: every delete Forbidden).
+func TestRemoveCRDsGetsPastOpenShiftsGatewayAPIPolicy(t *testing.T) {
+	gatewayAPIRetryWait = time.Millisecond
+	t.Cleanup(func() { gatewayAPIRetryWait = 2 * time.Second })
+	dyn := fakeCluster(crd(gatewayAPIGroup, "tcproutes", "experimental"), crd(gatewayAPIGroup, "gateways", "standard"), crd("k8s.f5.com", "f5tmms", ""))
+	policyDeletes := openshiftPolicy(dyn)
+	res, err := removeCRDs(context.Background(), dyn, false, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := crdNames(t, dyn)
+	if left["tcproutes."+gatewayAPIGroup] {
+		t.Errorf("experimental CRD kept: %v", res.Kept)
+	}
+	if !left["gateways."+gatewayAPIGroup] {
+		t.Error("OpenShift's standard Gateway API CRD was removed")
+	}
+	if *policyDeletes < 2 {
+		t.Errorf("policy deleted %d time(s); the operator restored it once, so it takes 2", *policyDeletes)
+	}
+}
+
+// The policy is only lifted for a Gateway API CRD that is going: an uninstall
+// with none to remove leaves OpenShift's guard alone.
+func TestRemoveCRDsLeavesThePolicyAloneWithNoGatewayAPICRDsToRemove(t *testing.T) {
+	dyn := fakeCluster(crd(gatewayAPIGroup, "gateways", "standard"), crd("k8s.f5.com", "f5tmms", ""))
+	policyDeletes := openshiftPolicy(dyn)
+	if _, err := removeCRDs(context.Background(), dyn, false, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if *policyDeletes != 0 {
+		t.Errorf("policy deleted %d time(s) with no Gateway API CRD to remove", *policyDeletes)
 	}
 }
