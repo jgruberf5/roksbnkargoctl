@@ -47,8 +47,10 @@ CNEInstance reports the new manifestVersion with every *Available condition
 True and the License is Active.
 
 It refuses when nothing is installed (use install), when the running release
-is already this one, when it is newer (no downgrades), or when it is another
-BNK line. In mirror mode, replicate the new release first:
+is newer (no downgrades), or when it is another BNK line. With this build's
+release already running it finishes the job: an upgrade that was interrupted
+(after the sync applied the new CNEInstance) is re-synced with prune and
+waited for, so re-running upgrade completes it. In mirror mode, replicate the new release first:
 ` + "`roksbnkargoctl registry replicate`" + ` with this binary.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			s, err := newSession(cmd)
@@ -98,9 +100,10 @@ func checkRelease(running, target string, upgrade bool) error {
 		return nil
 	}
 	if running == target {
-		if upgrade {
-			return fmt.Errorf("BNK %s is already running: nothing to upgrade", running)
-		}
+		// A re-sync for install. For upgrade, the way to finish one that was
+		// interrupted: the CNEInstance asks for the new release as soon as the
+		// sync applies it, before the prune and before FLO has rolled anything
+		// (run 94 lost its wait to a hub timeout at exactly that point).
 		return nil
 	}
 	r, err := parseRelease(running)

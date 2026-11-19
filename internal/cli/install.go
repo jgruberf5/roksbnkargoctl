@@ -150,7 +150,11 @@ func runInstall(ctx context.Context, s *session, opt installOpts) error {
 		return err
 	}
 	if opt.upgrade {
-		p.ok("BNK %s is running; upgrading to %s", running, c.BNK.Version)
+		if running == c.BNK.Version {
+			p.ok("BNK %s is already running: re-syncing with prune and waiting for FLO, to finish an interrupted upgrade", running)
+		} else {
+			p.ok("BNK %s is running; upgrading to %s", running, c.BNK.Version)
+		}
 	}
 
 	ibmc, err := s.IBM()

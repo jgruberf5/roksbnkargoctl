@@ -305,7 +305,7 @@ install made before this command has no record), then does what `install` does w
 | Running | `install` | `upgrade` |
 |---|---|---|
 | none | installs | refuses: use `install` |
-| this build's release | re-syncs | refuses: nothing to do |
+| this build's release | re-syncs | re-syncs with prune and waits: finishes an interrupted upgrade |
 | older, same line | **refuses: use `upgrade`** | upgrades |
 | newer | refuses: no downgrades | refuses |
 | another line | refuses | refuses |
@@ -320,7 +320,15 @@ TMM pod manager, f5ingress, coremond and qkview, then TMM one pod at a time; the
 `Available` was False during the roll, and every `*Available` condition True 3m38s after the
 sync started (3m53s to the end of the sync). The License stayed Active throughout. Without
 prune the old CNEManifest `bnk-2.4.1` stayed and the Application was OutOfSync: hence the prune
-sync. `upgrade` waits on the CNEInstance and the License, not the sync alone. 2.4.1 and 2.4.2
+sync. `upgrade` waits on the CNEInstance and the License, not the sync alone.
+
+Its first live run (run 94, 2.4.1 → 2.4.2) ended on one timed-out read of the Application: the
+hub stopped answering for minutes, and `WaitOperation` returned on the first error although
+the sync succeeded. The waits now poll through a read that gets no answer, a 429 or a 5xx
+until their own timeout, and stop at once on an answer that says no (401, 403, 404). The
+CNEInstance asks for the new release as soon as the sync applies it, so an upgrade
+interrupted after that point is finished by running `upgrade` again: with its release
+running, it re-syncs with prune and waits. 2.4.1 and 2.4.2
 ship the same FLO chart, so a FLO chart upgrade was not exercised there.
 
 In mirror mode, replicate the new release into the mirror first (`registry replicate` with the

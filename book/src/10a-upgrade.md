@@ -38,13 +38,17 @@ In mirror mode, replicate the new release into the mirror first, with the new bu
 | Running | `install` | `upgrade` |
 |---|---|---|
 | nothing | installs | refuses: use `install` |
-| this build's release | re-syncs | refuses: nothing to do |
+| this build's release | re-syncs | re-syncs with prune and waits |
 | an older 2.4 release | **refuses: use `upgrade`** | upgrades |
 | a newer release | refuses: no downgrades | refuses |
 | another BNK line | refuses | refuses |
 
 `install` never changes the running release. Before this check existed, re-running `install`
 with a newer build upgraded BNK without being asked, and an older build downgraded it.
+
+If an upgrade is interrupted (a lost connection, a timeout), run `upgrade` again with the same
+build. Once the sync has applied the new CNEInstance, the new release counts as running, so
+`upgrade` finishes the job: it re-syncs with prune and waits for FLO and the License.
 
 ## What to expect
 

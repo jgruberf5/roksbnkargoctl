@@ -69,27 +69,44 @@ type Progress func(app *Application)
 func (c *Client) WaitOperation(ctx context.Context, name string, timeout time.Duration, progress Progress) (*OperationResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	what := "the sync of " + name
+	var lastFailure error // the last transient read failure, named if time runs out
 	for {
 		app, err := c.GetApplication(ctx, name, "")
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("argocd: timed out after %s waiting for the sync of %s: %w", timeout, name, err)
+				return nil, timedOut(what, timeout, lastFailure, err)
 			}
-			return nil, err
-		}
-		if progress != nil {
-			progress(app)
-		}
-		if res := completedOperation(app); res != nil {
-			if res.Succeeded() {
-				return res, nil
+			if !IsTransient(err) {
+				return nil, err
 			}
-			return res, &OperationError{App: name, Result: res}
+			// The sync carries on in Argo CD whether or not this read got through.
+			lastFailure = err
+		} else {
+			lastFailure = nil
+			if progress != nil {
+				progress(app)
+			}
+			if res := completedOperation(app); res != nil {
+				if res.Succeeded() {
+					return res, nil
+				}
+				return res, &OperationError{App: name, Result: res}
+			}
 		}
 		if err := c.sleep(ctx); err != nil {
-			return nil, fmt.Errorf("argocd: timed out after %s waiting for the sync of %s: %w", timeout, name, err)
+			return nil, timedOut(what, timeout, lastFailure, err)
 		}
 	}
+}
+
+// timedOut is the error a wait returns when its time is up: it names the last
+// transient failure when the hub was failing, rather than only the deadline.
+func timedOut(what string, timeout time.Duration, lastFailure, err error) error {
+	if lastFailure != nil {
+		return fmt.Errorf("argocd: timed out after %s waiting for %s; the last read failed: %w", timeout, what, lastFailure)
+	}
+	return fmt.Errorf("argocd: timed out after %s waiting for %s: %w", timeout, what, err)
 }
 
 func completedOperation(app *Application) *OperationResult {
@@ -117,6 +134,8 @@ func completedOperation(app *Application) *OperationResult {
 func (c *Client) WaitGone(ctx context.Context, name string, timeout time.Duration, progress Progress) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	what := name + " to be deleted"
+	var lastFailure error
 	for {
 		app, err := c.GetApplication(ctx, name, "")
 		if IsNotFound(err) {
@@ -124,15 +143,20 @@ func (c *Client) WaitGone(ctx context.Context, name string, timeout time.Duratio
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return fmt.Errorf("argocd: timed out after %s waiting for %s to be deleted: %w", timeout, name, err)
+				return timedOut(what, timeout, lastFailure, err)
 			}
-			return err
-		}
-		if progress != nil {
-			progress(app)
+			if !IsTransient(err) {
+				return err
+			}
+			lastFailure = err
+		} else {
+			lastFailure = nil
+			if progress != nil {
+				progress(app)
+			}
 		}
 		if err := c.sleep(ctx); err != nil {
-			return fmt.Errorf("argocd: timed out after %s waiting for %s to be deleted: %w", timeout, name, err)
+			return timedOut(what, timeout, lastFailure, err)
 		}
 	}
 }

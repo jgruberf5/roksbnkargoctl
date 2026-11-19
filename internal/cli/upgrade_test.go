@@ -29,7 +29,7 @@ func TestCheckRelease(t *testing.T) {
 		{"", "2.4.3", false, ""},
 		{"", "2.4.3", true, "not installed"},
 		{"2.4.3", "2.4.3", false, ""}, // a re-sync
-		{"2.4.3", "2.4.3", true, "already running"},
+		{"2.4.3", "2.4.3", true, ""},  // finishes an interrupted upgrade
 		{"2.4.2", "2.4.3", false, "run `roksbnkargoctl upgrade`"},
 		{"2.4.2", "2.4.3", true, ""},
 		{"2.4.0", "2.4.3", true, ""},

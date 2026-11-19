@@ -110,6 +110,23 @@ func IsUnauthorized(err error) bool {
 	return errors.As(err, &ae) && ae.StatusCode == http.StatusUnauthorized
 }
 
+// IsTransient reports whether err is worth retrying: no answer at all (a
+// timeout, a reset or refused connection, a cut-off response), 429, or a 5xx.
+// An answer that says no (401, 403, 404, other 4xx) is not. Live, a hub that
+// was slow for minutes ended an upgrade's wait on one timed-out read although
+// the sync succeeded (run 94).
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.StatusCode == http.StatusTooManyRequests || ae.StatusCode >= 500
+	}
+	var ue *url.Error
+	return errors.As(err, &ue) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
+}
+
 func notFound(op, msg string) error {
 	return &APIError{Op: op, StatusCode: http.StatusNotFound, Code: 5, Message: msg}
 }
