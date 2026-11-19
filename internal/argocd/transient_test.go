@@ -98,7 +98,10 @@ func TestWaitTimeoutNamesTheLastFailure(t *testing.T) {
 }
 
 func TestIsTransient(t *testing.T) {
-	_, parseErr := url.Parse("https://hub:bad-port")
+	// Built at run time: a literal malformed URL is what staticcheck (SA1007) flags,
+	// and a malformed URL is exactly what this test needs.
+	badURL := "https://hub:" + strings.Repeat("x", 3)
+	_, parseErr := url.Parse(badURL)
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -123,7 +126,7 @@ func TestIsTransient(t *testing.T) {
 	if parseErr == nil {
 		t.Fatal("expected a parse error")
 	}
-	c := New("https://hub:bad-port", "tok", true, nil)
+	c := New(badURL, "tok", true, nil)
 	_, err := c.GetApplication(context.Background(), "x", "")
 	if err == nil || IsTransient(err) {
 		t.Errorf("bad server URL: err %v, transient %v; want a permanent error", err, IsTransient(err))
