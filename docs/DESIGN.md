@@ -18,7 +18,7 @@ for customers who standardise on Argo CD and rejected Terraform as too heavy.
 | C7 | FAR or a replicated private registry | `registry.source: far \| mirror` |
 | C8 | Prereq checks are containers in ROKS, deployed by YAML | The `check` image, run by Argo CD hooks in ROKS |
 | C9 | Day-0 install, in-place 2.4 upgrade, uninstall | No testing or gateway phases. `upgrade` moves a running install to a newer 2.4 release; FLO rolls it (see *Upgrade within 2.4*) |
-| C10 | BNK 2.4 GA only | Manifest `2.4.3` (FAR tag `2.4.3` == `TBD-BUILD-TAG`, same digest). One 2.4 release per build, and `self update` never crosses them: a running install moves to a newer one only through `upgrade`, run with that release's build |
+| C10 | BNK 2.4 GA only | Manifest `2.4.3` (FAR tag `2.4.3` == `2.4.3-3.3175.0-0.0.671`, same digest `f93af4f3c58c`). One 2.4 release per build, and `self update` never crosses them: a running install moves to a newer one only through `upgrade`, run with that release's build |
 
 ## Components
 
@@ -56,7 +56,7 @@ Argo CD's only source is the customer's Git repo (decision 2026-09-29). The hub 
 FAR, a Helm repo, or plugins. So `render` does all templating on the operator host:
 
 - **cert-manager** `v1.17.3` (Jetstack chart, or the mirror's copy) and **FLO**
-  `f5-lifecycle-operator v2.30.0-0.5.2` (from `oci://<chart-host>/charts`) are pulled with
+  `f5-lifecycle-operator v2.30.0-0.11.8` in 2.4.3 (from `oci://<chart-host>/charts`) are pulled with
   crane and templated with the Helm Go SDK (`helm.sh/helm/v3/pkg/action`, client-only).
   No `helm` binary.
 - FLO's chart `lookup`s cert-manager CRDs and `fail`s when absent; offline, `lookup` is always
