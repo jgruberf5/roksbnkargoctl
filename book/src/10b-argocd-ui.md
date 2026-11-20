@@ -228,6 +228,7 @@ created outside the Application. Measured after a UI delete on the test cluster:
 | The cluster's registration on the hub; the Git repository and chart registry entries | The hub can still reach the cluster and FAR |
 | The IAM trusted profile `<cluster>-f5-cne-controller-f5-bnk` | None while it stays |
 | The rendered manifests in Git | Re-creating the Application syncs them again |
+| After an upgrade done in Git: the CNEManifest FLO created for the new release (`bnk-2.4.3`) | Argo CD never owned it, so the delete leaves it. Harmless; a later install of that release adopts it |
 | BNK's CRDs: 102 F5 and cert-manager CRDs, and the experimental Gateway API CRDs (`backendtlspolicies`, `tcproutes`, `tlsroutes`, `udproutes` in `gateway.networking.k8s.io`, and the `gateway.networking.x-k8s.io` group) | **OpenShift's ingress operator goes Degraded** ("Unmanaged Gateway API CRDs found") and the cluster reports `Upgradeable=False`: **OpenShift updates are blocked** until the experimental CRDs are gone |
 
 To remove all of this, run `roksbnkargoctl uninstall` after the UI delete. It finds the
@@ -236,9 +237,19 @@ the rest, BNK's CRDs included ([uninstall](./10-uninstall.md)).
 
 ## Re-install after a delete from the UI
 
-Run `roksbnkargoctl install --no-sync`, then **Sync** as for a first install. The pull
-secrets were in the BNK namespaces, which the delete removed, so they must be written again
-before Argo CD can pull FLO.
+Run `roksbnkargoctl install --no-sync`, then **Sync** as for a first install.
+
+Re-creating the Application in the UI alone (**New App** → **Edit as YAML** with the
+workspace's `manifests/application.yaml`) is not enough. The FAR pull secret lived in the
+BNK namespace, which the delete removed, and only `install` writes it. Measured: the sync
+failed 31 seconds in, at the first hook, before anything of BNK was deployed:
+
+```text
+pre-install FAILED:
+  secrets: missing: f5-bnk/far-secret — `roksbnkargoctl install` writes these out of band; they are never in Git
+```
+
+Delete that Application, then run `install --no-sync`.
 
 ## See also
 
