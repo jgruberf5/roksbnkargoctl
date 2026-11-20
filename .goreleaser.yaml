@@ -11,7 +11,7 @@ version: 2
 project_name: roksbnkargoctl
 
 env:
-  - BNK_VERSION=2.4.0
+  - BNK_VERSION=2.4.3
 
 before:
   hooks:

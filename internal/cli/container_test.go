@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"github.com/jgruberf5/roksbnkargoctl/internal/agent"
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 )
 
 // fakeGitHubForHost is a fake GitHub carrying v0.6.0 for this host's platform,
 // with githubAPI pointed at it for the test.
 func fakeGitHubForHost(t *testing.T) *fakeGitHub {
 	t.Helper()
-	f := newFakeGitHub(t, release(t, "v0.6.0", []string{"2.4.0"}, runtime.GOOS+"/"+runtime.GOARCH))
+	f := newFakeGitHub(t, release(t, "v0.6.0", []string{config.BNKVersion}, runtime.GOOS+"/"+runtime.GOARCH))
 	old := githubAPI
 	githubAPI = f.URL
 	t.Cleanup(func() { githubAPI = old })

@@ -70,7 +70,9 @@ line per chart:
 ## The Application
 
 `install` creates or updates the Application with
-`POST /api/v1/applications?upsert=true&validate=true`. Its shape:
+`POST /api/v1/applications?upsert=true&validate=true`. The upsert replaces the whole spec, so a
+chart version changed on the hub is put back to the render's; `install` and `upgrade` name each
+one they change (see [install](./08-install.md)). Its shape:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -225,12 +227,12 @@ certificate mode (`bnk.certificates.mode: cert-manager`).
 | −6 | ClusterRoleBinding | `system:openshift:scc:privileged:f5-bnk:flo-f5-lifecycle-operator` | Grants FLO's ServiceAccount the `privileged` SCC |
 | −6 | Deployment | `roksbnkargoctl-check/check-gateway-api-sweep` | Removes OpenShift's Gateway API CRD admission policy until the F5 Gateway API CRDs exist |
 | 0 | cert-manager chart (Helm source) | every object of the Jetstack chart `v1.17.3`, including its CRDs | Only when cert-manager is installed by roksbnkargoctl, and never in single-certificate mode. `startupapicheck` is disabled |
-| 0 | FLO chart (Helm source) | every object of `f5-lifecycle-operator` (release `flo`, namespace `f5-bnk`), including its `k8s.f5.com` CRDs | The chart version is the one the BNK 2.4.0 manifest lists (`v2.30.0-0.5.2`) |
+| 0 | FLO chart (Helm source) | every object of `f5-lifecycle-operator` (release `flo`, namespace `f5-bnk`), including its `k8s.f5.com` CRDs | The chart version is the one the BNK manifest lists (`v2.30.0-0.11.8` in 2.4.3) |
 | 1 | Job (Sync hook) | `roksbnkargoctl-check/check-cert-manager-ready` | Waits until cert-manager's webhook admits a dry-run `ClusterIssuer`. Not in single-certificate mode |
 | 2 | ClusterIssuer | `selfsigned-cluster-issuer` | Not in single-certificate mode |
 | 3 | Certificate | `cert-manager/ext-ca` | Self-signed CA, ECDSA P-256. Not in single-certificate mode |
 | 4 | ClusterIssuer | `sample-issuer` | CA issuer backed by `ext-ca`; the issuer FLO and the CNEInstance use. Not in single-certificate mode |
-| 6 | CNEManifest | `bnk-2.4.0` | Cluster-scoped. `SkipDryRunOnMissingResource=true` (its CRD arrives with the FLO chart in wave 0 of the same sync) |
+| 6 | CNEManifest | `bnk-2.4.3` | Cluster-scoped. `SkipDryRunOnMissingResource=true` (its CRD arrives with the FLO chart in wave 0 of the same sync) |
 | 8 | CNEInstance | `<bnk.namespace>/<bnk.namespace>-f5-cne-controller` (`f5-bnk/f5-bnk-f5-cne-controller` by default) | `deploymentSize: Tiny`, `tmmReplicas` from `bnk.tmm_replicas`. `spec.certificate` names `sample-issuer`, and is left out in single-certificate mode. `SkipDryRunOnMissingResource=true` |
 | 10 | Job (Sync hook) | `roksbnkargoctl-check/check-license` | Builds the `License`, waits for `Active`, then for `CNEInstance` `Available` |
 | PostSync | Job (hook) | `roksbnkargoctl-check/check-post-install` | Verifies the finished install |

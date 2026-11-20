@@ -17,11 +17,10 @@ the IBM Cloud APIs or the internals of BNK: where they matter, the book explains
 `roksbnkargoctl` is a single Go binary that installs and uninstalls BNK 2.4 GA on an
 existing ROKS cluster **as one Argo CD Application in your existing, external Argo CD**.
 
-> **Install and uninstall only.** roksbnkargoctl is a day-0 tool: it installs BNK and it
-> removes BNK. It does not upgrade BNK. BNK supports an in-place upgrade by changing the
-> manifest version in its custom resources; do that by following F5's BNK
-> documentation. It is beyond the scope of this tool. (`roksbnkargoctl self update`
-> updates roksbnkargoctl itself, never BNK.)
+> **Install, upgrade within 2.4, uninstall.** roksbnkargoctl installs BNK, moves a running
+> install to a newer 2.4 release in place (`roksbnkargoctl upgrade`, run with that
+> release's build), and removes BNK. It does not move between BNK lines or downgrade.
+> (`roksbnkargoctl self update` updates roksbnkargoctl itself, never BNK.)
 
 - **Argo CD applies the F5 objects.** Your Git repository holds what F5's manual install
   writes: the values files of the cert-manager and FLO Helm charts, and the handful of

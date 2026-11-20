@@ -161,8 +161,9 @@ The rules are written into `AGENTS.md` for every agent to follow:
 - **Consent before change.** `install`, `uninstall`, `flp up/down`, `argocd up/down`
   and `registry replicate` change real infrastructure. The operator's consent is
   journaled before any of them runs.
-- **Install and uninstall only.** The agent never attempts a BNK upgrade through
-  roksbnkargoctl and never recommends uninstall + install as one. BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation.
+- **Upgrades only through `upgrade`, with consent.** The agent runs `roksbnkargoctl upgrade`
+  only with the operator's journaled consent, never recommends uninstall + install as an
+  upgrade, and never moves between BNK lines or downgrades.
 - **Report faithfully.** Quote the check's own verdict line; say what was not
   checked.
 

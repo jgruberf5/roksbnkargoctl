@@ -19,7 +19,9 @@
 - [The Argo CD Application: what is in Git, and what is not](./07-the-application.md)
 - [install](./08-install.md)
 - [status and diagnose](./09-status-and-diagnose.md)
+- [upgrade](./10a-upgrade.md)
 - [uninstall](./10-uninstall.md)
+- [Running with Argo CD Web Interface](./10b-argocd-ui.md)
 
 # Part IV — Modes and Components
 

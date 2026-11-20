@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jgruberf5/roksbnkargoctl/internal/config"
 )
 
 // install.sh, run for real with sh against a fake GitHub serving fake release
@@ -67,7 +69,7 @@ func runInstallSh(t *testing.T, f *fakeGitHub, env []string, args ...string) shR
 func TestInstallShInstallsTheLatestForTheDefaultBNKLine(t *testing.T) {
 	for _, pretty := range []bool{false, true} {
 		t.Run(map[bool]string{false: "compact", true: "indented"}[pretty], func(t *testing.T) {
-			f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0", "2.5.0"), shRelease(t, "v0.5.0", "2.4.0"))
+			f := newFakeGitHub(t, shRelease(t, "v0.6.0", config.BNKVersion, "2.5.0"), shRelease(t, "v0.5.0", config.BNKVersion))
 			f.mu.Lock()
 			f.pretty = pretty
 			f.mu.Unlock()
@@ -82,7 +84,7 @@ func installShLatest(t *testing.T, f *fakeGitHub) {
 	if r.err != nil {
 		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
 	}
-	if !strings.Contains(r.marker, "installed v0.6.0 bnk 2.4.0") {
+	if !strings.Contains(r.marker, "installed v0.6.0 bnk "+config.BNKVersion+"") {
 		t.Errorf("wrong archive installed:\n%s", r.marker)
 	}
 	if !strings.Contains(r.marker, "args self install --force --dir /opt/x/bin") {
@@ -102,7 +104,7 @@ func installShLatest(t *testing.T, f *fakeGitHub) {
 }
 
 func TestInstallShSelectsBNKVersion(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0", "2.5.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.6.0", config.BNKVersion, "2.5.0"))
 	r := runInstallSh(t, f, []string{"BNK_VERSION=2.5.0"})
 	if r.err != nil {
 		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
@@ -115,12 +117,12 @@ func TestInstallShSelectsBNKVersion(t *testing.T) {
 // The latest release has only another BNK line: fail, name what it does have,
 // and run nothing.
 func TestInstallShRefusesALatestWithoutThisBNKLine(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.7.0", "2.5.0", "2.6.0"), shRelease(t, "v0.6.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.7.0", "2.5.0", "2.6.0"), shRelease(t, "v0.6.0", config.BNKVersion))
 	r := runInstallSh(t, f, nil)
 	if r.err == nil {
 		t.Fatalf("install.sh should fail:\n%s", r.stderr)
 	}
-	if !strings.Contains(r.stderr, "release v0.7.0 has no roksbnkargoctl_0.7.0_bnk-2.4.0_") ||
+	if !strings.Contains(r.stderr, "release v0.7.0 has no roksbnkargoctl_0.7.0_bnk-"+config.BNKVersion+"_") ||
 		!strings.Contains(r.stderr, "it has archives for BNK: 2.5.0 2.6.0") {
 		t.Errorf("the error should name the missing archive and the lines present:\n%s", r.stderr)
 	}
@@ -130,7 +132,7 @@ func TestInstallShRefusesALatestWithoutThisBNKLine(t *testing.T) {
 }
 
 func TestInstallShPinnedVersion(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0"), shRelease(t, "v0.5.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.6.0", config.BNKVersion), shRelease(t, "v0.5.0", config.BNKVersion))
 	for name, tc := range map[string]struct {
 		env  []string
 		args []string
@@ -143,7 +145,7 @@ func TestInstallShPinnedVersion(t *testing.T) {
 			if r.err != nil {
 				t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
 			}
-			if !strings.Contains(r.marker, "installed v0.5.0 bnk 2.4.0") {
+			if !strings.Contains(r.marker, "installed v0.5.0 bnk "+config.BNKVersion+"") {
 				t.Errorf("pinned install got:\n%s", r.marker)
 			}
 		})
@@ -151,7 +153,7 @@ func TestInstallShPinnedVersion(t *testing.T) {
 }
 
 func TestInstallShChecksumIsMandatory(t *testing.T) {
-	asset := assetName("v0.6.0", "2.4.0", runtime.GOOS, runtime.GOARCH)
+	asset := assetName("v0.6.0", config.BNKVersion, runtime.GOOS, runtime.GOARCH)
 	for name, tc := range map[string]struct {
 		mutate func(*fakeRelease)
 		want   string // the refusal must be this one, not an incidental failure
@@ -166,7 +168,7 @@ func TestInstallShChecksumIsMandatory(t *testing.T) {
 		}, "does not list " + asset},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rel := shRelease(t, "v0.6.0", "2.4.0")
+			rel := shRelease(t, "v0.6.0", config.BNKVersion)
 			tc.mutate(&rel)
 			r := runInstallSh(t, newFakeGitHub(t, rel), nil)
 			if r.err == nil {
@@ -183,7 +185,7 @@ func TestInstallShChecksumIsMandatory(t *testing.T) {
 }
 
 func TestInstallShRejectsABadBNKVersion(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.6.0", config.BNKVersion))
 	r := runInstallSh(t, f, []string{"BNK_VERSION=2.4.0_linux_amd64.tar.gz*"})
 	if r.err == nil || !strings.Contains(r.stderr, "is not a version") {
 		t.Fatalf("want a refusal, got %v:\n%s", r.err, r.stderr)
@@ -211,7 +213,7 @@ func TestInstallShLints(t *testing.T) {
 
 // VERSION and BNK_VERSION are common names in CI; the specific names win.
 func TestInstallShSpecificNamesWin(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.6.0", "2.4.0", "2.5.0"), shRelease(t, "v0.5.0", "2.4.0", "2.5.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.6.0", config.BNKVersion, "2.5.0"), shRelease(t, "v0.5.0", config.BNKVersion, "2.5.0"))
 	r := runInstallSh(t, f, []string{"VERSION=v0.6.0", "ROKSBNKARGOCTL_VERSION=v0.5.0",
 		"BNK_VERSION=2.4.0", "ROKSBNKARGOCTL_BNK_VERSION=2.5.0"})
 	if r.err != nil {
@@ -224,7 +226,7 @@ func TestInstallShSpecificNamesWin(t *testing.T) {
 
 // The version goes into the API URL: only a release tag is accepted.
 func TestInstallShRejectsANonTagVersion(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", config.BNKVersion))
 	for _, bad := range []string{"v1/../../other/repo/releases/tags/v0.5.0", "v0.5.0?x=1", "latest", "v0.5"} {
 		r := runInstallSh(t, f, []string{"ROKSBNKARGOCTL_VERSION=" + bad})
 		if r.err == nil || !strings.Contains(r.stderr, "is not a release tag") {
@@ -239,7 +241,7 @@ func TestInstallShRejectsANonTagVersion(t *testing.T) {
 // A directory with a space reaches `self install` as ONE argument, and a * in
 // the extra arguments is passed on, not expanded against the current directory.
 func TestInstallShPassesArgumentsIntact(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", config.BNKVersion))
 	r := runInstallSh(t, f, []string{"ROKSBNKARGOCTL_INSTALL_DIR=/opt/my tools/bin", "ROKSBNKARGOCTL_INSTALL_ARGS=--note *"})
 	if r.err != nil {
 		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
@@ -253,7 +255,7 @@ func TestInstallShPassesArgumentsIntact(t *testing.T) {
 
 // The token authenticates the API call and is never sent with a download.
 func TestInstallShSendsTheTokenToTheAPIOnly(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", config.BNKVersion))
 	r := runInstallSh(t, f, []string{"GITHUB_TOKEN=tok123"})
 	if r.err != nil {
 		t.Fatalf("install.sh failed: %v\n%s", r.err, r.stderr)
@@ -272,7 +274,7 @@ func TestInstallShSendsTheTokenToTheAPIOnly(t *testing.T) {
 
 // `curl | sh` cut off mid-transfer must run nothing: the body is inside main.
 func TestInstallShTruncatedRunsNothing(t *testing.T) {
-	f := newFakeGitHub(t, shRelease(t, "v0.5.0", "2.4.0"))
+	f := newFakeGitHub(t, shRelease(t, "v0.5.0", config.BNKVersion))
 	full, err := os.ReadFile("../../install.sh")
 	if err != nil {
 		t.Fatal(err)

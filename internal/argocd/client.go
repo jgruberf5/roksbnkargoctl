@@ -110,6 +110,23 @@ func IsUnauthorized(err error) bool {
 	return errors.As(err, &ae) && ae.StatusCode == http.StatusUnauthorized
 }
 
+// IsTransient reports whether err is worth retrying: no answer at all (a
+// timeout, a reset or refused connection, a cut-off response), 429, or a 5xx.
+// An answer that says no (401, 403, 404, other 4xx) is not. Live, a hub that
+// was slow for minutes ended an upgrade's wait on one timed-out read although
+// the sync succeeded (run 94).
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.StatusCode == http.StatusTooManyRequests || ae.StatusCode >= 500
+	}
+	var ue *url.Error
+	return errors.As(err, &ue) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
+}
+
 func notFound(op, msg string) error {
 	return &APIError{Op: op, StatusCode: http.StatusNotFound, Code: 5, Message: msg}
 }
@@ -133,7 +150,9 @@ func (c *Client) do(ctx context.Context, op, method, path string, body, out any)
 	}
 	u, err := url.Parse(c.server + path)
 	if err != nil {
-		return fmt.Errorf("argocd: %s: bad URL: %w", op, err)
+		// %v, not %w: url.Parse returns a *url.Error, which IsTransient would
+		// take for a network failure worth retrying. A bad server URL never heals.
+		return fmt.Errorf("argocd: %s: bad URL: %v", op, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rdr)
 	if err != nil {

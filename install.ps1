@@ -17,7 +17,7 @@
 
   Options (environment; the ROKSBNKARGOCTL_ names win over the short ones):
     $env:ROKSBNKARGOCTL_VERSION (or VERSION)          install that release, e.g. 'v0.5.0'
-    $env:ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.0)
+    $env:ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.3)
     $env:ROKSBNKARGOCTL_INSTALL_DIR                   where `self install` puts it (spaces OK)
     $env:ROKSBNKARGOCTL_INSTALL_ARGS                  more `self install` arguments
     $env:GITHUB_TOKEN                                 authenticates the GitHub API call
@@ -34,7 +34,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Repo = 'jgruberf5/roksbnkargoctl'
 $Bin = 'roksbnkargoctl'
-$Bnk = if ($env:ROKSBNKARGOCTL_BNK_VERSION) { $env:ROKSBNKARGOCTL_BNK_VERSION } elseif ($env:BNK_VERSION) { $env:BNK_VERSION } else { '2.4.0' }
+$Bnk = if ($env:ROKSBNKARGOCTL_BNK_VERSION) { $env:ROKSBNKARGOCTL_BNK_VERSION } elseif ($env:BNK_VERSION) { $env:BNK_VERSION } else { '2.4.3' }
 $Version = if ($env:ROKSBNKARGOCTL_VERSION) { $env:ROKSBNKARGOCTL_VERSION } elseif ($env:VERSION) { $env:VERSION } else { '' }
 $InstallArgs = if ($env:ROKSBNKARGOCTL_INSTALL_ARGS) { $env:ROKSBNKARGOCTL_INSTALL_ARGS } else { '' }
 $InstallDir = if ($env:ROKSBNKARGOCTL_INSTALL_DIR) { $env:ROKSBNKARGOCTL_INSTALL_DIR } else { '' }

@@ -20,8 +20,8 @@ The design follows from what the customer asked for:
 | C6 | connected and disconnected modes | `bnk.mode: connected \| disconnected` |
 | C7 | FAR or a replicated private registry | `registry.source: far \| mirror` |
 | C8 | prerequisite checks are containers in ROKS, deployed by YAML | the `check` image, run by Argo CD hooks in ROKS |
-| C9 | day-0 install and uninstall only | no traffic tests, gateway phase or upgrades |
-| C10 | BNK 2.4 GA only | manifest `2.4.0` (FAR tags `2.4.0` and `2.4.0-3.3175.0-0.0.380` are the same artifact) |
+| C9 | day-0 install, in-place 2.4 upgrade, uninstall | no traffic tests or gateway phase; `upgrade` moves a running install to a newer 2.4 release |
+| C10 | BNK 2.4 GA only | manifest `2.4.3`; one 2.4 release per build, and a running install moves to a newer one only through `upgrade` |
 
 ## Design decisions
 
@@ -205,8 +205,8 @@ Several of its checks encode roksbnkctl issues directly:
 ## Not in scope
 
 Cluster or transit gateway creation, the gateway phase (Infra, GatewaySettings, Gateway),
-traffic tests, BNK 2.3, and BNK upgrades. The tool is day-0 install and uninstall only.
-BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation.
+traffic tests, BNK 2.3, upgrades across BNK lines and downgrades. Within 2.4, `upgrade`
+moves a running install in place (see the design document's *Upgrade within 2.4*).
 
 ## See also
 

@@ -16,7 +16,7 @@
 # are common in CI environments and Makefiles):
 #   ROKSBNKARGOCTL_VERSION (or VERSION)          install that release, e.g. v0.5.0
 #                        (or the first argument: `sh -s -- v0.5.0`); default: latest
-#   ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.0)
+#   ROKSBNKARGOCTL_BNK_VERSION (or BNK_VERSION)  the BNK release (default 2.4.3)
 #   ROKSBNKARGOCTL_INSTALL_DIR                   where `self install` puts it (spaces OK)
 #   ROKSBNKARGOCTL_INSTALL_ARGS                  more `self install` arguments
 #   GITHUB_TOKEN                                 authenticates the GitHub API call
@@ -32,7 +32,7 @@ main() {
 
   REPO="jgruberf5/roksbnkargoctl"
   BIN="roksbnkargoctl"
-  BNK="${ROKSBNKARGOCTL_BNK_VERSION:-${BNK_VERSION:-2.4.0}}"
+  BNK="${ROKSBNKARGOCTL_BNK_VERSION:-${BNK_VERSION:-2.4.3}}"
   INSTALL_ARGS="${ROKSBNKARGOCTL_INSTALL_ARGS:-}"
   INSTALL_DIR="${ROKSBNKARGOCTL_INSTALL_DIR:-}"
   # The GitHub API base. Overridable only so the installer can be tested against a

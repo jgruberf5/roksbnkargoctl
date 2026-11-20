@@ -37,8 +37,8 @@ var (
 )
 
 // BNKVersion is the only BNK line this tool installs (DESIGN.md C10). FAR tags
-// 2.4.0 and 2.4.0-3.3175.0-0.0.380 are the same artifact.
-const BNKVersion = "2.4.0"
+// 2.4.3 and its build-numbered tag are the same artifact.
+const BNKVersion = "2.4.3"
 
 // Modes and registry sources.
 const (
@@ -494,7 +494,7 @@ func (c *Config) Validate() error {
 		add("transit_gateway (name or id of the existing transit gateway) is required")
 	}
 	if c.BNK.Version != BNKVersion {
-		add("bnk.version %q is not supported: this tool installs BNK %s GA only", c.BNK.Version, BNKVersion)
+		add("bnk.version %q is not supported: this build installs BNK %s; to move a running install to it, run `roksbnkargoctl upgrade`", c.BNK.Version, BNKVersion)
 	}
 	switch c.BNK.Mode {
 	case ModeConnected:

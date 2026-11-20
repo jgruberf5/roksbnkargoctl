@@ -33,7 +33,7 @@ terminal and without `--yes` it refuses rather than guessing.
  run Job check-pre-uninstall-cli  ──────────────────────────────▶ drain F5 CRs while FLO runs,
  and wait (failure: stop here)                                     License, then CNEInstance
  DELETE Application  ─────────────────▶ prune synced objects ───▶ (reverse wave order;
- (cascade, foreground)                  (+ PreDelete/PostDelete    namespaces and CRDs kept)
+ (cascade, foreground)                  (+ PreDelete/PostDelete    namespaces kept; CRDs last)
  wait until it is gone                   hooks, best effort)
  run Job check-post-uninstall-cli ──────────────────────────────▶ CWC secrets, namespaces,
  and wait                                                          stuck F5 finalizers
@@ -171,20 +171,46 @@ log captured for this pod)`. The CLI prints
 `uninstall check logs (N pods) saved to <dir>`. Read verdicts as described in
 [status and diagnose](./09-status-and-diagnose.md#reading-a-check-verdict).
 
+## Deleting the Application from the Argo CD UI
+
+Deleting the Application in Argo CD, instead of running `uninstall`, leaves the uninstall
+checks to Argo CD's PreDelete and PostDelete hooks, which Argo CD 3.5.1 sometimes skips
+(argoproj/argo-cd#29100). While it prunes, Argo CD shows a run of `DeletionError … not found`
+conditions, for example:
+
+```
+clusterrolebindings.rbac.authorization.k8s.io "system:openshift:scc:privileged:f5-bnk:flo-f5-lifecycle-operator" not found
+clusterissuers.cert-manager.io "selfsigned-cluster-issuer" not found
+jobs.batch "check-pre-install" not found
+```
+
+They are harmless: each names an object that something else had already deleted, and the
+delete carries on. They appear during a clean `uninstall` too.
+
+What a UI delete never removes is what `install` wrote outside the Application: the check
+namespace and its RBAC, `roksbnkargoctl-argocd-manager`, and the IAM trusted profile. If the
+PostDelete hook was skipped, the BNK namespaces stay as well. Either way, run
+`roksbnkargoctl uninstall` afterwards. It finds the Application gone, runs `check
+post-uninstall` if a BNK namespace remains, and removes the rest.
+
 ## What is intentionally left
 
 | Left behind | Why |
 |---|---|
-| F5 CRDs | Cluster-scoped and shared by any BNK on the cluster; deleting a CRD deletes every CR of that kind and can hang namespaces. `check post-uninstall` lists them. A reinstall reuses them |
-| cert-manager's CRDs | The chart is installed with `crds.keep: true`, so its CRDs carry `helm.sh/resource-policy: keep`, which Argo CD honours on delete. FLO's chart CRDs are kept the same way |
+| CRDs with objects still in the cluster, all CRDs while BNK runs anywhere on the cluster, and every CRD with `--keep-crds` | `uninstall` removes the CRDs BNK brought (F5's, experimental Gateway API, cert-manager's if it installed cert-manager) only when nothing of their kind is left and no F5 Lifecycle Operator or CNEInstance remains: deleting a CRD deletes every object of its kind. Each kept CRD is printed with why |
 | The Git history, and the manifests themselves unless `--purge-git` | Your repository's history is yours |
 | The Argo CD repository entries unless `--remove-repo`: the Git repository credential, and the chart registries with the FAR key or mirror login; SSH known-host entries added from `git.known_hosts_file`; the mirror's CA certificate added for `registry.mirror.ca_file` | Other Applications may use them. `--remove-repo` does not remove the SSH known-host entries or the mirror's CA certificate |
 | The transit gateway attachment, unless `--detach-tgw` and `install` made it | Other workloads may depend on the route |
 | The mirror CA file on each node (`/etc/containers/certs.d/<host>/ca.crt`, `/etc/docker/certs.d/<host>/ca.crt`) | The `registry-ca-trust` DaemonSet is pruned, but nothing removes the file it wrote |
 | The FLP VSI, the test Argo CD hub, the mirror contents, COS objects | Separate components with their own lifecycle: `flp down`, `argocd down` |
 
-On the verified runs (OpenShift 4.21.31, Argo CD 3.5.1), uninstall left the cluster clean
-apart from the kept CRDs, and a reinstall on the same cluster worked.
+Left behind, BNK's experimental Gateway API CRDs keep OpenShift's ingress operator Degraded
+("Unmanaged Gateway API CRDs found") and the cluster unable to take OpenShift updates
+(`clusterversion/version` reports `Upgradeable=False`). That is why `uninstall` removes them by
+default.
+
+On the verified runs (OpenShift 4.21, Argo CD 3.5.1), uninstall left the cluster clean, and a
+reinstall on the same cluster worked.
 
 ## See also
 

@@ -61,7 +61,7 @@ it fails.`,
 			if err != nil {
 				return err
 			}
-			return runInstall(cmd.Context(), s, noSync, noPublish, timeout)
+			return runInstall(cmd.Context(), s, installOpts{noSync: noSync, noPublish: noPublish, timeout: timeout})
 		},
 	}
 	cmd.Flags().BoolVar(&noSync, "no-sync", false, "create the Application but do not sync it (sync from the Argo CD UI)")
@@ -70,7 +70,15 @@ it fails.`,
 	return cmd
 }
 
-func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout time.Duration) error {
+// installOpts are install's flags; upgrade is the upgrade command, which runs
+// the same steps with a prune sync and a wait for FLO's roll.
+type installOpts struct {
+	noSync, noPublish, upgrade bool
+	timeout                    time.Duration
+}
+
+func runInstall(ctx context.Context, s *session, opt installOpts) error {
+	noSync, noPublish, timeout := opt.noSync, opt.noPublish, opt.timeout
 	c, p := s.cfg, s.p
 	if err := c.Validate(); err != nil {
 		return err
@@ -122,6 +130,30 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		r.InstalledLayout = layoutPending + installLayout(c)
 		if err := s.save(); err != nil {
 			return err
+		}
+	}
+
+	// The release running in the cluster, before the first change in the cloud:
+	// install re-syncing a different build over it would upgrade or downgrade
+	// BNK without being asked to (run 93 did exactly that, unguarded). After the
+	// pending record above, which is local and locks nothing, so a first install
+	// that cannot reach the cluster still leaves it.
+	kr, err := s.Kube(ctx)
+	if err != nil {
+		return err
+	}
+	running, err := runningRelease(ctx, kr, c)
+	if err != nil {
+		return err
+	}
+	if err := checkRelease(running, c.BNK.Version, opt.upgrade); err != nil {
+		return err
+	}
+	if opt.upgrade {
+		if running == c.BNK.Version {
+			p.ok("BNK %s is already running: re-syncing with prune and waiting for FLO, to finish an interrupted upgrade", running)
+		} else {
+			p.ok("BNK %s is running; upgrading to %s", running, c.BNK.Version)
 		}
 	}
 
@@ -189,6 +221,9 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		p.step("publishing manifests/git to %s (%s:%s)", c.Git.URL, c.Git.Branch, c.Git.Path)
 		pubOpts := gitOpts
 		pubOpts.Message = fmt.Sprintf("roksbnkargoctl: BNK %s on %s (%s mode, %s registry)", c.BNK.Version, r.ClusterName, c.BNK.Mode, c.Registry.Source)
+		if opt.upgrade {
+			pubOpts.Message = fmt.Sprintf("roksbnkargoctl: upgrade BNK %s to %s on %s", running, c.BNK.Version, r.ClusterName)
+		}
 		pubOpts.SrcDir = s.ws.ManifestsDir() + "/git"
 		var changed bool
 		sha, changed, err = gitpub.Publish(ctx, pubOpts)
@@ -238,17 +273,8 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 	if err != nil {
 		return err
 	}
-	// Argo CD's upsert REPLACES metadata.finalizers. The controller adds its
-	// pre-delete/post-delete finalizers itself once it sees the hooks; sending
-	// only ours on a re-install would strip them, and a delete before the next
-	// reconcile would then skip the uninstall checks.
-	if cur, err := ac.GetApplication(ctx, app.Metadata.Name, ""); err == nil {
-		app.Metadata.Finalizers = mergeFinalizers(cur.Metadata.Finalizers, app.Metadata.Finalizers)
-	} else if !argocd.IsNotFound(err) {
-		return fmt.Errorf("reading the Application: %w", err)
-	}
-	if _, err := ac.UpsertApplication(ctx, app); err != nil {
-		return fmt.Errorf("creating the Application: %w", err)
+	if err := putApplication(ctx, p, ac, app, opt.upgrade); err != nil {
+		return err
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
 	// From here Argo CD installs BNK (now, or at the next sync): the layout is
@@ -279,7 +305,13 @@ func runInstall(ctx context.Context, s *session, noSync, noPublish bool, timeout
 		p.info("sync it from the Argo CD UI, or run `roksbnkargoctl install` without --no-sync")
 		return nil
 	}
-	return syncAndWait(ctx, s, ac, sha, gitPos, timeout)
+	if err := syncAndWait(ctx, s, ac, sha, gitPos, opt.upgrade, timeout); err != nil {
+		return err
+	}
+	if opt.upgrade {
+		return waitUpgraded(ctx, s, k, c.BNK.Version, timeout)
+	}
+	return nil
 }
 
 // chartRepoAPI is the part of the Argo CD client the chart registration uses.
@@ -422,10 +454,12 @@ func gitSourcePosition(app render.Object) (int, error) {
 
 // syncAndWait syncs the Application with its Git source (position gitPos) at
 // revision, the commit published or compared; the charts at their versions.
-func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, gitPos int, timeout time.Duration) error {
+// prune removes what the render no longer has: an upgrade's old CNEManifest
+// (bnk-<old release>), which a sync without prune leaves, Application OutOfSync.
+func syncAndWait(ctx context.Context, s *session, ac *argocd.Client, revision string, gitPos int, prune bool, timeout time.Duration) error {
 	c, p := s.cfg, s.p
 	p.step("syncing %s (pre-install check → cert-manager → FLO → CNEInstance → license)", c.ArgoCD.Application)
-	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision, SourcePosition: gitPos}); err != nil {
+	if _, err := ac.Sync(ctx, c.ArgoCD.Application, argocd.SyncOptions{Revision: revision, SourcePosition: gitPos, Prune: prune}); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
 	last := ""
@@ -723,7 +757,7 @@ func ensureTrustedProfile(ctx context.Context, s *session, ibmc profileAPI) erro
 
 func newUninstallCmd() *cobra.Command {
 	var timeout time.Duration
-	var purgeGit, keepProfile, detachTGW, removeRepo, force bool
+	var purgeGit, keepProfile, detachTGW, removeRepo, force, keepCRDs bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Delete the Application; the uninstall checks drain BNK in ROKS",
@@ -736,7 +770,11 @@ Argo CD can skip its own PreDelete/PostDelete hooks (argoproj/argo-cd#29100).
 Then uninstall removes what install wrote out of band: the Secrets, the check namespace and RBAC, the
 Argo CD cluster registration and its ServiceAccount, and the trusted profile.
 
-F5 CRDs stay (deleting a CRD deletes every CR and can hang namespaces).
+Last, the CRDs BNK brought: F5's, the experimental-channel Gateway API CRDs (left
+behind, they keep OpenShift's ingress operator Degraded and its updates stuck),
+and cert-manager's when this workspace installed cert-manager. Nothing is removed
+while an F5 Lifecycle Operator or a CNEInstance exists anywhere on the cluster, and
+a CRD only when no object of its kind is left. --keep-crds keeps them all.
 The Git history stays unless --purge-git. SSH host keys added to Argo CD from
 git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -747,7 +785,7 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 			if !confirm(cmd, fmt.Sprintf("Uninstall BNK from %s (Application %s)?", s.cfg.Cluster, s.cfg.ArgoCD.Application)) {
 				return errors.New("not confirmed (pass --yes to skip the prompt)")
 			}
-			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo, force})
+			return runUninstall(cmd.Context(), s, uninstallOpts{timeout, purgeGit, keepProfile, detachTGW, removeRepo, force, keepCRDs})
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 45*time.Minute, "how long to wait for Argo CD to finish deleting")
@@ -756,12 +794,14 @@ git.known_hosts_file stay too: Argo CD's known-hosts list is shared.`,
 	cmd.Flags().BoolVar(&detachTGW, "detach-tgw", false, "detach the cluster VPC from the transit gateway if install attached it")
 	cmd.Flags().BoolVar(&removeRepo, "remove-repo", false, "remove the Git repo credential and the chart registries' entries from Argo CD (other Applications may use them)")
 	cmd.Flags().BoolVar(&force, "force", false, "delete the Application even when the pre-uninstall check fails or cannot run")
+	cmd.Flags().BoolVar(&keepCRDs, "keep-crds", false, "keep the CRDs BNK brought (F5's, experimental Gateway API, cert-manager's); by default those with no objects left are removed")
 	return cmd
 }
 
 type uninstallOpts struct {
 	timeout                                             time.Duration
 	purgeGit, keepProfile, detachTGW, removeRepo, force bool
+	keepCRDs                                            bool
 }
 
 func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
@@ -861,6 +901,29 @@ func runUninstall(ctx context.Context, s *session, o uninstallOpts) error {
 		}
 		errs = append(errs, removeChartRepos(ctx, ac, chartRepoURLs(s))...)
 	}
+	// The CRDs, once BNK is confirmed gone (steps.run fails while a BNK
+	// namespace remains): see crds.go.
+	if o.keepCRDs {
+		p.info("--keep-crds: the CRDs BNK brought stay")
+	} else {
+		p.step("removing the CRDs BNK brought, where no objects of their kind are left")
+		res, err := removeCRDs(ctx, k.Dynamic, c.CertManagerInstall(), 2*time.Minute)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("removing CRDs: %w", err))
+		case res.Skipped != "":
+			p.warn("no CRDs removed: %s", res.Skipped)
+		default:
+			p.ok("removed %d CRD(s)", len(res.Removed))
+			for _, n := range res.Removed {
+				p.info("  removed %s", n)
+			}
+			for _, n := range res.Kept {
+				p.warn("kept %s", n)
+			}
+		}
+	}
+
 	ibmc, err := s.IBM()
 	if err != nil {
 		return err

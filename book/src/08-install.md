@@ -243,7 +243,12 @@ Argo CD's known hosts so the hub verifies the same key. The environment variable
    for: `✓ Argo CD pulls the <chart> chart from <registry>`. This stores the registry
    credential in Argo CD; see
    [the chart registries in Argo CD](./07-the-application.md#the-chart-registries-in-argo-cd).
-4. Upsert the Application described in [chapter 7](./07-the-application.md).
+4. Upsert the Application described in [chapter 7](./07-the-application.md). The upsert
+   replaces the whole spec. If a chart version on the hub differs from the render (FLO changed
+   in the Argo CD UI, for example), `install` warns and puts the release's version back:
+   `⚠ the Application's f5-lifecycle-operator chart is v2.30.0-0.11.9 on the hub, not the
+   v2.30.0-0.11.8 this release's manifest lists: changed outside roksbnkargoctl? install sets
+   it back to v2.30.0-0.11.8`. `upgrade` reports the same difference as the change it makes.
 5. With `--no-publish`, compare what is in Git with this render
    ([below](#without-letting-roksbnkargoctl-push-to-git)).
 6. With `--no-sync`, stop here.
@@ -348,7 +353,9 @@ export you forgot to refresh.
 | Nothing changed | Publishes nothing, then syncs the same commit again |
 | You changed `config.yaml` | Re-renders, commits the difference, syncs it |
 
-Re-running `install` does not upgrade BNK. BNK upgrades are done outside this tool: BNK supports an in-place upgrade by changing the manifest version in its custom resources, following F5's BNK documentation. A change of mode is covered in
+Re-running `install` never changes the BNK release: with a build for another release it
+refuses, and points at `roksbnkargoctl upgrade` ([chapter 10a](./10a-upgrade.md)) when the
+running one is older. A change of mode is covered in
 [Changing modes](./11-modes.md#changing-modes).
 
 ## See also
