@@ -358,6 +358,16 @@ Application's sources, not Git, and stays on the old release's (2.4.3 ships `0.1
 Available. `upgrade` still publishes the new CNEManifest and syncs with prune, so Git matches
 the cluster. Putting the Application in Git is #45.
 
+F5 documents the other order, for every release since 2.2: FLO first (`helm upgrade` to the
+release's FLO chart), then the CNEInstance. `upgrade` already does that within its one sync,
+because the FLO chart is wave 0 and the CNEInstance wave 8. Measured in that order through
+the Application and Git (run 114): FLO 0.11.4 → 0.11.8 on 2.4.2 replaced only the FLO pod;
+then the `manifestVersion` commit rolled TMM between 2m06s and 3m21s after the sync, Argo CD
+reported the sync Succeeded at 6m22s while `DSSMAvailable` was still False, and every condition
+was True at 9m09s. That is why `upgrade` waits on the CNEInstance, not the sync. In either
+order FLO leaves the CNEManifest it creates (no ownerReferences, no finalizers) after the
+Application is deleted, and `uninstall` then keeps the `cnemanifests` CRD.
+
 In mirror mode, replicate the new release into the mirror first (`registry replicate` with the
 new build): render pulls the new manifest from the mirror.
 
