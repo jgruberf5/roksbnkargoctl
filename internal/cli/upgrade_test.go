@@ -166,7 +166,9 @@ func TestInstallChecksTheReleaseBeforeChangingAnything(t *testing.T) {
 	if check < 0 {
 		t.Fatal("runInstall does not call checkRelease with the running release")
 	}
-	for _, change := range []string{"ensureClusterOnTGW(", "ensureTrustedProfile(", "k.Apply(", "gitpub.Publish(", "ac.UpsertApplication("} {
+	// putApplication is where runInstall posts the Application
+	// (TestPutApplicationNamesAChartVersionItOverwrites proves it posts).
+	for _, change := range []string{"ensureClusterOnTGW(", "ensureTrustedProfile(", "k.Apply(", "gitpub.Publish(", "putApplication("} {
 		i := strings.Index(body, change)
 		if i < 0 {
 			t.Fatalf("runInstall no longer calls %s: update this test", change)

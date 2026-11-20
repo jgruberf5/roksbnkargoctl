@@ -192,6 +192,16 @@ upgrade done this way, use the new release's build and set `bnk.version` to the 
 in `config.yaml` before running `install`, `upgrade` or `uninstall` against the cluster. An
 older build refuses: it will not downgrade a running release.
 
+`install` and `upgrade` replace the Application, so they set every chart version back to
+what the release's manifest lists. A FLO version you set in the UI that differs from it is
+overwritten, and `install` says so:
+
+```text
+⚠ the Application's f5-lifecycle-operator chart is v2.30.0-0.11.9 on the hub, not the v2.30.0-0.11.8 this release's manifest lists: changed outside roksbnkargoctl? install sets it back to v2.30.0-0.11.8
+```
+
+If you followed the steps above, the versions match and nothing is reported.
+
 ### Notes
 
 - In mirror mode FLO pulls the manifest and the FLO chart from the mirror, so replicate the new

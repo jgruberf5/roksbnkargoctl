@@ -273,17 +273,8 @@ func runInstall(ctx context.Context, s *session, opt installOpts) error {
 	if err != nil {
 		return err
 	}
-	// Argo CD's upsert REPLACES metadata.finalizers. The controller adds its
-	// pre-delete/post-delete finalizers itself once it sees the hooks; sending
-	// only ours on a re-install would strip them, and a delete before the next
-	// reconcile would then skip the uninstall checks.
-	if cur, err := ac.GetApplication(ctx, app.Metadata.Name, ""); err == nil {
-		app.Metadata.Finalizers = mergeFinalizers(cur.Metadata.Finalizers, app.Metadata.Finalizers)
-	} else if !argocd.IsNotFound(err) {
-		return fmt.Errorf("reading the Application: %w", err)
-	}
-	if _, err := ac.UpsertApplication(ctx, app); err != nil {
-		return fmt.Errorf("creating the Application: %w", err)
+	if err := putApplication(ctx, p, ac, app, opt.upgrade); err != nil {
+		return err
 	}
 	p.ok("Application %s created in project %s", c.ArgoCD.Application, c.ArgoCD.Project)
 	// From here Argo CD installs BNK (now, or at the next sync): the layout is

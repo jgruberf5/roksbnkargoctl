@@ -70,7 +70,9 @@ line per chart:
 ## The Application
 
 `install` creates or updates the Application with
-`POST /api/v1/applications?upsert=true&validate=true`. Its shape:
+`POST /api/v1/applications?upsert=true&validate=true`. The upsert replaces the whole spec, so a
+chart version changed on the hub is put back to the render's; `install` and `upgrade` name each
+one they change (see [install](./08-install.md)). Its shape:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1

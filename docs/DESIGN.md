@@ -258,6 +258,14 @@ effort; both checks are idempotent, so a hook that does run after the CLI's copy
 nothing left. `install` also keeps Argo CD's `pre-delete-finalizer…`/`post-delete-finalizer…`
 finalizers when it re-upserts the Application: Argo CD's upsert replaces the list.
 
+The upsert replaces the spec too, chart versions included. The FLO chart's version is in the
+Application, not Git, so an operator who runs BNK from the Argo CD UI changes it there (runs
+112 and 114). The render's version, the one the release manifest lists, stays the source of
+truth, but `install` and `upgrade` read the hub's Application first and name every Helm chart
+whose `targetRevision` they change: `upgrade` as the change it makes
+(`Application: chart f5-lifecycle-operator v2.30.0-0.11.4 -> v2.30.0-0.11.8`), `install` as a
+warning that it is putting the manifest's version back over an edit made outside roksbnkargoctl.
+
 ## The binary itself: `self install`, `self update`, install.sh, install.ps1
 
 A binary installs one BNK release (`config.BNKVersion`), and its release archive says which:
