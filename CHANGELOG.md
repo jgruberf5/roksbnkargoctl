@@ -4,6 +4,58 @@ Release assets are named for the BNK release the binary installs:
 `roksbnkargoctl_<version>_bnk-<BNK version>_<os>_<arch>`. `roksbnkargoctl version`
 prints both.
 
+## [0.8.0] - 2026-11-20
+
+Installs **F5 BIG-IP Next for Kubernetes 2.4.3 (GA)** (was 2.4.0). FAR tag `2.4.3`
+(`2.4.3-3.3175.0-0.0.671`): FLO chart `v2.30.0-0.11.8`, CWC `v0.45.7-0.0.9`.
+
+### Added
+- `upgrade` moves a running install to this build's 2.4 release in place. It sets
+  `bnk.version`, renders, publishes, updates the Application and syncs with prune. One sync
+  moves the FLO chart (wave 0) before the CNEInstance asks for the new release (wave 8),
+  which is the order F5 documents. It then waits until the CNEInstance reports the new
+  release with every `*Available` condition True and the License is Active.
+  - It refuses a downgrade, another BNK line, or nothing installed.
+  - Re-running it finishes an interrupted upgrade.
+  - Live, 2.4.2 → 2.4.3: exit 0 in 10m45s.
+- `install` and `upgrade` name every chart version the Application update changes.
+  `upgrade` reports the change it makes. `install` warns when it puts the release's FLO
+  version back over one edited in the Argo CD UI.
+- Book: **Running with Argo CD Web Interface**, for operators who run BNK from the Argo CD
+  UI. It covers:
+  - the one CLI step left (`install --no-sync`);
+  - syncing and watching an install;
+  - a 2.4 upgrade with Git and Argo CD only (FLO first, then one line in Git), with
+    measured timings;
+  - the Delete dialog's options, what a UI delete leaves behind, and re-installing.
+
+### Changed
+- `install` no longer changes the running BNK release. Before, re-running `install` with a
+  newer build upgraded BNK without being asked, and an older build downgraded it. It now
+  refuses and names `upgrade`.
+- `uninstall` removes the CRDs BNK brought (#44): F5's, the experimental Gateway API CRDs in
+  `gateway.networking.k8s.io` and `gateway.networking.x-k8s.io`, and cert-manager's if
+  roksbnkargoctl installed it. It lifts OpenShift's Gateway API admission policy to do so.
+  - Left behind, the experimental Gateway API CRDs keep OpenShift's ingress operator
+    Degraded and block OpenShift updates (`Upgradeable=False`).
+  - Guards: nothing is removed while any FLO or CNEInstance exists, and a CRD is kept while
+    any object of its kind remains.
+  - `--keep-crds` keeps the old behaviour.
+- Waits on Argo CD ride out a hub that stops answering for a while (timeouts, EOF, 429,
+  5xx) until their own timeout, and stop at once on an answer that says no.
+- Go floor 1.26.11 (GO-2026-6859), with dependency updates. govulncheck reports nothing.
+
+### Verified on bnkargo (OpenShift 4.21, Argo CD 3.5.1, one namespace)
+- 10 of 10 install, then Argo CD UI-style delete, cycles on 2.4.3.
+- Upgrade 2.4.2 → 2.4.3 three ways: Git and Argo CD in either order, and `upgrade`.
+- `uninstall` back to the cluster's baseline; OpenShift updates unblocked.
+
+### Known issues (reported to F5)
+- A delete from the Argo CD UI leaves BNK's experimental Gateway API CRDs, which block
+  OpenShift updates until `roksbnkargoctl uninstall` removes them.
+- An upgrade done by changing only `manifestVersion` leaves FLO on the old chart and leaves
+  a CNEManifest that FLO created and nothing owns.
+
 ## [0.7.2] - 2026-11-09
 
 Still installs **F5 BIG-IP Next for Kubernetes 2.4.0 (GA)**.
