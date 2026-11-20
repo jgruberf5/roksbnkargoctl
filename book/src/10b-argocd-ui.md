@@ -97,89 +97,106 @@ next sync puts Git's version back.
 
 ## Upgrade within 2.4 with Git and Argo CD only
 
-FLO upgrades BNK in place when the CNEInstance asks for a newer release. With Git as the
-source of truth, an upgrade is a one-line commit and a **Sync**. Changing the objects in the
-Argo CD UI instead does not last: Argo CD shows the Application `OutOfSync`, and the next sync
-puts Git's version back.
+F5 documents every BNK release upgrade in two parts, in this order: first upgrade FLO to the
+FLO chart of the release you are moving to, then change the CNEInstance's `manifestVersion`
+([2.4.2 to 2.4.3 with F5 Lifecycle Operator](https://clouddocs.f5.com/bigip-next-for-kubernetes/latest/releases/bnk-upgrade-2.4.2-to-2.4.3-using-flo.html);
+the 2.2 and 2.3 pages have the same two parts). F5's pages use `helm upgrade` and
+`kubectl apply`. With Argo CD, the same two parts are an edit of the Application and a commit
+to Git, each followed by a **Sync**. Changing the objects in the Argo CD UI instead does not
+last: Argo CD shows the Application `OutOfSync`, and the next sync puts Git's version back.
 
-Where each part of the release is recorded:
+Where each part is recorded:
 
 | What | Source of truth | Changed by |
 |---|---|---|
-| The BNK release FLO runs | `spec.manifestVersion` of the CNEInstance, in Git | A commit |
 | The FLO chart version | The Application's `spec.sources`, on the hub (not in Git, see [#45](https://github.com/jgruberf5/roksbnkargoctl/issues/45)) | **Details** → **Manifest** → **Edit** |
+| The BNK release FLO runs | `spec.manifestVersion` of the CNEInstance, in Git | A commit |
 | The release `roksbnkargoctl` renders | `bnk.version` in the workspace's `config.yaml`, and the build | Editing `config.yaml`; using the matching build |
 
-### 1. Change the release in Git
+The FLO chart for each release is the one the release's manifest lists:
 
-In `git.path`, edit the CNEInstance file (`015-cneinstance-<namespace>-<namespace>-f5-cne-controller.yaml`,
-`015-cneinstance-f5-bnk-f5-bnk-f5-cne-controller.yaml` by default). Change one line:
+| Release | FLO chart `f5-lifecycle-operator` |
+|---|---|
+| 2.4.0 | `v2.30.0-0.5.2` |
+| 2.4.1, 2.4.2 | `v2.30.0-0.11.4` |
+| 2.4.3 | `v2.30.0-0.11.8` |
+
+Nothing in Git sets FLO's version: the `f5-lifecycle-operator` entries in the CNEManifest
+file are F5's manifest data, which FLO does not apply to itself, and the version in the first
+line of `values/flo.yaml` is a comment.
+
+### 1. Move FLO to the new release's chart
+
+Open the Application → **Details** → **Manifest** → **Edit**. In `spec.sources`, find the source
+with `chart: f5-lifecycle-operator`, set `targetRevision` to the new release's FLO chart, and
+press **Save**. Then **Sync** with the defaults. Skip this step when the FLO chart does not
+change (2.4.1 to 2.4.2).
+
+Measured, 0.11.4 → 0.11.8 with BNK 2.4.2 running (three workers, one namespace): the sync took
+1m50s and replaced only the FLO pod. In the 5 minutes after it, no TMM or CWC pod changed,
+BNK stayed `Available` and the License `Active`.
+
+### 2. Change the release in Git
+
+In `git.path`, edit the CNEInstance file (`015-cneinstance-f5-bnk-f5-bnk-f5-cne-controller.yaml`
+with the default namespace). Change one line:
 
 ```diff
 -  manifestVersion: 2.4.2
 +  manifestVersion: 2.4.3
 ```
 
-Commit and push. Nothing else in Git has to change.
+Commit and push. Nothing else in Git has to change. Press **Refresh** (the CNEInstance shows
+`OutOfSync`), then **Sync** with the defaults (**Prune** is not needed).
 
-### 2. Refresh and sync
+FLO finds no CNEManifest for the new release and pulls the release's manifest from the
+registry itself (`Manifest version not found, retrieving from remote registry`, then
+`Pulled: repo.f5.com/release/f5-bigip-k8s-manifest:2.4.3`). It creates the CNEManifest
+`bnk-2.4.3` and rolls the components.
 
-In the Application, press **Refresh**: it shows `OutOfSync` on the CNEInstance. Press
-**Sync** and keep the defaults (**Prune** is not needed), then **Synchronize**.
+### 3. Wait for the CNEInstance, not the sync
 
-FLO reads the new `manifestVersion`, finds no CNEManifest for it, and pulls the release's
-manifest from the registry itself (its log reads `Manifest version not found, retrieving from
-remote registry`, then `Pulled: repo.f5.com/release/f5-bigip-k8s-manifest:2.4.3`). It creates
-the CNEManifest `bnk-2.4.3`, then rolls each component, TMM one pod at a time.
+Measured, 2.4.2 → 2.4.3 in this order (state polled every 10 seconds):
 
-Measured on the test cluster, 2.4.2 → 2.4.3, three workers, one namespace:
-
-| Time after Sync | What happened |
+| After Sync | What happened |
 |---|---|
-| 1m14s | FLO pulled the 2.4.3 manifest and created CNEManifest `bnk-2.4.3`; the CRD installer re-ran |
-| 1m49s | First TMM pod replaced |
-| 2m07s | CWC replaced (`spk-cwc` 0.0.6 → 0.0.9) |
-| 2m22s, 2m59s | Second and third TMM pods replaced |
-| 8m (next check) | Every `*Available` condition True on 2.4.3 and the License Active. The roll had ended with the third TMM at 2m59s; the minutes between were not polled |
-| 9m19s | The Argo CD sync finished: the check hooks run again on every sync, `check-post-install` last |
+| 1m09s | FLO pulled the 2.4.3 manifest and created CNEManifest `bnk-2.4.3` |
+| 1m21s | CNEInstance `Available` False; the CRD installer re-ran |
+| 2m06s – 3m21s | TMM replaced one pod at a time; never fewer than 2 of 3 TMMs ready |
+| 2m21s – 3m21s | CWC replaced (`spk-cwc` 0.0.6 → 0.0.9); the License `Active` throughout |
+| 6m22s | **Argo CD: sync `Succeeded`**, while `DSSMAvailable` was still False |
+| 9m09s | Every `*Available` condition True on 2.4.3 |
 
-The Application ends `Synced` and `Healthy`. The CNEManifest `bnk-2.4.2` from Git stays in
-the cluster; it is harmless, and FLO's `bnk-2.4.3` is not in Git, so Argo CD does not track it.
-To keep Git matching the cluster, you can also replace the CNEManifest file with the new
-release's (from `roksbnkargoctl render` with the new build) and sync with **Prune**, so the old
-one is removed.
+The Argo CD sync finished almost 3 minutes before BNK did: the DSSM session store reported Available
+almost 6 minutes after the last TMM. So an upgrade is done when the CNEInstance
+`f5-bnk-f5-cne-controller` shows every `*Available` condition True in **Summary** →
+**Live Manifest**, not when the sync shows `Sync OK`.
 
 TMM pods are replaced one at a time, so for each replacement one TMM fewer carries traffic.
 How a client sees that depends on how traffic reaches TMM; it was not measured here.
 
-### 3. Move the FLO chart
+The CNEManifest `bnk-2.4.2` from Git stays in the cluster and is harmless. FLO's `bnk-2.4.3`
+is not in Git, so Argo CD does not track it (see [what a delete leaves](#what-a-delete-from-the-ui-leaves)).
 
-The release's FLO chart comes with the Application, not Git:
+### In the other order
 
-| Release | FLO chart `f5-lifecycle-operator` |
-|---|---|
-| 2.4.1, 2.4.2 | `v2.30.0-0.11.4` |
-| 2.4.3 | `v2.30.0-0.11.8` |
-
-The release upgrade above ran under 2.4.2's FLO. To move FLO to the new release's chart, open
-the Application → **Details** → **Manifest** → **Edit**. In `spec.sources`, find the source with
-`chart: f5-lifecycle-operator`, set its `targetRevision`, and press **Save**. Then **Sync** with
-the defaults.
-
-Measured, 0.11.4 → 0.11.8 on BNK 2.4.3: only the FLO pod was replaced. BNK stayed `Available`,
-the License `Active`, and no TMM or CWC pod restarted. The sync took about 1m40s.
+Changing `manifestVersion` before FLO also upgrades BNK: FLO 0.11.4 pulled and rolled 2.4.3
+the same way, and moving FLO afterwards replaced only the FLO pod. That is not F5's
+documented order, and BNK runs under the previous release's FLO in between; follow the order
+above.
 
 ### Before using roksbnkargoctl again
 
-`roksbnkargoctl` renders the release named in the workspace. After an upgrade done in Git,
-use the new release's build and set `bnk.version` to the new release in `config.yaml` before
-running `install`, `upgrade` or `uninstall` against the cluster. An older build refuses: it
-will not downgrade a running release.
+`roksbnkargoctl` renders the release named in the workspace, FLO chart included. After an
+upgrade done this way, use the new release's build and set `bnk.version` to the new release
+in `config.yaml` before running `install`, `upgrade` or `uninstall` against the cluster. An
+older build refuses: it will not downgrade a running release.
 
 ### Notes
 
-- In mirror mode FLO pulls the manifest from the mirror, so replicate the new release into it
-  first (`roksbnkargoctl registry replicate` with the new build). This was not measured.
+- In mirror mode FLO pulls the manifest and the FLO chart from the mirror, so replicate the new
+  release into it first (`roksbnkargoctl registry replicate` with the new build). This was not
+  measured.
 - Do not use **History and rollback** to go back to an older release. It re-syncs an older
   revision, which asks FLO for a downgrade; downgrades are not supported.
 
@@ -228,7 +245,7 @@ created outside the Application. Measured after a UI delete on the test cluster:
 | The cluster's registration on the hub; the Git repository and chart registry entries | The hub can still reach the cluster and FAR |
 | The IAM trusted profile `<cluster>-f5-cne-controller-f5-bnk` | None while it stays |
 | The rendered manifests in Git | Re-creating the Application syncs them again |
-| After an upgrade done in Git: the CNEManifest FLO created for the new release (`bnk-2.4.3`) | Argo CD never owned it, so the delete leaves it. Harmless; a later install of that release adopts it |
+| After an upgrade done in Git, in either order: the CNEManifest FLO created for the new release (`bnk-2.4.3`) | Argo CD never owned it, so the delete leaves it. Harmless; a later install of that release adopts it, and `roksbnkargoctl uninstall` keeps the `cnemanifests` CRD while it exists |
 | BNK's CRDs: 102 F5 and cert-manager CRDs, and the experimental Gateway API CRDs (`backendtlspolicies`, `tcproutes`, `tlsroutes`, `udproutes` in `gateway.networking.k8s.io`, and the `gateway.networking.x-k8s.io` group) | **OpenShift's ingress operator goes Degraded** ("Unmanaged Gateway API CRDs found") and the cluster reports `Upgradeable=False`: **OpenShift updates are blocked** until the experimental CRDs are gone |
 
 To remove all of this, run `roksbnkargoctl uninstall` after the UI delete. It finds the
