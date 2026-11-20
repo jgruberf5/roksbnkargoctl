@@ -95,43 +95,93 @@ the pod's log: click the Job in the tree, then **Logs**. The
 Do not change BNK objects in the cluster by hand. Argo CD shows them `OutOfSync`, and the
 next sync puts Git's version back.
 
-## Upgrade within 2.4: change the manifest, sync
+## Upgrade within 2.4 with Git and Argo CD only
 
-FLO upgrades BNK in place when the CNEInstance asks for a newer release. Through the UI, an
-upgrade is a change in Git, then a sync.
+FLO upgrades BNK in place when the CNEInstance asks for a newer release. With Git as the
+source of truth, an upgrade is a one-line commit and a **Sync**. Changing the objects in the
+Argo CD UI instead does not last: Argo CD shows the Application `OutOfSync`, and the next sync
+puts Git's version back.
 
-1. **Change Git.** In `git.path`, the CNEInstance file
-   (`015-cneinstance-f5-bnk-f5-bnk-f5-cne-controller.yaml`) sets `spec.manifestVersion`, and
-   the CNEManifest file (`014-cnemanifest-bnk-<release>.yaml`) lists every component version
-   of the release. The new release's files come from the new build: set `bnk.version` in the
-   workspace's `config.yaml` and run `roksbnkargoctl render`, which changes nothing in the
-   cluster, Argo CD or Git. Copy `manifests/git/` into the repository, then commit and push.
-   With `roksbnkargoctl export`, you get the same files as a zip.
-2. **Refresh** the Application. It shows `OutOfSync`: the new CNEManifest is missing, the old
-   one is extra, and the CNEInstance differs.
-3. **Sync** with **Prune** checked, so the old CNEManifest `bnk-<old>` is removed. Without
-   Prune it stays, and the Application stays `OutOfSync`.
-4. **Watch the CNEInstance.** FLO rolls the CRD installer, fluentd, the TMM pod manager,
-   f5ingress, coremond and qkview, then TMM one pod at a time. `Available` is False while it
-   rolls. From 2.4.1 to 2.4.2 every component was Available again 3 minutes 38 seconds after
-   the sync started, with the License Active throughout.
+Where each part of the release is recorded:
 
-### The FLO chart is in the Application, not in Git
+| What | Source of truth | Changed by |
+|---|---|---|
+| The BNK release FLO runs | `spec.manifestVersion` of the CNEInstance, in Git | A commit |
+| The FLO chart version | The Application's `spec.sources`, on the hub (not in Git, see [#45](https://github.com/jgruberf5/roksbnkargoctl/issues/45)) | **Details** → **Manifest** → **Edit** |
+| The release `roksbnkargoctl` renders | `bnk.version` in the workspace's `config.yaml`, and the build | Editing `config.yaml`; using the matching build |
 
-The Application installs FLO as a Helm chart from FAR. Its version is in the Application's
-sources, so a Git change does not touch it:
+### 1. Change the release in Git
 
-| Release | FLO chart |
+In `git.path`, edit the CNEInstance file (`015-cneinstance-<namespace>-<namespace>-f5-cne-controller.yaml`,
+`015-cneinstance-f5-bnk-f5-bnk-f5-cne-controller.yaml` by default). Change one line:
+
+```diff
+-  manifestVersion: 2.4.2
++  manifestVersion: 2.4.3
+```
+
+Commit and push. Nothing else in Git has to change.
+
+### 2. Refresh and sync
+
+In the Application, press **Refresh**: it shows `OutOfSync` on the CNEInstance. Press
+**Sync** and keep the defaults (**Prune** is not needed), then **Synchronize**.
+
+FLO reads the new `manifestVersion`, finds no CNEManifest for it, and pulls the release's
+manifest from the registry itself (its log reads `Manifest version not found, retrieving from
+remote registry`, then `Pulled: repo.f5.com/release/f5-bigip-k8s-manifest:2.4.3`). It creates
+the CNEManifest `bnk-2.4.3`, then rolls each component, TMM one pod at a time.
+
+Measured on the test cluster, 2.4.2 → 2.4.3, three workers, one namespace:
+
+| Time after Sync | What happened |
 |---|---|
-| 2.4.1, 2.4.2 | `f5-lifecycle-operator` `v2.30.0-0.11.4` |
-| 2.4.3 | `f5-lifecycle-operator` `v2.30.0-0.11.8` |
+| 1m14s | FLO pulled the 2.4.3 manifest and created CNEManifest `bnk-2.4.3`; the CRD installer re-ran |
+| 1m49s | First TMM pod replaced |
+| 2m07s | CWC replaced (`spk-cwc` 0.0.6 → 0.0.9) |
+| 2m22s, 2m59s | Second and third TMM pods replaced |
+| 8m (next check) | Every `*Available` condition True on 2.4.3 and the License Active. The roll had ended with the third TMM at 2m59s; the minutes between were not polled |
+| 9m19s | The Argo CD sync finished: the check hooks run again on every sync, `check-post-install` last |
 
-To move FLO, open the Application → **Details** → **Manifest** → **Edit**. In
-`spec.sources`, find the source with `chart: f5-lifecycle-operator`, set its
-`targetRevision`, and press **Save**. Then **Sync**.
+The Application ends `Synced` and `Healthy`. The CNEManifest `bnk-2.4.2` from Git stays in
+the cluster; it is harmless, and FLO's `bnk-2.4.3` is not in Git, so Argo CD does not track it.
+To keep Git matching the cluster, you can also replace the CNEManifest file with the new
+release's (from `roksbnkargoctl render` with the new build) and sync with **Prune**, so the old
+one is removed.
 
-Do not use **History and rollback** to go back to an older release. It re-syncs an older
-revision, which asks FLO for a downgrade; downgrades are not supported.
+TMM pods are replaced one at a time, so for each replacement one TMM fewer carries traffic.
+How a client sees that depends on how traffic reaches TMM; it was not measured here.
+
+### 3. Move the FLO chart
+
+The release's FLO chart comes with the Application, not Git:
+
+| Release | FLO chart `f5-lifecycle-operator` |
+|---|---|
+| 2.4.1, 2.4.2 | `v2.30.0-0.11.4` |
+| 2.4.3 | `v2.30.0-0.11.8` |
+
+The release upgrade above ran under 2.4.2's FLO. To move FLO to the new release's chart, open
+the Application → **Details** → **Manifest** → **Edit**. In `spec.sources`, find the source with
+`chart: f5-lifecycle-operator`, set its `targetRevision`, and press **Save**. Then **Sync** with
+the defaults.
+
+Measured, 0.11.4 → 0.11.8 on BNK 2.4.3: only the FLO pod was replaced. BNK stayed `Available`,
+the License `Active`, and no TMM or CWC pod restarted. The sync took about 1m40s.
+
+### Before using roksbnkargoctl again
+
+`roksbnkargoctl` renders the release named in the workspace. After an upgrade done in Git,
+use the new release's build and set `bnk.version` to the new release in `config.yaml` before
+running `install`, `upgrade` or `uninstall` against the cluster. An older build refuses: it
+will not downgrade a running release.
+
+### Notes
+
+- In mirror mode FLO pulls the manifest from the mirror, so replicate the new release into it
+  first (`roksbnkargoctl registry replicate` with the new build). This was not measured.
+- Do not use **History and rollback** to go back to an older release. It re-syncs an older
+  revision, which asks FLO for a downgrade; downgrades are not supported.
 
 ## Delete: what the UI does
 

@@ -59,6 +59,7 @@ Available 3 minutes 38 seconds after the sync started. The License stayed Active
 
 ## See also
 
+- [Running with Argo CD Web Interface](./10b-argocd-ui.md#upgrade-within-24-with-git-and-argo-cd-only): the same upgrade as a one-line Git change and a sync
 - [install](./08-install.md)
 - [Mirroring into a private registry](./13-registry.md) for `registry replicate`
 - [status and diagnose](./09-status-and-diagnose.md) when the roll does not finish

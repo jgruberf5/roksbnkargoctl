@@ -348,6 +348,16 @@ interrupted after that point is finished by running `upgrade` again: with its re
 running, it re-syncs with prune and waits. 2.4.1 and 2.4.2
 ship the same FLO chart, so a FLO chart upgrade was not exercised there.
 
+Without the CLI (run 112, 2.4.2 → 2.4.3, bnkargo): a commit changing only the CNEInstance's
+`manifestVersion`, then a sync with Argo CD's defaults, is a complete release upgrade. FLO finds
+no CNEManifest for the new release, pulls `release/f5-bigip-k8s-manifest:<release>` from its
+registry and creates `bnk-<release>` itself (1m14s after the sync), then rolls; the last TMM
+was replaced 2m59s after the sync. The FLO chart is not part of that: it is in the
+Application's sources, not Git, and stays on the old release's (2.4.3 ships `0.11.8`, 2.4.2
+`0.11.4`) until the Application is edited. Moving it replaced only the FLO pod; BNK stayed
+Available. `upgrade` still publishes the new CNEManifest and syncs with prune, so Git matches
+the cluster. Putting the Application in Git is #45.
+
 In mirror mode, replicate the new release into the mirror first (`registry replicate` with the
 new build): render pulls the new manifest from the mirror.
 
